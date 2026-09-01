@@ -1,0 +1,125 @@
+{
+  "schemaVersion": "bnbera.altana.phase-zero/v1",
+  "status": "not_run",
+  "evidenceLevel": "design_only",
+  "runId": null,
+  "selectedAlternative": null,
+  "generatedAtUnix": null,
+  "versions": {
+    "studioCli": "0.0.13",
+    "studioRuntime": null,
+    "altanaSdk": null
+  },
+  "environment": {
+    "network": "bsc-testnet",
+    "chainId": 97,
+    "awsRegion": null,
+    "runtimeName": null
+  },
+  "policy": null,
+  "expectedAction": null,
+  "session": {
+    "sessionId": null,
+    "secretHandoffAccepted": false,
+    "secretDestinationKind": null,
+    "adminKeyEnteredPlatform": false,
+    "sessionMaterialPersistedInDatabase": false
+  },
+  "checkpoints": {
+    "policy_reviewed": {
+      "state": "not_observed",
+      "observedAtUnix": null,
+      "chainId": null,
+      "observedBlockNumber": null,
+      "target": null,
+      "selector": null,
+      "transactionHash": null,
+      "receiptStatus": null,
+      "resultingStateDigest": null,
+      "resultingStateStatus": null,
+      "reasonCode": null,
+      "revocationReasonCode": null
+    },
+    "session_granted": {
+      "state": "not_observed",
+      "observedAtUnix": null,
+      "chainId": null,
+      "observedBlockNumber": null,
+      "target": null,
+      "selector": null,
+      "transactionHash": null,
+      "receiptStatus": null,
+      "resultingStateDigest": null,
+      "resultingStateStatus": null,
+      "reasonCode": null,
+      "revocationReasonCode": null
+    },
+    "session_handed_off": {
+      "state": "not_observed",
+      "observedAtUnix": null,
+      "chainId": null,
+      "observedBlockNumber": null,
+      "target": null,
+      "selector": null,
+      "transactionHash": null,
+      "receiptStatus": null,
+      "resultingStateDigest": null,
+      "resultingStateStatus": null,
+      "reasonCode": null,
+      "revocationReasonCode": null
+    },
+    "permitted_action_confirmed": {
+      "state": "not_observed",
+      "observedAtUnix": null,
+      "chainId": null,
+      "observedBlockNumber": null,
+      "target": null,
+      "selector": null,
+      "transactionHash": null,
+      "receiptStatus": null,
+      "resultingStateDigest": null,
+      "resultingStateStatus": null,
+      "reasonCode": null,
+      "revocationReasonCode": null
+    },
+    "revocation_confirmed": {
+      "state": "not_observed",
+      "observedAtUnix": null,
+      "chainId": null,
+      "observedBlockNumber": null,
+      "target": null,
+      "selector": null,
+      "transactionHash": null,
+      "receiptStatus": null,
+      "resultingStateDigest": null,
+      "resultingStateStatus": null,
+      "reasonCode": null,
+      "revocationReasonCode": null
+    },
+    "post_revocation_action_rejected": {
+      "state": "not_observed",
+      "observedAtUnix": null,
+      "chainId": null,
+      "observedBlockNumber": null,
+      "target": null,
+      "selector": null,
+      "transactionHash": null,
+      "receiptStatus": null,
+      "resultingStateDigest": null,
+      "resultingStateStatus": null,
+      "reasonCode": null,
+      "revocationReasonCode": null
+    }
+  },
+  "attestation": null,
+  "requiredAccess": [
+    "Altana browser/passkey test account",
+    "BNB testnet wallet with bounded funds",
+    "Agent Studio CLI 0.0.13 and runtime",
+    "isolated AWS development account or sandbox secret store"
+  ],
+  "limitations": [
+    "Template only: no browser, wallet, SDK, AWS, or chain observation has been performed.",
+    "Do not label this artifact testnet evidence until every checkpoint has real correlated observations."
+  ]
+}
