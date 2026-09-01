@@ -2088,6 +2088,19 @@
           ],
           "onDelete": "set null",
           "onUpdate": "no action"
+        },
+        "agents_current_version_id_agent_versions_id_fk": {
+          "name": "agents_current_version_id_agent_versions_id_fk",
+          "tableFrom": "agents",
+          "tableTo": "agent_versions",
+          "columnsFrom": [
+            "current_version_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},

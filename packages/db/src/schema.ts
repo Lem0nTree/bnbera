@@ -281,6 +281,9 @@ export const agents = pgTable(
     listingStatus: listingStatusEnum("listing_status").notNull().default("draft"),
     ownerClaimVerifiedAt: timestamp("owner_claim_verified_at", { withTimezone: true }),
     category: agentCategoryEnum("category").notNull().default("uncategorized"),
+    // The physical FK is declared in the migration after both tables exist.
+    // Drizzle evaluates inline references while each table is initialized, so
+    // declaring this reverse edge inline would create a circular TDZ failure.
     currentVersionId: uuid("current_version_id"),
     executionWallet: varchar("execution_wallet", { length: 42 }),
     walletProvider: walletProviderEnum("wallet_provider").notNull().default("unknown"),

@@ -12,6 +12,7 @@
     "clean": "pnpm --recursive --if-present run clean",
     "db:generate": "pnpm exec drizzle-kit generate --config packages/db/drizzle.config.ts",
     "db:check": "pnpm exec drizzle-kit check --config packages/db/drizzle.config.ts",
+    "db:migrate": "pnpm --filter @bnbera/db run db:migrate",
     "lint": "pnpm --recursive --if-present run lint",
     "test": "pnpm --recursive --if-present run test",
     "typecheck": "pnpm --recursive --if-present run typecheck",

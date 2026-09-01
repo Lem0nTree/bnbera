@@ -26,7 +26,10 @@ pnpm check
 
 `DATABASE_URL` is required only when running database migrations or live
 repository integration tests. The foundation unit tests do not connect to a
-database and use no production credentials.
+database and use no production credentials. Apply the checked-in migrations
+explicitly with `DATABASE_URL=... pnpm db:migrate`; the command never logs the
+connection string. `pnpm db:check` validates schema/migration consistency only
+and does not connect to PostgreSQL.
 
 ## Security boundary
 

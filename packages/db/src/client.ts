@@ -1,12 +1,15 @@
 import { fileURLToPath } from "node:url";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
+import pg from "pg";
+import type { Pool as PgPool } from "pg";
 import { schemaTables } from "./schema.js";
+
+const { Pool } = pg;
 
 export function createDb(connectionString: string, options?: { readonly ssl?: boolean }): {
   readonly db: ReturnType<typeof drizzle<typeof schemaTables>>;
-  readonly pool: Pool;
+  readonly pool: PgPool;
 } {
   const pool = new Pool({
     connectionString,
