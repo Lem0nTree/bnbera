@@ -1,7 +1,7 @@
 # BNBEra Greenfield Data and Evidence Plan
 
 **Status:** Approved implementation plan
-**Revision:** 1.0
+**Revision:** 1.2
 **Date:** 2026-09-01
 
 This document defines how BNBEra uses BNB Greenfield to publish independently verifiable agent profiles, decisions, deliverables, execution evidence, and hackathon benchmarks.
@@ -16,12 +16,12 @@ Official references:
 
 - [Greenfield introduction](https://docs.bnbchain.org/bnb-greenfield/introduction/)
 - [Greenfield JavaScript SDK](https://docs.bnbchain.org/bnb-greenfield/for-developers/apis-and-sdks/sdk-js/)
-- [Cross-chain dApp integration](https://docs.bnbchain.org/bnb-greenfield/for-developers/cross-chain-integration/dapp-integration/)
+- [Resource mirroring semantics](https://docs.bnbchain.org/bnb-greenfield/for-developers/cross-chain-integration/mirror-concept/)
 - [Greenfield FAQ](https://docs.bnbchain.org/bnb-greenfield/getting-started/general-faqs/)
 
 ## 1. Role in BNBEra
 
-Greenfield is the canonical public evidence and provenance layer.
+Greenfield is the canonical public evidence and artifact-provenance layer for records BNBEra publishes. It does not determine a listing's `origin_type`, owner claim, verification, runtime health, execution authority, or publication state, and it is not required for externally discovered supply.
 
 It provides:
 
@@ -43,9 +43,11 @@ Use both IPFS and Greenfield:
 - IPFS remains the Agent Studio-compatible deliverable provider for ERC-8183.
 - Greenfield stores the canonical, structured audit package.
 - The same canonical content hash connects the IPFS object, Greenfield object, ERC-8183 output, marketplace run, and BSC transaction.
-- The final Greenfield evidence index is mirrored or anchored to BSC testnet through supported cross-chain tooling.
+- The final evidence index is sealed, read back, hash-verified, and linked from BNBEra profiles, jobs, and run records.
 
 Greenfield supplements Agent Studio storage rather than pretending to be a built-in Studio storage option when it is not configured as one.
+
+Greenfield resource mirroring is explicitly outside the hackathon critical path. Mirroring creates an EVM-side resource representation and changes management semantics; it is not treated as a lightweight checksum anchor.
 
 ## 3. Environment separation
 
@@ -53,7 +55,7 @@ Use different configured buckets for:
 
 - Development.
 - Preview/test automation.
-- BSC testnet production.
+- Hackathon production.
 - Future mainnet production.
 
 Bucket names are configured because Greenfield names must be unique. Do not hardcode a globally assumed name in application source.
@@ -61,22 +63,24 @@ Bucket names are configured because Greenfield names must be unique. Do not hard
 Network defaults:
 
 - Greenfield testnet for the hackathon environment.
-- BSC testnet for evidence anchoring.
-- Mainnet disabled until separately approved.
+- BSC testnet for BNBEra-created write demonstrations unless the main-track network gate requires chain-56 category coverage.
+- Autonomous BSC mainnet writes disabled until separately approved; read-only chain-56 discovery and evidence links remain allowed for the main-track fallback.
+
+Every evidence record stores the exact BSC chain ID. Evidence from chain 56 and chain 97 is never combined into one execution claim.
 
 ## 4. Object model
 
 ```text
-agents/{chainId}/{agentId}/versions/{version}/profile.json
-agents/{chainId}/{agentId}/versions/{version}/capabilities.json
-agents/{chainId}/{agentId}/versions/{version}/authority.json
+agents/{namespace}/{chainId}/{identityRegistry}/{agentId}/versions/{version}/profile.json
+agents/{namespace}/{chainId}/{identityRegistry}/{agentId}/versions/{version}/capabilities.json
+agents/{namespace}/{chainId}/{identityRegistry}/{agentId}/versions/{version}/authority.json
 runs/{jobId}/bundle.json
 runs/{jobId}/deliverable.json
 benchmarks/{taskId}/comparison.json
 submission/evidence-index.json
 ```
 
-Object names are deterministic and versioned. Existing objects are never silently overwritten to represent a new agent or run state.
+Object names are deterministic and versioned. Namespace and registry-address path segments are canonicalized and validated. Existing objects are never silently overwritten to represent a new agent or run state.
 
 ### 4.1 Agent profile
 
@@ -84,16 +88,16 @@ Contains:
 
 - Schema version.
 - BSC chain ID.
-- ERC-8004 agent ID.
+- Full ERC-8004 identity: namespace, BSC chain ID, identity-registry address, and agent ID.
 - Agent name, description, and category.
 - Marketplace URL.
-- A2A, MCP, ERC-8183, and x402 endpoints.
-- Template slug, version, and digest.
+- Advertised and validated service descriptors, including A2A, MCP, ERC-8183, and X402 when present.
+- Template slug, version, and digest when the agent was created from a verified BNBEra strategy.
 - Supported protocols and assets.
 - Pricing summary.
 - Capability-manifest hash.
-- Altana smart-wallet address.
-- Public policy summary.
+- Altana smart-wallet address when applicable.
+- Public execution-policy summary when applicable.
 - Creation and verification timestamps.
 
 ### 4.2 Capability object
@@ -151,14 +155,17 @@ Contains:
 
 - Exact task.
 - Starting data and timestamp.
+- Measurement window and sample size.
 - Manual method and actual output.
 - Agent method and actual output.
 - Time.
 - Direct cost.
 - Gas and marketplace payment.
+- Wins/losses where meaningful, realized benefit or PnL, capital at risk, and maximum drawdown for trading records.
+- Failure count and retry treatment.
 - Quality rubric and scores.
 - Risk violations.
-- Transaction and evidence links.
+- Methodology, transaction links, and evidence links.
 - Conclusion derived from the measurements.
 
 ## 5. Data classification
@@ -200,7 +207,7 @@ Before publishing an object:
 4. Deterministically order JSON keys.
 5. Serialize without environment-specific whitespace.
 6. Calculate SHA-256 for storage integrity.
-7. Calculate keccak256 for EVM anchoring.
+7. Calculate keccak256 as the secondary EVM-compatible content digest.
 8. Record the schema version and hash algorithm.
 
 The same canonical bytes are uploaded to IPFS and Greenfield when the deliverable is dual-published.
@@ -262,11 +269,11 @@ Greenfield charges a minimum size for small objects. Reduce waste by bundling re
 - Update the submission evidence index in deliberate batches rather than after every health check.
 - Do not publish high-frequency raw monitoring samples; publish the snapshots relevant to a decision or benchmark.
 
-## 10. BSC anchoring
+## 10. Marketplace and chain linking
 
 The final evidence index contains:
 
-- Every reference agent.
+- Every BNBEra-created reference agent included in the submission.
 - ERC-8004 identities.
 - Template digests.
 - Altana policy transactions.
@@ -279,10 +286,13 @@ The final evidence index contains:
 
 After the index is sealed and read back:
 
-1. Calculate its EVM-compatible digest.
-2. Mirror the object through supported Greenfield cross-chain functionality or anchor its digest in the selected BSC evidence transaction.
-3. Store the BSC transaction in the database and index.
-4. Verify both directions from the production evidence page.
+1. Calculate and retain its SHA-256 and keccak256 digests.
+2. Store the Greenfield object reference, seal transaction, readback result, and digest in PostgreSQL.
+3. Link relevant BSC execution, Altana authority, ERC-8004, and ERC-8183 transaction hashes from the index without claiming that those transactions contain the Greenfield payload or index digest.
+4. Link the verified index from BNBEra evidence pages and from BNBEra-controlled registration/job metadata where the pinned standards and ownership flow permit it.
+5. Verify every outbound chain and storage link from the production evidence page.
+
+No Greenfield mirror or custom BSC anchoring contract is required for the hackathon. A future mirroring feature requires its own ownership, permissions, cost, and lifecycle design.
 
 ## 11. Publisher security
 
@@ -333,7 +343,7 @@ Track:
 - Bytes and minimum-size overhead.
 - Publisher wallet balance.
 - Storage-provider availability.
-- Cross-chain anchor state.
+- Marketplace/profile link state.
 
 Alert immediately on a hash mismatch or evidence marked verified without a completed readback.
 
@@ -357,7 +367,7 @@ Alert immediately on a hash mismatch or evidence marked verified without a compl
 - Read it back and match hashes.
 - Retry after an interrupted upload.
 - Dual-publish matching bytes to IPFS.
-- Verify the evidence index anchor from BSC.
+- Verify that the evidence page resolves the sealed index and displays linked BSC transaction references as ordinary verified links, not as an extra on-chain commitment.
 
 ### Security
 
@@ -368,15 +378,18 @@ Alert immediately on a hash mismatch or evidence marked verified without a compl
 
 ## 15. Acceptance criteria
 
-- Each reference agent has a sealed, readable versioned profile.
+- Each BNBEra-created reference agent has a sealed, readable versioned profile.
+- Externally discovered agents may be listed without BNBEra Greenfield evidence; any evidence badge requires a sealed, read-back-verified object.
 - Each required live run has a verified run bundle.
 - ERC-8183 deliverable hashes agree across the job, IPFS, Greenfield, and PostgreSQL.
-- The final evidence index is sealed, readable, and linked to BSC testnet.
-- The TermiX report contains actual inputs and outputs.
+- The final evidence index is sealed, readable, and links to the exact BSC network and transactions represented by each run.
+- If the TermiX bounty is targeted, the report contains actual inputs and outputs, at least one trading/stock/security task, and the required measurement-window, track-record, cost, and risk fields.
 - No private or secret data is published.
 - The UI distinguishes pending, uploaded, sealed, and verified states.
 - Greenfield is represented accurately as storage-chain metadata plus storage-provider payloads.
 
 ## Changelog
 
+- **1.2 — 2026-09-01:** Aligned evidence terminology with independent origin/claim/listing state, made service descriptors discovery-based, and completed the conditional TermiX track-record schema.
+- **1.1 — 2026-09-01:** Removed Greenfield mirroring and ambiguous digest anchoring from the hackathon path, added explicit marketplace/transaction linking and full ERC-8004 identity paths, aligned evidence with the main-track network gate, and made Greenfield optional for externally discovered listings.
 - **1.0 — 2026-09-01:** Initial approved Greenfield evidence plan.

@@ -1,7 +1,7 @@
 # BNBEra Marketplace Donor Merge Plan
 
 **Status:** Approved implementation plan
-**Revision:** 1.0
+**Revision:** 1.2
 **Date:** 2026-09-01
 
 This document defines how BNBEra will combine the useful parts of TwinMarket and AgentTrust into a BNB Chain agent marketplace. It is intentionally selective: incompatible sponsor integrations, unsafe key custody, incomplete contracts, mocks, and both donor frontends are excluded.
@@ -19,14 +19,18 @@ Related plans:
 | Application base | TwinMarket's Next.js, tRPC, Drizzle, BetterAuth/SIWE, wagmi, and marketplace foundation |
 | AgentTrust contribution | Capability manifests, requester/provider lifecycle, deterministic hashes, evidence verification, and audit vocabulary |
 | Frontend | Complete BNBEra redesign; do not reuse either donor frontend |
-| Chain | BSC testnet first |
+| Chain | Treat chain 56 and chain 97 as distinct environments; never merge their identity, price, authority, or execution claims |
 | Identity | Official ERC-8004 |
 | Jobs and escrow | Official ERC-8183 |
-| Per-call payments | x402/B402 |
+| Per-call payments | X402 public face with pinned B402 settlement; configured independently from ERC-8183 |
 | Agent authority | Altana scoped sessions |
-| Evidence | IPFS deliverables plus canonical Greenfield evidence |
+| Evidence | IPFS deliverables plus canonical Greenfield evidence for BNBEra-published runs; Greenfield is not required for external discovery |
 | Search | Structured hard filters, PostgreSQL full-text search, and pgvector over public agent metadata |
-| Runtime | AWS AgentCore plus a keyless public service |
+| Binance | Optional pinned, typed enrichment adapters only; protocol state, simulation, and receipts remain execution truth |
+| Agent sourcing | 8004scan, direct ERC-8004 events, manual import, and BNBEra Creator |
+| Runtime | One BNB Agent Studio TypeScript runtime per created agent on AWS AgentCore, behind authenticated ingress/WAF |
+| Creator | Thin audited-strategy Studio MVP after the marketplace core passes; no general-purpose builder |
+| Network | Release-blocking organizer clarification; created write demos default to BSC testnet, while main-track coverage falls back to verified BSC mainnet agents if testnet eligibility is not confirmed |
 | Custom contracts | None for identity, trust, or escrow |
 
 ## 2. Donor findings
@@ -91,22 +95,25 @@ bnbera/
 ├── apps/
 │   ├── web/
 │   ├── deployer/
-│   ├── agent-service/
 │   └── health-monitor/
 ├── packages/
 │   ├── db/
 │   ├── domain/
 │   ├── marketplace/
+│   ├── agent-ingestion/
 │   ├── agent-commerce/
 │   ├── agent-runtime/
 │   ├── agent-templates/
 │   ├── altana/
 │   ├── greenfield/
+│   ├── binance/
 │   ├── data-sources/
 │   └── ui/
 ├── infra/
 │   ├── aws/
 │   └── vercel/
+├── config/
+│   └── standards.lock.json
 ├── scripts/
 └── docs/
 ```
@@ -164,21 +171,57 @@ Every listing must expose observed facts:
 
 - Live status and last health check.
 - BSC chain and protocol.
-- ERC-8004 identity.
-- Agent Studio template and version.
+- Full ERC-8004 identity: namespace, chain ID, registry address, and agent ID.
+- Origin: discovered, manually imported, or created.
+- Independent owner-claim, verification, runtime, authority, and listing states.
+- Agent Studio template and version only when Studio provenance is verified.
 - Price or price range.
-- Altana wallet, call scope, spend cap, and expiry.
+- Wallet provider and public authority summary; Altana wallet, call scope, spend cap, and expiry when applicable.
 - Last verified execution.
 - ERC-8183 outcome history.
-- Greenfield evidence.
+- Evidence links and integrity state; a Greenfield link only when the object was sealed and read-back verified.
 
 No unverified record receives a “verified,” “successful,” “trending,” or “high-performing” label.
+
+### 5.1 Supply ingestion and independent state axes
+
+Use four supply paths:
+
+1. 8004scan candidate discovery.
+2. Direct ERC-8004 registry events and reads.
+3. Manual import by identity.
+4. BNBEra Creator output.
+
+8004scan accelerates discovery; direct chain reads are the identity authority. Normalize and deduplicate by the complete ERC-8004 key `(namespace, chainId, identityRegistry, agentId)`.
+
+Do not overload one `status` field. Origin is immutable classification, while claim and listing state can change independently:
+
+```text
+origin_type         discovered | manual_import | created
+claim_status        unclaimed | claimed | stale
+verification_status pending | verified | degraded | rejected
+runtime_status      live | unavailable | paused
+authority_status    none | active | expired | revoked
+listing_status      draft | published | paused | suspended | delisted
+```
+
+Discovery does not require owner participation. A current ERC-721 owner proves control through SIWE only to set `claim_status=claimed`, edit owner-controlled metadata, or receive an owner-verified label. An onchain ownership change makes the prior claim `stale`; it removes owner-management privileges and the owner-verified label but does not automatically reject an otherwise independently verified listing. Creation by BNBEra never implies verification automatically.
+
+Resolve services from ERC-8004 metadata, an A2A Agent Card, MCP metadata, or a reviewed protocol adapter. Persist the advertised service kind, URL, protocol version, discovery source, and validation result. Do not require external agents to expose Studio-specific paths or a universal `/health` route.
+
+Direct registry ingestion is reorg-aware. Store block number, block hash, transaction hash, log index, and `provisional | canonical | orphaned` confirmation state for each chain observation, plus a per-chain/registry cursor and last finalized block. The confirmation threshold is network configuration. A block-hash mismatch rewinds the cursor, marks orphaned observations, replays canonical events, re-reads current ERC-8004 owner/metadata/`agentWallet`, and marks any displaced owner claim `stale`.
+
+For each of the four required categories, maintain a coverage gate for a live BSC identity, usable endpoint, normalized capability and schemas, pricing or activation, verified protocol support, comparable detail, and at least one end-to-end activation or hire path. Use external supply when it passes; deploy reference supply only for gaps.
+
+This gate evaluates observable marketplace behavior. It does not require an external agent to use Studio, Altana, BNBEra's deterministic strategy engine, Greenfield, ERC-8183, or X402 unless that feature is advertised or required by the selected activation path.
 
 ## 6. Search and matchmaking
 
 ### 6.1 Pgvector boundary
 
 Pgvector is retained for semantic discovery of public agent metadata only.
+
+8004scan semantic search remains useful for candidate discovery, but its ranking is not reused as BNBEra marketplace truth. BNBEra embeds its own verified and enriched listing representation, then combines retrieval with authority, protocol, health, price, freshness, and execution constraints that are outside a generic registry search.
 
 Vectorize:
 
@@ -196,7 +239,9 @@ Do not vectorize:
 - Raw transaction payloads or receipts.
 - Unverified claims.
 
-Store `vector(1536)`, embedding model, source-text hash, and agent-version ID. Refresh the vector when the published profile version changes, not whenever a live metric changes. If embedding generation fails, structured and full-text discovery continue to work.
+Pin one embedding model and dimension for the hackathon. Store the embedding provider, model, model version, dimension, source-text hash, classifier version, and agent-version ID. A future dimension change creates a versioned table/index migration rather than mixing dimensions. Refresh the vector when the published semantic profile changes, not whenever a live metric changes. If embedding generation fails, structured and full-text discovery continue to work.
+
+Keep current health, price, balances, remaining spend, session expiry, and live financial values out of the embedding. They remain structured ranking and eligibility inputs.
 
 ### 6.2 Retrieval order
 
@@ -205,19 +250,24 @@ Store `vector(1536)`, embedding model, source-text hash, and agent-version ID. R
 3. Calculate the deterministic score.
 4. Return score components and exclusion reasons.
 
-The capability component allocates 20 points to exact structured compatibility and 15 points to semantic similarity. A vector match cannot override a failed chain, protocol, authority, health, price, or freshness requirement.
+The capability component allocates 20 points to exact structured compatibility and 15 points to semantic similarity. A vector match cannot override a failed chain, protocol, required execution-authority, health, price, or freshness requirement.
+
+Category prediction combines ERC-8004 metadata, OASF skills, A2A Agent Cards, MCP capability schemas, known protocol/actions, deterministic rules, and semantic evidence. Persist the predicted category, structured and semantic scores, confidence, evidence, method, classifier version, and review state. A generic description alone cannot promote an agent out of `uncategorized`.
 
 ## 7. Data model
 
 Create clean Drizzle migrations for:
 
 - Users and wallet addresses.
+- ERC-8004 identities keyed by namespace, chain, registry, and agent ID.
+- Agent discovery sources, normalized advertised services, reorg-aware chain observations, and finalized ingestion checkpoints.
 - Templates and immutable template versions.
 - Agent drafts.
 - Altana authorities.
 - Deployments and deployment events.
 - Agents and immutable listing versions.
-- Listing embeddings.
+- Independent origin, owner-claim, verification, runtime, authority, and listing states.
+- Listing embeddings and category predictions.
 - Health snapshots.
 - ERC-8183 jobs.
 - Agent runs.
@@ -256,9 +306,14 @@ Before accepting the merge:
 - Confirm obsolete World, ENS, Arc, Base, Akash, AXL, and 0G runtime dependencies are absent.
 - Confirm no donor mock is shown as live data.
 - Verify SIWE authentication and ownership checks.
+- Verify that unclaimed discovered agents can be listed without SIWE and that claiming requires the current ERC-721 owner.
+- Verify source deduplication by namespace, chain, registry, and agent ID.
+- Verify advertised service discovery without assuming `/apex`, `/a2a`, or `/health` paths.
+- Verify provisional-to-canonical event handling, reorg rollback/replay, and stale-claim invalidation.
 - Verify structured and semantic retrieval independently.
 - Verify hard filters always run before vector ranking.
-- Verify ERC-8004 identity, ERC-8183 hiring, x402/B402, Altana policy, and Greenfield evidence using live testnet integrations.
+- Verify ERC-8004 identity, ERC-8183 hiring, x402/B402, Altana policy, and Greenfield evidence against the configured live integration networks; created autonomous-write canaries remain on testnet unless separately approved.
+- Resolve the main-track network gate with organizers. If BSC testnet is not explicitly accepted, require chain-56 agents for main-track category coverage while retaining chain 97 for the created Altana demo.
 
 ## 10. Acceptance criteria
 
@@ -267,11 +322,15 @@ Before accepting the merge:
 - Neither donor frontend is present.
 - No plaintext wallet key is stored or returned.
 - Only official BNB identity and commerce standards are used.
-- All four categories appear with equal depth.
+- The exact deployed contract, ABI, SDK, Studio CLI/runtime, and specification revisions are pinned in `config/standards.lock.json`.
+- All four categories appear with equal depth and pass the category coverage gate; BNBEra ownership is not required.
 - Marketplace rankings are evidence-backed and explainable.
 - Pgvector contains only public semantic metadata.
 - Live financial data remains structured, timestamped, and block-referenced.
+- Origin and claim state never imply verification, liveness, active authority, or publication.
 
 ## Changelog
 
+- **1.2 — 2026-09-01:** Split immutable origin from owner-claim and listing state, made external service interfaces discoverable rather than path-assumed, separated external eligibility from BNBEra internals, and added ERC-8004 finality/reorg handling.
+- **1.1 — 2026-09-01:** Added 8004scan and direct-event ingestion, independent provenance/verification/runtime/authority states, full ERC-8004 identifiers, model-aware embeddings and category predictions, the category supply gate, the main-track network gate, and the single-runtime Studio architecture.
 - **1.0 — 2026-09-01:** Initial approved donor-merge plan; clarified pgvector scope and BNBEra visual identity.

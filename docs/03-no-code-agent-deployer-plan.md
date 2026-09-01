@@ -1,10 +1,10 @@
 # BNBEra No-Code Agent Deployer Plan
 
 **Status:** Approved implementation plan
-**Revision:** 1.0
+**Revision:** 1.2
 **Date:** 2026-09-01
 
-This document defines the no-code creation, platform-hosted deployment, verification, publication, operation, revocation, and destruction of fixed-template BNB Agent Studio agents.
+This document defines a thin BNBEra Creator MVP for no-code creation, platform-hosted deployment, verification, publication, operation, revocation, and destruction of audited-strategy BNB Agent Studio agents. It does not define a general-purpose agent-building platform.
 
 Related plans:
 
@@ -17,8 +17,10 @@ Official references:
 - [BNB Agent Studio launch](https://www.bnbchain.org/en/blog/bnb-agent-studio-is-live-on-bnb-chain-ai-agents-from-one-prompt)
 - [Current Agent Studio quickstart](https://docs.bnbchain.org/developer-kit/bnbchain-studio/quickstart/)
 - [Agent Studio CLI reference](https://docs.bnbchain.org/developer-kit/bnbchain-studio/cli-reference/)
+- [Pinned Agent Studio CLI package](https://www.npmjs.com/package/@bnbagent/studio-cli)
 - [Agent Studio security](https://docs.bnbchain.org/developer-kit/bnbchain-studio/security/)
 - [Altana in Agent Studio](https://www.bnbchain.org/en/blog/altana-in-bnb-agent-studio-agents-with-limits-you-set)
+- [Altana SDK](https://www.npmjs.com/package/@altananetwork/sdk)
 - [Smart Money Era tracks](https://www.bnbchain.org/en/hackathons/smart-money-era?tab=tracks)
 
 ## 1. Product boundary
@@ -41,23 +43,70 @@ Users still must:
 - Confirm wallet transactions.
 - Understand that the hosted runtime can act within the approved scope.
 
-The first release supports fixed templates only. Arbitrary generated code, packages, tools, contract addresses, calldata, and user uploads are excluded.
+The Creator starts only after the marketplace core, discovery pipeline, category coverage gate, and one complete activation/hire flow pass. Its first release supports audited, operator-activated strategy versions only. Arbitrary generated code, packages, tools, contract addresses, calldata, and user uploads are excluded.
 
-## 2. Hosting decision
+Explicitly excluded from the hackathon Creator:
+
+- General-purpose prompt-to-agent generation.
+- Arbitrary skills or dependency installation.
+- Arbitrary contracts, RPC endpoints, tools, or callbacks.
+- A visual programming language.
+- A multi-cloud deployment framework.
+- Unbounded combinations of capability modules.
+
+## 2. Hosting and network decision
 
 - BNBEra hosts user-created agents in the platform AWS account.
-- Private Layer A runs on AWS Bedrock AgentCore.
-- The public keyless Layer B service runs on ECS Fargate behind shared HTTPS ingress.
+- Each created agent is one current BNB Agent Studio TypeScript runtime on AWS Bedrock AgentCore: one seller core, one fixed signing boundary, and one bounded Altana session.
+- AWS ingress, Cognito authentication, WAF, and rate limiting protect the public edge. They are not a second agent runtime or keyless service tier.
 - Vercel hosts the marketplace and creator dashboard.
 - PostgreSQL stores lifecycle state, never session secrets.
-- AWS Secrets Manager holds each scoped agent session.
-- BSC testnet is the only user-created deployment target initially.
+- Studio's delegated AWS secret channel/Secrets Manager holds only the serialized bounded Altana runtime session and other required runtime secrets, never the user's administrative key.
+- BSC testnet is the default write target for the created Altana demo while the main-track network gate is resolved.
+
+Release-blocking network gate:
+
+```text
+Confirm with hackathon organizers whether "live on BSC"
+accepts chain-97 agents for main-track marketplace coverage.
+
+If confirmed:
+  chain 97 may satisfy category coverage.
+
+If not confirmed or rejected:
+  main-track category coverage uses verified chain-56 agents;
+  BNBEra-created autonomous execution remains a clearly labelled
+  chain-97 Altana demonstration unless mainnet is separately approved.
+```
+
+Never match, price, compare execution authority, or present evidence across chain 56 and chain 97 as though they were the same environment.
 
 Do not use the limited 48-hour BNB managed trial as the marketplace's durable hosting layer. The platform uses its own AWS deployment so endpoint lifecycle and availability can be managed consistently.
 
-## 3. Fixed templates
+### 2.1 Phase-zero Altana browser-to-Studio spike
 
-Every template version is prebuilt, reviewed, tested, content-addressed, and signed before users can select it.
+The desired custody model is approved, but the exact session bootstrap is not assumed. Before Creator implementation, prove this complete path with the pinned Studio and Altana SDK versions:
+
+```text
+browser/passkey-controlled Altana administrator
+  → BNBEra displays the exact call, spend, and expiry policy
+  → user grants a bounded runtime session
+  → only bounded session material enters the Studio/AWS secret path
+  → AgentCore executes one permitted transaction
+  → user revokes in BNBEra
+  → the next state-changing action is rejected
+```
+
+Accept one of two evidenced implementations:
+
+1. Studio accepts an externally prepared Altana runtime session directly; use that supported path.
+2. If Studio does not expose that bootstrap, use the pinned Altana SDK in the browser/user-approval flow and Studio only for runtime and deployment, injecting the resulting bounded session through the reviewed Studio/AWS secret path.
+
+The spike must record the exact APIs, serialized-session format, handoff boundary, secret destination, revocation observation, and CLI/runtime versions. The user's passkey, administrative signer, and admin keystore never enter BNBEra, logs, PostgreSQL, build artifacts, or the runtime. Creator implementation is blocked until this spike passes.
+
+## 3. Audited strategy catalog
+
+Every strategy version is prebuilt, reviewed, tested, content-addressed, and signed before users can select it. Marketplace category coverage is independent from Creator template count: the thin Creator MVP needs one complete activated strategy, while additional strategies are activated only after their own testnet canaries pass. The following four strategies are candidates and gap-filling reference implementations, not a requirement to author four agents before marketplace launch.
 
 ### 3.1 PancakeSwap LP Rebalancing
 
@@ -143,8 +192,8 @@ User configuration:
 
 For every version:
 
-1. Scaffold a clean seller project using the current BNB Agent Studio tooling.
-2. Pin Node, pnpm, Bun, Studio CLI, Agent SDK, Altana SDK, viem, and protocol dependencies.
+1. Scaffold a clean seller project using the exact BNB Agent Studio release pinned in `config/standards.lock.json`; the initial reviewed target is Studio CLI `0.0.13`, configured with the pinned CLI's `--wallet-kind altana` path.
+2. Pin Node, pnpm, Bun, Studio CLI/runtime, Agent SDK, Altana SDK, viem, deployed ERC-8004/ERC-8183 contracts and ABIs, and protocol dependencies.
 3. Implement the deterministic strategy and audited execution adapter.
 4. Define a strict configuration JSON Schema.
 5. Define the exact contract and function-selector allowlist.
@@ -156,11 +205,13 @@ For every version:
 
 User configuration is stored as validated JSON and environment configuration. It is never interpolated into TypeScript, shell commands, imports, filenames, package names, or infrastructure identifiers without strict normalization.
 
+Current Studio is under active development. A version upgrade creates a new reviewed toolchain lock, reruns the complete release pipeline, and produces a new template artifact; production workers never install an unpinned `latest` release.
+
 ## 5. Creator experience
 
 ### Step 1: template
 
-Show four equal category cards with:
+Show only operator-activated audited strategies, with:
 
 - What the agent monitors.
 - What it can execute.
@@ -208,10 +259,12 @@ There is no unlimited option.
 
 1. Authenticate through SIWE.
 2. Create or select the user-controlled Altana smart wallet.
-3. Generate the runtime session inside the isolated AWS path.
-4. Return only the session public address to the browser.
-5. User approves the scoped grant.
-6. Backend verifies the confirmed Keystore state before deployment.
+3. Show the exact proposed runtime-session public key, calls, spend limits, and expiry.
+4. User approves the scoped grant through the spike-validated browser/Altana flow.
+5. Send only the resulting bounded session through the reviewed one-time secret handoff into the Studio/AWS secret path.
+6. Backend verifies the confirmed Keystore state and secret destination before deployment.
+
+Identity ownership is a separate approval. BNBEra uses the pinned Studio/Altana custody-specific ERC-8004 registration flow so the resulting ERC-721 owner is the user's intended owner address. The runtime session receives only the narrowly required registration/update permission, if that permission is part of the reviewed flow. Generic runtime signing and post-registration transfer are not the default. Any fallback transfer must pause publication, account for the automatic clearing of `agentWallet`, and re-establish `agentWallet` before verification.
 
 ### Step 6: deployment
 
@@ -222,11 +275,12 @@ The user confirms deployment and receives a deployment ID immediately. The UI po
 Publish only after:
 
 - Runtime is ready.
-- Public HTTPS service is healthy.
+- Authenticated public ingress and the selected runtime faces are healthy.
 - ERC-8004 identity resolves.
+- ERC-8004 owner equals the intended user-controlled owner and `agentWallet` is independently verified where required.
 - Altana session is current and public.
 - ERC-8183 negotiation passes.
-- x402 endpoint passes when configured.
+- The advertised X402 endpoint passes when configured; paid mode also proves its gateway, authenticated AgentCore relay, B402 settlement, and expected payout recipient.
 - Template-specific testnet canary succeeds.
 - Initial Greenfield profile and evidence are sealed and read back.
 
@@ -244,15 +298,18 @@ Vercel Next.js + tRPC
 AWS SQS
              ▼
 AWS Step Functions
-  ├── CodeBuild template materializer
-  ├── Secrets Manager
-  ├── AgentCore Layer A
-  ├── ECS Fargate Layer B
-  ├── ERC-8004 registration
-  ├── ERC-8183 and x402 verification
+  ├── ephemeral worker: verify signed strategy + standards lock
+  ├── pinned Agent Studio CLI: init/configure/doctor/deploy
+  ├── delegated secret channel: bounded Altana session
+  ├── AWS AgentCore: one TypeScript runtime / one signer
+  ├── AWS ingress + Cognito + WAF
+  ├── custody-specific ERC-8004 ownership/registration verification
+  ├── ERC-8183 and x402/B402 verification
   ├── IPFS publication
   └── Greenfield publication
 ```
+
+Studio owns the generated runtime and deployment workflow. BNBEra owns queueing, idempotency, signed strategy/configuration materialization, progress, policy review, reconciliation, verification, and listing. BNBEra does not recreate Studio's runtime topology.
 
 ## 7. Deployment lifecycle
 
@@ -265,7 +322,7 @@ draft
   → building
   → provisioning_secrets
   → deploying_runtime
-  → deploying_service
+  → configuring_ingress
   → health_checking
   → registering_identity
   → configuring_commerce
@@ -284,6 +341,19 @@ Terminal/operational states:
 - `destroyed`
 
 Every transition records the deployment ID, attempt, timestamp, input and template digests, previous and next state, external resource references, transaction hash, sanitized error, and retryability.
+
+Deployment state is not the marketplace listing state. Persist these independent axes for every created agent:
+
+```text
+origin_type         created
+claim_status        unclaimed | claimed | stale
+verification_status pending | verified | degraded | rejected
+runtime_status      live | unavailable | paused
+authority_status    none | active | expired | revoked
+listing_status      draft | published | paused | suspended | delisted
+```
+
+`origin_type=created` never implies `claim_status=claimed`, `verification_status=verified`, or `listing_status=published`. A failed canary, unhealthy ingress, identity mismatch, ownership change, or expired authority changes only the relevant axes and eligibility rules.
 
 ## 8. AWS workflow
 
@@ -305,24 +375,49 @@ Every transition records the deployment ID, attempt, timestamp, input and templa
 
 ### Secrets
 
-- Generate session material in the isolated deployment process.
-- Store it directly in a dedicated Secrets Manager secret.
+- Use the phase-zero spike's selected Studio/Altana bridge to create the bounded session without exposing the user's administrative key to BNBEra.
+- Store the serialized runtime session directly through Studio's delegated AWS secret channel/Secrets Manager.
 - Store only its ARN/reference in deployment state.
 - Attach an IAM role that can read only that agent's secret.
 
 ### Runtime
 
 - Deploy one AgentCore runtime per active agent.
-- Give it read-only protocol tools plus fixed signing entrypoints.
+- Serve the selected A2A, MCP, and X402 faces from the same Studio runtime and seller core.
+- Give the LLM read-only protocol tools; keep state-changing operations in fixed signing and execution entrypoints.
 - Pin its template and configuration digests.
-- Disable direct public access to signing material.
+- Inject only the bounded Altana session through Studio's delegated secret channel.
+- Disable every generic signing surface and prevent public requests from reaching arbitrary transaction methods.
 
-### Public service
+### Ingress and public faces
 
-- Deploy a keyless ERC-8183/A2A/MCP/x402 service to ECS Fargate.
-- Route through shared HTTPS ingress using a deterministic agent hostname/path.
-- Permit calls to Layer A only through authenticated internal networking.
-- Expose a health endpoint that performs no signing.
+- Configure AWS ingress/Cognito and WAF in front of AgentCore using the pinned Studio deployment path.
+- Route through a deterministic agent hostname/path or a BNBEra relay that authenticates its AgentCore invocation.
+- Apply per-agent and global rate limits, body limits, timeouts, and fixed egress where the B402 integration requires it.
+- Expose a BNBEra reference-runtime readiness check that performs no signing or state change; do not present its path as a universal external-agent standard.
+- Do not introduce a second Fargate agent/service runtime.
+
+### B402 seller configuration
+
+Paid X402 is a public Studio face backed by B402 settlement, not an alias for ERC-8183. Store a validated per-agent configuration mapped to the exact pinned Studio `[payments.b402_seller]` schema:
+
+```text
+merchantEnvironment
+merchantAccountReference
+facilitatorEndpoint
+settlementNetwork
+settlementAsset
+settlementDecimals
+payoutAddress
+fixedEgressProfile
+publicX402Url
+agentCoreRelayAuthenticationReference
+priceUsd
+```
+
+Merchant credentials and relay secrets are secret references, never database values. Network, asset, decimals, facilitator host, payout recipient, amount, and retry policy are pinned independently of an incoming payment challenge. For Altana, verify and display that Studio pays the administrator address. The B402 test asset is not interchangeable with ERC-8183 testnet `U`; configure and account for the two rails separately.
+
+On self-hosted AgentCore, the buyer-facing gateway authenticates its relay into AgentCore and uses the configured fixed-egress path to B402. A paid canary must observe the challenge, buyer payment, authenticated replay, B402 receipt/settlement, expected payout recipient, and delivered response. Because current Studio settles before work and provides no automatic refund if work later fails, the UI discloses that behavior and the runtime never automatically retries an unknown post-payment outcome.
 
 ## 9. Signing boundary
 
@@ -347,6 +442,8 @@ The LLM may explain results. It cannot:
 - Widen session authority.
 - Override stale-data or simulation failures.
 
+One runtime does not collapse the logical boundaries: public request parsing, deterministic commerce checks, strategy decisions, simulation, policy validation, and signing remain separate modules with narrow typed interfaces.
+
 ## 10. Idempotency and recovery
 
 - `creator.deploy` requires an idempotency key.
@@ -360,7 +457,8 @@ The LLM may explain results. It cannot:
 Failure behavior:
 
 - Build failure creates no runtime.
-- Public-service failure leaves the runtime paused and unlisted.
+- Ingress, endpoint, or selected-face verification failure leaves the runtime paused and unlisted and reconciles the existing Studio deployment.
+- Paid-X402 gateway, relay-authentication, fixed-egress, settlement, or payout-recipient failure leaves that face unpublished and cannot fall back to ERC-8183 or free mode silently.
 - A registered ERC-8004 identity is reused after recovery.
 - Canary failure prevents listing.
 - Greenfield seal delay produces `evidence_pending`, not a false success.
@@ -376,7 +474,7 @@ The “My Agents” dashboard provides:
 - Latest decision and execution.
 - ERC-8004 identity.
 - ERC-8183 jobs and earnings.
-- x402 requests.
+- X402 requests, B402 settlement state, configured asset/network, and expected payout address.
 - Altana call scope, spend cap, and expiry.
 - Renew authority.
 - Pause runtime.
@@ -391,14 +489,14 @@ Revocation or expiry automatically:
 3. Marks the listing paused.
 4. Preserves public historical evidence.
 
-Destroying an agent requires authority revocation first, then removes AgentCore, Fargate resources, and the runtime secret. Historical database audit records and public evidence remain.
+Destroying an agent requires authority revocation first, then removes the AgentCore deployment, BNBEra-managed ingress resources, and the runtime secret/session artifact. Historical database audit records and public evidence remain.
 
 ## 12. Quotas and abuse prevention
 
 Initial limits:
 
 - One active hosted agent per verified wallet.
-- BSC testnet only.
+- BSC testnet writes by default; any mainnet Creator path is disabled until separately approved after the main-track network gate and mainnet security gates.
 - One rate-limited sponsorship of at most 0.005 tBNB.
 - Mandatory bounded authority.
 - Operator-configured global capacity.
@@ -427,6 +525,8 @@ creator.createDraft
 creator.updateDraft
 creator.prepareAuthority
 creator.confirmAuthority
+creator.prepareIdentityOwnership
+creator.confirmIdentityOwnership
 creator.deploy
 creator.getDeployment
 creator.retryDeployment
@@ -452,13 +552,13 @@ All errors return a structured JSON envelope with code, safe message, request ID
 ### Integration
 
 - SIWE.
-- Altana grant, verification, expiry, renewal, and revocation.
+- Browser/passkey-controlled Altana grant, one-time bounded-session handoff, Studio/AWS injection, verification, expiry, renewal, and revocation.
 - Template materialization.
 - AgentCore deployment and reconciliation.
-- Keyless-service health.
-- ERC-8004 registration.
+- Authenticated ingress and each selected single-runtime face.
+- Custody-specific ERC-8004 registration, intended-owner verification, `agentWallet` verification, and transfer-fallback re-verification.
 - ERC-8183 negotiation and job.
-- x402/B402 request.
+- Paid X402 gateway challenge, authenticated AgentCore relay, fixed-egress B402 verification/settlement, payout-recipient check, and response delivery.
 - IPFS and Greenfield publication.
 
 ### Security
@@ -467,7 +567,10 @@ All errors return a structured JSON envelope with code, safe message, request ID
 - Arbitrary address and selector rejection.
 - Spend-cap overflow.
 - Execution after expiry or revocation.
-- Secret lookup from the keyless service.
+- Unauthenticated or malformed ingress calls reaching signing code.
+- B402 challenge tampering with network, asset, amount, facilitator host, or payout recipient.
+- Replay or automatic retry after an unknown post-payment outcome.
+- Attempts to invoke a generic signing or arbitrary transaction surface.
 - Cross-agent secret access.
 - Duplicate deployment requests.
 - SSRF through endpoints and callbacks.
@@ -486,20 +589,30 @@ All errors return a structured JSON envelope with code, safe message, request ID
 9. Open sealed Greenfield evidence.
 10. Find the agent in the marketplace.
 11. Hire it.
-12. Revoke it and confirm execution and matching stop.
+12. Complete one paid X402 request and inspect its B402 settlement and payout recipient.
+13. Revoke it and confirm execution and matching stop.
 
 ## 16. Acceptance criteria
 
 - A new user deploys and lists an agent without coding, GitHub, IDE, or AWS setup.
+- The thin Creator starts only after the marketplace, category coverage, and activation/hire gates pass.
+- The phase-zero browser-controlled Altana-to-Studio session bootstrap passes with the pinned versions before Creator implementation starts.
 - The user retains Altana administrative control.
 - The platform receives only a bounded session.
+- The ERC-8004 identity is directly controlled by the intended user owner through the pinned custody-specific flow; transfer is a tested fallback only and `agentWallet` is re-established after any transfer.
 - The agent is not listed before all verification gates pass.
-- Every listed template has a meaningful BSC testnet canary.
+- Origin, owner claim, verification, runtime, authority, and listing states remain independent.
+- Every activated Creator strategy has a meaningful BSC testnet canary.
 - Revocation blocks the next state-changing action.
 - No arbitrary code or address reaches the runtime.
-- No plaintext secret appears outside Secrets Manager/runtime memory.
+- No administrative signer leaves the user's wallet; bounded session material exists only in the approved transient handoff, Secrets Manager, and runtime memory and is never logged or stored in PostgreSQL.
+- Paid X402 has a complete per-agent B402 configuration, authenticated gateway/relay, fixed egress, distinct settlement asset, verified Altana-admin payout, and one successful settlement canary.
 - Deployment status remains accurate through retries and partial failures.
+- The deployed Studio CLI/runtime, Agent SDK, Altana SDK, standards revisions, contract addresses, and ABI hashes match `config/standards.lock.json`.
+- The main-track network gate is closed and recorded before release: explicit organizer acceptance may allow chain 97; otherwise Creator testnet agents do not satisfy the category gate by themselves and qualifying chain-56 supply is required.
 
 ## Changelog
 
+- **1.2 — 2026-09-01:** Added the browser-controlled Altana-to-Studio integration spike, complete paid-X402/B402 deployment and settlement requirements, independent origin/claim/listing state, and reference-only readiness semantics.
+- **1.1 — 2026-09-01:** Recast the deployer as a thin audited-strategy Creator MVP, adopted Studio v0.0.13's single-runtime topology, added authenticated ingress, independent marketplace state axes, custody-specific user-owned ERC-8004 registration, standards locking, and the release-blocking BSC network gate.
 - **1.0 — 2026-09-01:** Initial approved fixed-template, platform-hosted no-code deployer plan.
