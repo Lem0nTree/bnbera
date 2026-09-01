@@ -10,15 +10,18 @@ Studio deployment path must satisfy:
   selectors, atomic limits, and bounded expiry presets;
 - `assertActionWithinPolicy` and `executionGate` fail closed for expired,
   unknown, revoked, widened, or over-spent authority. Every token/native
-  charge and cumulative bucket is explicit;
+  charge and cumulative bucket is explicit. `executionGate` also requires a
+  fresh active session read bound to the descriptor's session ID and policy
+  digest;
 - `EphemeralSessionMaterial` permits one handoff and prevents JSON/string
   serialization of the local session bytes;
 - `handoffRuntimeSession` sends material to an injected secret sink once and
   zeroes the local buffer after the sink returns;
 - `PhaseZeroEvidence` helpers create and validate a sanitized, public-only
   checkpoint record. Finalization requires correlated chain/target/selector,
-  receipt, resulting-state, and revocation observations and an explicit
-  attestor; callers cannot supply a free-form `testnet` label.
+  receipt, native/token charges, resulting-state, revocation, and authority
+  observations plus an explicit attestor; callers cannot supply a free-form
+  `testnet` label.
 
 The sink must still be implemented with a reviewed Studio/AWS secret path. A
 one-time in-memory wrapper cannot protect a misconfigured adapter, logger,

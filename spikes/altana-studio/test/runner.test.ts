@@ -33,12 +33,13 @@ const action = {
 
 const changedDigest = `0x${"11".repeat(32)}` as `0x${string}`;
 const unchangedDigest = `0x${"22".repeat(32)}` as `0x${string}`;
+const policyDigest = `0x${"aa".repeat(32)}` as `0x${string}`;
 
 function descriptorFor(inputPolicy: ScopedPolicy = policy): RuntimeSessionDescriptor {
   return {
     sessionId: "sim-session-1",
     policy: inputPolicy,
-    policyDigest: null,
+    policyDigest,
     grantTransactionHash: null,
     secretReference: null,
     grantedAtUnix: 1_700_000_001,
@@ -54,6 +55,17 @@ function fakeDriver(options: { rejectAfterRevoke?: boolean } = {}): PhaseZeroDri
         material: new EphemeralSessionMaterial(new TextEncoder().encode("simulated-only")),
       };
     },
+    async readSessionState() {
+      return {
+        sessionId: "sim-session-1",
+        policyDigest,
+        status: "active",
+        observedAtUnix: 1_700_000_001,
+        observedBlockNumber: 100n,
+        source: "test",
+        reasonCode: null,
+      };
+    },
     secretDestination: {
       provider: "local-test-only",
       reference: "simulated/altana-session",
@@ -66,6 +78,8 @@ function fakeDriver(options: { rejectAfterRevoke?: boolean } = {}): PhaseZeroDri
             provider: "local-test-only",
             reference: "simulated/altana-session",
           },
+          sessionId: "sim-session-1",
+          policyDigest,
           acceptedAtUnix: 1_700_000_002,
           consumed: true,
         };
@@ -80,6 +94,8 @@ function fakeDriver(options: { rejectAfterRevoke?: boolean } = {}): PhaseZeroDri
         transactionHash: null,
         target: action.target,
         selector: action.selector,
+        valueWei: action.valueWei,
+        spends: action.spends,
         receiptStatus: "confirmed",
         resultingStateDigest: changedDigest,
         resultingStateStatus: "changed",
@@ -94,6 +110,8 @@ function fakeDriver(options: { rejectAfterRevoke?: boolean } = {}): PhaseZeroDri
         observedBlockNumber: null,
         transactionHash: null,
         receiptStatus: "confirmed",
+        sessionId: "sim-session-1",
+        policyDigest,
         sessionStatus: "revoked",
         revocationReasonCode: "USER_REVOKED",
         reasonCode: null,
@@ -108,6 +126,8 @@ function fakeDriver(options: { rejectAfterRevoke?: boolean } = {}): PhaseZeroDri
         transactionHash: null,
         target: action.target,
         selector: action.selector,
+        valueWei: action.valueWei,
+        spends: action.spends,
         receiptStatus: options.rejectAfterRevoke === false ? "confirmed" : "rejected",
         resultingStateDigest: options.rejectAfterRevoke === false ? changedDigest : unchangedDigest,
         resultingStateStatus: options.rejectAfterRevoke === false ? "changed" : "unchanged",
@@ -122,10 +142,16 @@ test("runs every checkpoint with simulated evidence and no secret material", asy
     policy,
     action,
     cumulativeSpend: [],
+    policyBounds: {
+      maxCallEntries: 1,
+      maxSelectorsPerCall: 1,
+      maxLifetimeSeconds: 200_000_000,
+      maxSpendAtomic: 0n,
+    },
     driver: fakeDriver(),
     runId: "sim-run-1",
     attestor: createSimulationAttestor(1_700_000_006),
-    nowUnix: 1_700_000_000,
+    nowUnix: 1_700_000_001,
   });
 
   assert.equal(result.outcome, "passed");
@@ -137,6 +163,8 @@ test("runs every checkpoint with simulated evidence and no secret material", asy
   assert.equal(result.evidence.session.secretDestinationKind, "local-test-only");
   assert.equal("secretDestinationReference" in result.evidence.session, false);
   assert.equal("material" in result.evidence, false);
+  assert.equal(result.handoff?.destinationProvider, "local-test-only");
+  assert.equal(result.handoff !== null && "reference" in result.handoff, false);
 });
 
 test("blocks when the post-revocation action is not rejected", async () => {
@@ -144,10 +172,16 @@ test("blocks when the post-revocation action is not rejected", async () => {
     policy,
     action,
     cumulativeSpend: [],
+    policyBounds: {
+      maxCallEntries: 1,
+      maxSelectorsPerCall: 1,
+      maxLifetimeSeconds: 200_000_000,
+      maxSpendAtomic: 0n,
+    },
     driver: fakeDriver({ rejectAfterRevoke: false }),
     runId: "sim-run-2",
     attestor: createSimulationAttestor(1_700_000_006),
-    nowUnix: 1_700_000_000,
+    nowUnix: 1_700_000_001,
   });
 
   assert.equal(result.outcome, "blocked");
@@ -171,6 +205,12 @@ test("blocks before browser or driver access when spend evidence is unsupported"
       }],
     },
     cumulativeSpend: [],
+    policyBounds: {
+      maxCallEntries: 1,
+      maxSelectorsPerCall: 1,
+      maxLifetimeSeconds: 200_000_000,
+      maxSpendAtomic: 0n,
+    },
     driver: {
       ...driver,
       async reviewPolicy() {
@@ -179,10 +219,86 @@ test("blocks before browser or driver access when spend evidence is unsupported"
     },
     runId: "sim-run-3",
     attestor: createSimulationAttestor(1_700_000_006),
-    nowUnix: 1_700_000_000,
+    nowUnix: 1_700_000_001,
   });
 
   assert.equal(result.outcome, "blocked");
   assert.equal(reviewed, false);
   assert.equal(result.evidence.status, "blocked");
+});
+
+test("applies policy bounds before requesting a runtime session", async () => {
+  let reviewed = false;
+  let granted = false;
+  const base = fakeDriver();
+  const result = await runPhaseZeroSpike({
+    policy,
+    action,
+    cumulativeSpend: [],
+    policyBounds: {
+      maxCallEntries: 1,
+      maxSelectorsPerCall: 1,
+      maxLifetimeSeconds: 30,
+      maxSpendAtomic: 0n,
+    },
+    driver: {
+      ...base,
+      async reviewPolicy() {
+        reviewed = true;
+      },
+      async grantSession() {
+        granted = true;
+        return base.grantSession(policy);
+      },
+    },
+    runId: "sim-run-4",
+    attestor: createSimulationAttestor(1_700_000_006),
+    nowUnix: 1_700_000_001,
+  });
+
+  assert.equal(result.outcome, "blocked");
+  assert.equal(result.evidence.status, "blocked");
+  assert.equal(reviewed, false);
+  assert.equal(granted, false);
+});
+
+test("blocks before execution when the authority read is from the future", async () => {
+  let executed = false;
+  const base = fakeDriver();
+  const result = await runPhaseZeroSpike({
+    policy,
+    action,
+    cumulativeSpend: [],
+    policyBounds: {
+      maxCallEntries: 1,
+      maxSelectorsPerCall: 1,
+      maxLifetimeSeconds: 200_000_000,
+      maxSpendAtomic: 0n,
+    },
+    driver: {
+      ...base,
+      async readSessionState() {
+        return {
+          sessionId: "sim-session-1",
+          policyDigest,
+          status: "active" as const,
+          observedAtUnix: 1_700_000_002,
+          observedBlockNumber: 100n,
+          source: "test" as const,
+          reasonCode: null,
+        };
+      },
+      async executePermittedAction(input) {
+        executed = true;
+        return base.executePermittedAction(input);
+      },
+    },
+    runId: "sim-run-5",
+    attestor: createSimulationAttestor(1_700_000_006),
+    nowUnix: 1_700_000_001,
+  });
+
+  assert.equal(result.outcome, "blocked");
+  assert.equal(executed, false);
+  assert.equal(result.evidence.checkpoints.permitted_action_confirmed.state, "failed");
 });

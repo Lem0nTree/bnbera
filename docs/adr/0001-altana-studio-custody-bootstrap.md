@@ -67,7 +67,9 @@ least-privilege IAM, and the exact pinned Studio deployment path.
   access tokens never enter BNBEra, logs, build artifacts, evidence, or the
   AgentCore runtime.
 - Every state-changing action is checked against current authority state and
-  the local policy immediately before submission.
+  the local policy immediately before submission. The authority read must be
+  fresh and bound to the exact session ID and policy digest; missing or stale
+  observations fail closed.
 - Revocation or expiry blocks the next state-changing action and pauses the
   corresponding marketplace listing.
 - A successful CLI scaffold, HTTP 200, health check, or submitted transaction

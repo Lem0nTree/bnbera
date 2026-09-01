@@ -60,6 +60,10 @@ export interface RuntimeSessionDescriptor {
 export type SessionStatus = "unknown" | "active" | "expired" | "revoked";
 
 export interface SessionStateObservation {
+  /** Session identifier returned by the fresh authority read. */
+  readonly sessionId: string;
+  /** Digest of the policy observed with the session. */
+  readonly policyDigest: HexString | null;
   readonly status: SessionStatus;
   readonly observedAtUnix: number;
   readonly observedBlockNumber: bigint | null;
@@ -96,6 +100,10 @@ export interface ActionObservation {
   readonly transactionHash: TransactionHash | null;
   readonly target: Address;
   readonly selector: HexString;
+  /** Actual native value submitted/attempted by the adapter. */
+  readonly valueWei: bigint;
+  /** Actual token/native charges submitted/attempted by the adapter. */
+  readonly spends: readonly SpendCharge[];
   readonly receiptStatus: "confirmed" | "rejected" | "unknown";
   /** Public digest of the observed protocol state after this attempt. */
   readonly resultingStateDigest: HexString | null;
@@ -110,6 +118,8 @@ export interface RevocationObservation {
   readonly observedBlockNumber: bigint | null;
   readonly transactionHash: TransactionHash | null;
   readonly receiptStatus: "confirmed" | "rejected" | "unknown";
+  readonly sessionId: string;
+  readonly policyDigest: HexString | null;
   readonly sessionStatus: SessionStatus;
   readonly revocationReasonCode: string | null;
   readonly reasonCode: string | null;
@@ -128,7 +138,23 @@ export interface SecretReference {
 export interface SessionHandoffReceipt {
   readonly handoffId: string;
   readonly destination: SecretReference;
+  readonly sessionId: string;
+  readonly policyDigest: HexString | null;
   readonly acceptedAtUnix: number;
   /** The adapter must report that the one-time material was consumed. */
+  readonly consumed: true;
+}
+
+/**
+ * Sanitized handoff metadata suitable for a public runner result.  The
+ * destination reference is intentionally absent: it may be an AWS ARN or a
+ * provider-specific secret name and must remain inside the sink boundary.
+ */
+export interface PublicSessionHandoffReceipt {
+  readonly handoffId: string;
+  readonly destinationProvider: SecretReference["provider"];
+  readonly sessionId: string;
+  readonly policyDigest: HexString | null;
+  readonly acceptedAtUnix: number;
   readonly consumed: true;
 }

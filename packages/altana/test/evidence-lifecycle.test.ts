@@ -11,6 +11,7 @@ import {
   executionGate,
   finalizePhaseZeroEvidence,
   recordActionObservation,
+  recordAuthorityObservation,
   recordCheckpoint,
   recordRevocationObservation,
 } from "../src/index.ts";
@@ -41,7 +42,7 @@ const action = {
 const descriptor = {
   sessionId: "test-session",
   policy,
-  policyDigest: null,
+  policyDigest: `0x${"aa".repeat(32)}` as `0x${string}`,
   grantTransactionHash: null,
   secretReference: null,
   grantedAtUnix: 1_700_000_001,
@@ -69,6 +70,15 @@ function completeEvidence() {
       observedAtUnix: 1_700_000_001,
     });
   }
+  evidence = recordAuthorityObservation(evidence, {
+    sessionId: descriptor.sessionId,
+    policyDigest: descriptor.policyDigest,
+    status: "active",
+    observedAtUnix: 1_700_000_001,
+    observedBlockNumber: 100n,
+    source: "test",
+    reasonCode: null,
+  });
   evidence = recordActionObservation(evidence, "permitted_action_confirmed", {
     outcome: "confirmed",
     observedAtUnix: 1_700_000_002,
@@ -77,6 +87,8 @@ function completeEvidence() {
     transactionHash: null,
     target: action.target,
     selector: action.selector,
+    valueWei: action.valueWei,
+    spends: action.spends,
     receiptStatus: "confirmed",
     resultingStateDigest: changedDigest,
     resultingStateStatus: "changed",
@@ -89,6 +101,8 @@ function completeEvidence() {
     observedBlockNumber: null,
     transactionHash: null,
     receiptStatus: "confirmed",
+    sessionId: descriptor.sessionId,
+    policyDigest: descriptor.policyDigest,
     sessionStatus: "revoked",
     revocationReasonCode: "USER_REVOKED",
     reasonCode: null,
@@ -101,6 +115,8 @@ function completeEvidence() {
     transactionHash: null,
     target: action.target,
     selector: action.selector,
+    valueWei: action.valueWei,
+    spends: action.spends,
     receiptStatus: "rejected",
     resultingStateDigest: unchangedDigest,
     resultingStateStatus: "unchanged",
@@ -137,6 +153,24 @@ test("complete simulated evidence is finalized only by the simulation attestor",
   assert.equal(evidence.attestation?.level, "simulated");
 });
 
+test("finalization rejects an authority observation that is stale for the action", () => {
+  const complete = completeEvidence();
+  const stale = {
+    ...complete,
+    checkpoints: {
+      ...complete.checkpoints,
+      permitted_action_confirmed: {
+        ...complete.checkpoints.permitted_action_confirmed,
+        observedAtUnix: 1_700_000_100,
+      },
+    },
+  };
+  assert.throws(
+    () => finalizePhaseZeroEvidence(stale, createSimulationAttestor(1_700_000_101)),
+    (error: unknown) => error instanceof AltanaBoundaryError && error.code === "INVALID_EVIDENCE_VALUE",
+  );
+});
+
 test("live evidence cannot pass without action and revocation transaction/block observations", () => {
   const liveAttestor = {
     kind: "authorized-live-adapter" as const,
@@ -168,6 +202,34 @@ test("action evidence must match the expected chain, target, and selector", () =
       transactionHash: null,
       target: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       selector: action.selector,
+      valueWei: action.valueWei,
+      spends: action.spends,
+      receiptStatus: "confirmed",
+      resultingStateDigest: changedDigest,
+      resultingStateStatus: "changed",
+      reasonCode: null,
+    }),
+    (error: unknown) => error instanceof AltanaBoundaryError && error.code === "INVALID_EVIDENCE_VALUE",
+  );
+});
+
+test("action evidence must match the actual native value and spend charges", () => {
+  let evidence = attachExpectedAction(
+    attachPolicyToEvidence(createPhaseZeroEvidenceTemplate(1_700_000_000), policy),
+    action,
+    97,
+  );
+  assert.throws(
+    () => recordActionObservation(evidence, "permitted_action_confirmed", {
+      outcome: "confirmed",
+      observedAtUnix: 1_700_000_001,
+      chainId: 97,
+      observedBlockNumber: null,
+      transactionHash: null,
+      target: action.target,
+      selector: action.selector,
+      valueWei: 1n,
+      spends: [{ token: "native", amountAtomic: 1n, period: "day" }],
       receiptStatus: "confirmed",
       resultingStateDigest: changedDigest,
       resultingStateStatus: "changed",
@@ -199,6 +261,8 @@ test("execution gate fails closed for revoked authority and allows a valid bound
     executionGate({
       ...base,
       observation: {
+        sessionId: descriptor.sessionId,
+        policyDigest: descriptor.policyDigest,
         status: "active",
         observedAtUnix: 1_700_000_001,
         observedBlockNumber: 100n,
@@ -212,12 +276,15 @@ test("execution gate fails closed for revoked authority and allows a valid bound
     executionGate({
       ...base,
       observation: {
+        sessionId: descriptor.sessionId,
+        policyDigest: descriptor.policyDigest,
         status: "revoked",
         observedAtUnix: 1_700_000_002,
         observedBlockNumber: 101n,
         source: "test",
         reasonCode: "AUTHORITY_REVOKED",
       },
+      nowUnix: 1_700_000_003,
     }),
     { allowed: false, reasonCode: "AUTHORITY_REVOKED" },
   );
@@ -236,6 +303,8 @@ test("execution gate rejects unsupported spend permissions", () => {
     },
     cumulativeSpend: [],
     observation: {
+      sessionId: descriptor.sessionId,
+      policyDigest: descriptor.policyDigest,
       status: "active",
       observedAtUnix: 1_700_000_001,
       observedBlockNumber: 100n,
@@ -245,4 +314,46 @@ test("execution gate rejects unsupported spend permissions", () => {
     nowUnix: 1_700_000_001,
   });
   assert.deepEqual(result, { allowed: false, reasonCode: "SPEND_NOT_ALLOWED" });
+});
+
+test("execution gate rejects unbound or stale active authority observations", () => {
+  const base = {
+    descriptor,
+    request: action,
+    cumulativeSpend: [],
+    nowUnix: 1_700_000_100,
+  };
+  const active = {
+    status: "active" as const,
+    observedAtUnix: 1_700_000_099,
+    observedBlockNumber: 100n,
+    source: "test" as const,
+    reasonCode: null,
+  };
+  assert.deepEqual(
+    executionGate({
+      ...base,
+      observation: { ...active, sessionId: "other-session", policyDigest: descriptor.policyDigest },
+    }),
+    { allowed: false, reasonCode: "SESSION_ID_MISMATCH" },
+  );
+  assert.deepEqual(
+    executionGate({
+      ...base,
+      observation: { ...active, sessionId: descriptor.sessionId, policyDigest: `0x${"bb".repeat(32)}` },
+    }),
+    { allowed: false, reasonCode: "POLICY_DIGEST_MISMATCH" },
+  );
+  assert.deepEqual(
+    executionGate({
+      ...base,
+      observation: {
+        ...active,
+        sessionId: descriptor.sessionId,
+        policyDigest: descriptor.policyDigest,
+        observedAtUnix: 1_700_000_000,
+      },
+    }),
+    { allowed: false, reasonCode: "AUTHORITY_STALE" },
+  );
 });
