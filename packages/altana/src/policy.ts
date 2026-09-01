@@ -4,8 +4,10 @@ import type {
   Address,
   CallPermission,
   ChainId,
+  CumulativeSpend,
   PermissionPeriod,
   ScopedPolicy,
+  SpendCharge,
   SpendPermission,
 } from "./types.ts";
 
@@ -249,9 +251,152 @@ export function assertCallAllowed(
   assertPolicyValidAt(policy, nowUnix);
   if (!isCallAllowed(policy, request)) {
     throw new AltanaBoundaryError(
-      request.valueWei > 0n ? "NATIVE_VALUE_EXCEEDED" : "CALL_NOT_ALLOWED",
+      typeof request.valueWei === "bigint" && request.valueWei > 0n
+        ? "NATIVE_VALUE_EXCEEDED"
+        : "CALL_NOT_ALLOWED",
       "The requested target, selector, or native value is outside the scoped policy.",
     );
+  }
+}
+
+function normalizeSpendCharge(charge: SpendCharge): SpendCharge {
+  assertBigint(charge.amountAtomic, "Spend charges must use bigint atomic values.");
+  if (charge.amountAtomic < 0n) {
+    throw new AltanaBoundaryError(
+      "INVALID_SPEND_REQUEST",
+      "A spend charge cannot be negative.",
+    );
+  }
+  if (!PERMISSION_PERIODS.has(charge.period)) {
+    throw new AltanaBoundaryError(
+      "INVALID_SPEND_REQUEST",
+      "A spend charge must use a supported bounded period.",
+    );
+  }
+  return {
+    token: charge.token === "native" ? "native" : normalizeAddress(charge.token),
+    amountAtomic: charge.amountAtomic,
+    period: charge.period,
+  };
+}
+
+function normalizeCumulativeSpend(entry: CumulativeSpend): CumulativeSpend {
+  assertBigint(entry.amountAtomic, "Cumulative spend must use bigint atomic values.");
+  if (entry.amountAtomic < 0n) {
+    throw new AltanaBoundaryError(
+      "INVALID_SPEND_REQUEST",
+      "Cumulative spend cannot be negative.",
+    );
+  }
+  if (!PERMISSION_PERIODS.has(entry.period)) {
+    throw new AltanaBoundaryError(
+      "INVALID_SPEND_REQUEST",
+      "Cumulative spend must use a supported bounded period.",
+    );
+  }
+  return {
+    token: entry.token === "native" ? "native" : normalizeAddress(entry.token),
+    amountAtomic: entry.amountAtomic,
+    period: entry.period,
+  };
+}
+
+function sameSpendBucket(
+  left: Pick<SpendPermission, "token" | "period">,
+  right: Pick<SpendPermission, "token" | "period">,
+): boolean {
+  return left.token === right.token && left.period === right.period;
+}
+
+/**
+ * Validate both call permissions and token/native spend limits. Callers must
+ * provide the usage already charged in each matching period; missing usage is
+ * treated as zero, while malformed usage fails closed.
+ */
+export function assertActionWithinPolicy(
+  policy: ScopedPolicy,
+  request: ActionRequest,
+  nowUnix: number,
+  cumulativeSpend: readonly CumulativeSpend[],
+): void {
+  assertPolicyValidAt(policy, nowUnix);
+  assertCallAllowed(policy, request, nowUnix);
+
+  if (!Array.isArray(request.spends) || !Array.isArray(cumulativeSpend)) {
+    throw new AltanaBoundaryError(
+      "SPEND_UNVERIFIED",
+      "Token and native spend must be provided explicitly before execution.",
+    );
+  }
+
+  const normalizedPolicy = normalizePolicy(policy);
+  const charges = request.spends.map(normalizeSpendCharge);
+  const usage = cumulativeSpend.map(normalizeCumulativeSpend);
+
+  const nativeCharge = charges
+    .filter((charge) => charge.token === "native")
+    .reduce((total, charge) => total + charge.amountAtomic, 0n);
+  if (nativeCharge !== request.valueWei) {
+    throw new AltanaBoundaryError(
+      "SPEND_UNVERIFIED",
+      "Native call value must match the explicit native spend charge.",
+    );
+  }
+
+  for (const previous of usage) {
+    const permission = normalizedPolicy.spend.find((candidate) =>
+      sameSpendBucket(candidate, previous),
+    );
+    if (permission === undefined) {
+      throw new AltanaBoundaryError(
+        "SPEND_UNVERIFIED",
+        "Cumulative spend contains an unsupported token or period.",
+      );
+    }
+  }
+
+  for (const permission of normalizedPolicy.spend) {
+    const prior = usage
+      .filter((entry) => sameSpendBucket(entry, permission))
+      .reduce((total, entry) => total + entry.amountAtomic, 0n);
+    if (prior > permission.limitAtomic) {
+      throw new AltanaBoundaryError(
+        "SPEND_LIMIT_EXCEEDED",
+        "Existing cumulative spend is already outside the scoped limit.",
+      );
+    }
+  }
+
+  const chargeTotals = new Map<string, SpendCharge>();
+  for (const charge of charges) {
+    const key = `${charge.token}:${charge.period}`;
+    const existing = chargeTotals.get(key);
+    chargeTotals.set(key, {
+      ...charge,
+      amountAtomic: (existing?.amountAtomic ?? 0n) + charge.amountAtomic,
+    });
+  }
+
+  for (const charge of chargeTotals.values()) {
+    const permission = normalizedPolicy.spend.find((candidate) =>
+      sameSpendBucket(candidate, charge),
+    );
+    if (permission === undefined) {
+      throw new AltanaBoundaryError(
+        "SPEND_NOT_ALLOWED",
+        "The requested token or spend period is outside the scoped policy.",
+      );
+    }
+
+    const prior = usage
+      .filter((entry) => sameSpendBucket(entry, charge))
+      .reduce((total, entry) => total + entry.amountAtomic, 0n);
+    if (prior + charge.amountAtomic > permission.limitAtomic) {
+      throw new AltanaBoundaryError(
+        "SPEND_LIMIT_EXCEEDED",
+        "The requested spend exceeds the scoped cumulative limit.",
+      );
+    }
   }
 }
 
@@ -286,8 +431,11 @@ export interface PublicPolicySummary {
   readonly adminAddress: Address;
   readonly walletAddress: Address;
   readonly sessionPublicAddress: Address;
-  readonly allowedTargets: readonly Address[];
-  readonly allowedSelectors: readonly string[];
+  readonly calls: readonly {
+    readonly target: Address;
+    readonly selectors: readonly `0x${string}`[];
+    readonly maxNativeValueWei: string;
+  }[];
   readonly spend: readonly {
     token: Address | "native";
     limitAtomic: string;
@@ -303,8 +451,11 @@ export function toPublicPolicySummary(policy: ScopedPolicy): PublicPolicySummary
     adminAddress: normalized.adminAddress,
     walletAddress: normalized.walletAddress,
     sessionPublicAddress: normalized.sessionPublicAddress,
-    allowedTargets: normalized.calls.map((entry) => entry.target),
-    allowedSelectors: normalized.calls.flatMap((entry) => entry.selectors),
+    calls: normalized.calls.map((entry) => ({
+      target: entry.target,
+      selectors: [...entry.selectors],
+      maxNativeValueWei: entry.maxNativeValueWei.toString(10),
+    })),
     spend: normalized.spend.map((entry) => ({
       token: entry.token,
       limitAtomic: entry.limitAtomic.toString(10),

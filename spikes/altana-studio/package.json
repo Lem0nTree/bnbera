@@ -5,7 +5,10 @@
   "type": "module",
   "description": "Phase-zero adapter contract and runner for browser-controlled Altana to Agent Studio validation",
   "scripts": {
-    "test": "node --experimental-strip-types --test test/*.test.ts"
+    "build": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src test --max-warnings 0",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "engines": {
     "node": ">=22"

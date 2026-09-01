@@ -8,6 +8,10 @@ export type AltanaBoundaryErrorCode =
   | "POLICY_BOUND_EXCEEDED"
   | "CALL_NOT_ALLOWED"
   | "NATIVE_VALUE_EXCEEDED"
+  | "INVALID_SPEND_REQUEST"
+  | "SPEND_NOT_ALLOWED"
+  | "SPEND_UNVERIFIED"
+  | "SPEND_LIMIT_EXCEEDED"
   | "SESSION_MATERIAL_EMPTY"
   | "SESSION_MATERIAL_CONSUMED"
   | "SESSION_HANDOFF_FAILED"
@@ -51,4 +55,3 @@ export function safeErrorCode(error: unknown): string {
 
   return "EXTERNAL_ADAPTER_ERROR";
 }
-

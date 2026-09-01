@@ -1,18 +1,22 @@
 import {
   AltanaBoundaryError,
+  assertActionWithinPolicy,
+  attachExpectedAction,
   attachPolicyToEvidence,
   attachSessionDescriptor,
   assertEvidenceSafe,
-  assertCallAllowed,
   createPhaseZeroEvidenceTemplate,
   finalizePhaseZeroEvidence,
   handoffRuntimeSession,
+  recordActionObservation,
   recordCheckpoint,
+  recordRevocationObservation,
   safeErrorCode,
   serializePolicy,
   type ActionObservation,
   type ActionRequest,
-  type EvidenceLevel,
+  type CumulativeSpend,
+  type EvidenceAttestor,
   type PhaseZeroEvidence,
   type RuntimeSessionDescriptor,
   type RuntimeSessionSecretSink,
@@ -53,10 +57,11 @@ export interface PhaseZeroDriver {
 export interface PhaseZeroRunInput {
   readonly policy: ScopedPolicy;
   readonly action: ActionRequest;
+  readonly cumulativeSpend: readonly CumulativeSpend[];
   readonly driver: PhaseZeroDriver;
   readonly runId: string;
-  /** Must be supplied explicitly; tests use `simulated`, live runs use testnet only after proof. */
-  readonly evidenceLevel: Exclude<EvidenceLevel, "design_only" | "mainnet">;
+  /** Explicit attestation boundary; no caller-supplied evidence level is accepted. */
+  readonly attestor: EvidenceAttestor;
   readonly nowUnix?: number;
 }
 
@@ -78,10 +83,15 @@ function failEvidence(
   const safeReason = /^[A-Z][A-Z0-9_]{1,63}$/.test(reasonCode)
     ? reasonCode
     : "PHASE_ZERO_BLOCKED";
-  return recordCheckpoint(evidence, step, {
+  const failed = recordCheckpoint(evidence, step, {
     state: "failed",
     reasonCode: safeReason,
   });
+  return {
+    ...failed,
+    status: "blocked",
+    limitations: [...failed.limitations, `Phase-zero execution stopped at ${step}.`],
+  };
 }
 
 /**
@@ -89,6 +99,10 @@ function failEvidence(
  * not know how Altana, a browser, Studio, AWS, or AgentCore work; that is
  * intentional. Production adapters must be reviewed against the pinned
  * versions and must return only the public observations represented here.
+ *
+ * The runner is deliberately locked to BSC testnet. A simulation attestor can
+ * exercise the control flow without claiming live chain or custody evidence;
+ * only an authorized live adapter may issue the `testnet` level.
  */
 export async function runPhaseZeroSpike(input: PhaseZeroRunInput): Promise<PhaseZeroRunResult> {
   const nowUnix = input.nowUnix ?? Math.floor(Date.now() / 1000);
@@ -97,7 +111,15 @@ export async function runPhaseZeroSpike(input: PhaseZeroRunInput): Promise<Phase
   let currentStep: Parameters<typeof recordCheckpoint>[1] = "policy_reviewed";
 
   try {
-    assertCallAllowed(input.policy, input.action, nowUnix);
+    if (input.policy.chainId !== 97) {
+      throw new AltanaBoundaryError(
+        "INVALID_CHAIN",
+        "The phase-zero Studio spike is locked to BSC testnet (chain 97).",
+      );
+    }
+
+    evidence = attachExpectedAction(evidence, input.action, input.policy.chainId);
+    assertActionWithinPolicy(input.policy, input.action, nowUnix, input.cumulativeSpend);
     evidence = attachPolicyToEvidence(evidence, input.policy);
 
     currentStep = "policy_reviewed";
@@ -119,7 +141,6 @@ export async function runPhaseZeroSpike(input: PhaseZeroRunInput): Promise<Phase
     evidence = recordCheckpoint(evidence, currentStep, {
       state: "observed",
       observedAtUnix: granted.descriptor.grantedAtUnix,
-      transactionHash: granted.descriptor.grantTransactionHash,
     });
 
     currentStep = "session_handed_off";
@@ -130,11 +151,14 @@ export async function runPhaseZeroSpike(input: PhaseZeroRunInput): Promise<Phase
       sink: input.driver.secretSink,
       nowUnix,
     });
+    // A public report may carry only a logical provider kind and acceptance
+    // boolean. The actual secret destination/reference stays inside the sink.
     evidence = {
       ...evidence,
       session: {
         ...evidence.session,
-        secretDestinationReference: handoff.destination.reference,
+        secretHandoffAccepted: true,
+        secretDestinationKind: handoff.destination.provider,
       },
     };
     evidence = recordCheckpoint(evidence, currentStep, {
@@ -147,6 +171,7 @@ export async function runPhaseZeroSpike(input: PhaseZeroRunInput): Promise<Phase
       descriptor: granted.descriptor,
       request: input.action,
     });
+    evidence = recordActionObservation(evidence, currentStep, action);
     if (action.outcome !== "confirmed") {
       throw new AltanaBoundaryError(
         "SESSION_HANDOFF_FAILED",
@@ -154,15 +179,10 @@ export async function runPhaseZeroSpike(input: PhaseZeroRunInput): Promise<Phase
         { retriable: true },
       );
     }
-    evidence = recordCheckpoint(evidence, currentStep, {
-      state: "observed",
-      observedAtUnix: action.observedAtUnix,
-      transactionHash: action.transactionHash,
-      reasonCode: action.reasonCode,
-    });
 
     currentStep = "revocation_confirmed";
     const revocation = await input.driver.revokeSession(granted.descriptor);
+    evidence = recordRevocationObservation(evidence, revocation);
     if (revocation.outcome !== "confirmed" || revocation.sessionStatus !== "revoked") {
       throw new AltanaBoundaryError(
         "SESSION_HANDOFF_FAILED",
@@ -170,31 +190,21 @@ export async function runPhaseZeroSpike(input: PhaseZeroRunInput): Promise<Phase
         { retriable: true },
       );
     }
-    evidence = recordCheckpoint(evidence, currentStep, {
-      state: "observed",
-      observedAtUnix: revocation.observedAtUnix,
-      transactionHash: revocation.transactionHash,
-      reasonCode: revocation.reasonCode,
-    });
 
     currentStep = "post_revocation_action_rejected";
     const afterRevocation = await input.driver.executeAfterRevocation({
       descriptor: granted.descriptor,
       request: input.action,
     });
+    evidence = recordActionObservation(evidence, currentStep, afterRevocation);
     if (afterRevocation.outcome !== "rejected") {
       throw new AltanaBoundaryError(
         "SESSION_HANDOFF_FAILED",
         "The state-changing action was not rejected after revocation.",
       );
     }
-    evidence = recordCheckpoint(evidence, currentStep, {
-      state: "rejected",
-      observedAtUnix: afterRevocation.observedAtUnix,
-      reasonCode: afterRevocation.reasonCode ?? "AUTHORITY_REVOKED",
-    });
 
-    const finalEvidence = finalizePhaseZeroEvidence(evidence, "passed", input.evidenceLevel);
+    const finalEvidence = finalizePhaseZeroEvidence(evidence, input.attestor);
     assertEvidenceSafe(finalEvidence);
     return {
       outcome: "passed",
@@ -202,9 +212,8 @@ export async function runPhaseZeroSpike(input: PhaseZeroRunInput): Promise<Phase
       handoff,
     };
   } catch (error) {
-    const code = safeErrorCode(error);
     try {
-      evidence = failEvidence(evidence, currentStep, code);
+      evidence = failEvidence(evidence, currentStep, safeErrorCode(error));
     } catch {
       // Do not let malformed adapter output replace the safe generic report.
       evidence = {
@@ -213,11 +222,10 @@ export async function runPhaseZeroSpike(input: PhaseZeroRunInput): Promise<Phase
         limitations: [...evidence.limitations, "Adapter output could not be represented safely."],
       };
     }
-    const finalEvidence = finalizePhaseZeroEvidence(evidence, "blocked", input.evidenceLevel);
-    assertEvidenceSafe(finalEvidence);
+    assertEvidenceSafe(evidence);
     return {
       outcome: "blocked",
-      evidence: finalEvidence,
+      evidence,
       handoff,
     };
   }

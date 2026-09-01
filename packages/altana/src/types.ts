@@ -71,23 +71,47 @@ export interface ActionRequest {
   readonly target: Address;
   readonly selector: HexString;
   readonly valueWei: bigint;
+  /** Every token/native charge for this action must be explicit. */
+  readonly spends: readonly SpendCharge[];
+}
+
+export interface SpendCharge {
+  readonly token: Address | "native";
+  readonly amountAtomic: bigint;
+  readonly period: PermissionPeriod;
+}
+
+export interface CumulativeSpend {
+  readonly token: Address | "native";
+  readonly amountAtomic: bigint;
+  readonly period: PermissionPeriod;
 }
 
 export interface ActionObservation {
   readonly outcome: "confirmed" | "rejected" | "unknown";
   readonly observedAtUnix: number;
   readonly chainId: ChainId;
+  readonly observedBlockNumber: bigint | null;
+  /** Null is valid only for local/simulated observations. */
   readonly transactionHash: TransactionHash | null;
-  readonly target: Address | null;
-  readonly selector: HexString | null;
+  readonly target: Address;
+  readonly selector: HexString;
+  readonly receiptStatus: "confirmed" | "rejected" | "unknown";
+  /** Public digest of the observed protocol state after this attempt. */
+  readonly resultingStateDigest: HexString | null;
+  readonly resultingStateStatus: "changed" | "unchanged" | "unknown";
   readonly reasonCode: string | null;
 }
 
 export interface RevocationObservation {
   readonly outcome: "confirmed" | "rejected" | "unknown";
   readonly observedAtUnix: number;
+  readonly chainId: ChainId;
+  readonly observedBlockNumber: bigint | null;
   readonly transactionHash: TransactionHash | null;
+  readonly receiptStatus: "confirmed" | "rejected" | "unknown";
   readonly sessionStatus: SessionStatus;
+  readonly revocationReasonCode: string | null;
   readonly reasonCode: string | null;
 }
 
@@ -108,4 +132,3 @@ export interface SessionHandoffReceipt {
   /** The adapter must report that the one-time material was consumed. */
   readonly consumed: true;
 }
-

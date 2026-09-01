@@ -24,7 +24,7 @@
   "aws": {
     "region": null,
     "secretDestination": "studio-delegated-secret-channel",
-    "runtimeSecretReference": null,
+    "publicDestinationKind": "studio-delegated-secret-channel",
     "runtimeRoleReference": null
   },
   "policy": {

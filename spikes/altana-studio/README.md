@@ -132,9 +132,11 @@ runner consumes it once, passes it to the approved secret sink, and zeroes
 its local byte buffer after the sink returns. The sink must not log, persist,
 return, or copy the material outside the selected Studio/AWS secret path.
 
-After the handoff, record only the secret reference/name, not its value. The
-database descriptor must contain `secretReference` only after the external
-sink returns a successful `SessionHandoffReceipt`.
+After the handoff, public evidence records only the logical destination kind
+and `secretHandoffAccepted: true`, never an ARN, secret name, or value. An
+internal database descriptor may contain `secretReference` only after the
+external sink returns a successful `SessionHandoffReceipt`; that reference
+must not be copied into public evidence.
 
 ### 5. Execute, revoke, and prove rejection
 
@@ -164,8 +166,8 @@ the following distinctions:
 
 The report must include the exact Studio CLI/runtime and Altana SDK versions,
 the selected alternative, policy summary, public transaction references,
-secret destination reference, and any blocked step. A URL, HTTP 200, health
-check, or submitted transaction is not proof of this complete sequence.
+destination kind/acceptance boolean, and any blocked step. A URL, HTTP 200,
+health check, or submitted transaction is not proof of this complete sequence.
 
 ## Required credentials and interactions still outstanding
 
@@ -184,4 +186,3 @@ The following are intentionally not present in this branch:
 Until those items are observed and recorded, A2's phase-zero acceptance is
 blocked and A6 Creator implementation must not treat this scaffold as proof
 of custody compatibility.
-

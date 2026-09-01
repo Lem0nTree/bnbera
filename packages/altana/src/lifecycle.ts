@@ -1,6 +1,11 @@
 import { AltanaBoundaryError } from "./errors.ts";
-import { assertCallAllowed, assertPolicyValidAt } from "./policy.ts";
-import type { ActionRequest, RuntimeSessionDescriptor, SessionStateObservation } from "./types.ts";
+import { assertActionWithinPolicy, assertPolicyValidAt } from "./policy.ts";
+import type {
+  ActionRequest,
+  CumulativeSpend,
+  RuntimeSessionDescriptor,
+  SessionStateObservation,
+} from "./types.ts";
 
 export interface ExecutionGate {
   readonly allowed: boolean;
@@ -16,6 +21,7 @@ export function executionGate(input: {
   readonly descriptor: RuntimeSessionDescriptor;
   readonly observation: SessionStateObservation;
   readonly request: ActionRequest;
+  readonly cumulativeSpend: readonly CumulativeSpend[];
   readonly nowUnix: number;
 }): ExecutionGate {
   try {
@@ -31,7 +37,12 @@ export function executionGate(input: {
       };
     }
     assertPolicyValidAt(input.descriptor.policy, input.nowUnix);
-    assertCallAllowed(input.descriptor.policy, input.request, input.nowUnix);
+    assertActionWithinPolicy(
+      input.descriptor.policy,
+      input.request,
+      input.nowUnix,
+      input.cumulativeSpend,
+    );
     return { allowed: true, reasonCode: null };
   } catch (error) {
     return {
@@ -50,4 +61,3 @@ export function assertExecutionAllowed(input: Parameters<typeof executionGate>[0
     );
   }
 }
-

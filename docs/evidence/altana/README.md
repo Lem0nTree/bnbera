@@ -12,7 +12,8 @@ public and sanitized:
 
 - record public addresses, policy bounds, version strings, transaction hashes,
   block references, and non-secret error codes;
-- record only a secret destination/reference, never the referenced value;
+- record only `secretHandoffAccepted` and a non-sensitive destination kind
+  (for example `aws-secrets-manager`), never an ARN, name, or referenced value;
 - never record private keys, seed phrases, passkey exports, serialized
   sessions, cookies, access tokens, passwords, raw environment files, or
   unredacted logs;
@@ -23,4 +24,3 @@ public and sanitized:
 The runner's output is still subject to A0/A11 review. A valid transaction
 hash, HTTP response, or health check on its own does not prove the complete
 custody sequence.
-

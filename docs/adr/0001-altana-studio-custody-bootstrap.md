@@ -61,7 +61,8 @@ least-privilege IAM, and the exact pinned Studio deployment path.
 - No unlimited expiry or wildcard selector is accepted.
 - Only the bounded runtime session crosses the one-time Studio/AWS secret
   boundary.
-- PostgreSQL stores a secret reference and public policy metadata only.
+- PostgreSQL stores a secret reference and public policy metadata only; public
+  evidence stores only a logical destination kind and handoff acceptance.
 - The administrative key, passkey export, serialized session, cookies, and
   access tokens never enter BNBEra, logs, build artifacts, evidence, or the
   AgentCore runtime.
@@ -107,6 +108,12 @@ than reimplementing custody assumptions:
 - `handoffRuntimeSession` for one-time material consumption;
 - `executionGate` immediately before a write after a fresh authority read;
 - `PhaseZeroEvidence` and runner checkpoint semantics for deployment gates.
+
+The root workspace and CI must include both `packages/*` and
+`spikes/*` (or invoke `@bnbera/altana-studio-spike` explicitly) so the
+package-level `build`, `lint`, `typecheck`, and `test` scripts run recursively.
+The spike remains a test-only package until the live phase-zero evidence is
+accepted.
 
 A6 may not start the Creator deployment path as accepted until this ADR is
 accepted or A0 explicitly records a replacement ADR with equivalent or
@@ -179,4 +186,3 @@ observations**, not passed.
 - [BNB Agent Studio security](https://docs.bnbchain.org/developer-kit/bnbchain-studio/security/)
   (official deployment and secret-handling guidance to apply during adapter
   implementation).
-

@@ -3,8 +3,8 @@
   "status": "not_run",
   "evidenceLevel": "design_only",
   "runId": null,
-  "generatedAtUnix": null,
   "selectedAlternative": null,
+  "generatedAtUnix": null,
   "versions": {
     "studioCli": "0.0.13",
     "studioRuntime": null,
@@ -16,19 +16,12 @@
     "awsRegion": null,
     "runtimeName": null
   },
-  "policy": {
-    "chainId": null,
-    "adminAddress": null,
-    "walletAddress": null,
-    "sessionPublicAddress": null,
-    "allowedTargets": [],
-    "allowedSelectors": [],
-    "spend": [],
-    "expiresAtUnix": null
-  },
+  "policy": null,
+  "expectedAction": null,
   "session": {
     "sessionId": null,
-    "secretDestinationReference": null,
+    "secretHandoffAccepted": false,
+    "secretDestinationKind": null,
     "adminKeyEnteredPlatform": false,
     "sessionMaterialPersistedInDatabase": false
   },
@@ -36,40 +29,89 @@
     "policy_reviewed": {
       "state": "not_observed",
       "observedAtUnix": null,
+      "chainId": null,
+      "observedBlockNumber": null,
+      "target": null,
+      "selector": null,
       "transactionHash": null,
-      "reasonCode": null
+      "receiptStatus": null,
+      "resultingStateDigest": null,
+      "resultingStateStatus": null,
+      "reasonCode": null,
+      "revocationReasonCode": null
     },
     "session_granted": {
       "state": "not_observed",
       "observedAtUnix": null,
+      "chainId": null,
+      "observedBlockNumber": null,
+      "target": null,
+      "selector": null,
       "transactionHash": null,
-      "reasonCode": null
+      "receiptStatus": null,
+      "resultingStateDigest": null,
+      "resultingStateStatus": null,
+      "reasonCode": null,
+      "revocationReasonCode": null
     },
     "session_handed_off": {
       "state": "not_observed",
       "observedAtUnix": null,
+      "chainId": null,
+      "observedBlockNumber": null,
+      "target": null,
+      "selector": null,
       "transactionHash": null,
-      "reasonCode": null
+      "receiptStatus": null,
+      "resultingStateDigest": null,
+      "resultingStateStatus": null,
+      "reasonCode": null,
+      "revocationReasonCode": null
     },
     "permitted_action_confirmed": {
       "state": "not_observed",
       "observedAtUnix": null,
+      "chainId": null,
+      "observedBlockNumber": null,
+      "target": null,
+      "selector": null,
       "transactionHash": null,
-      "reasonCode": null
+      "receiptStatus": null,
+      "resultingStateDigest": null,
+      "resultingStateStatus": null,
+      "reasonCode": null,
+      "revocationReasonCode": null
     },
     "revocation_confirmed": {
       "state": "not_observed",
       "observedAtUnix": null,
+      "chainId": null,
+      "observedBlockNumber": null,
+      "target": null,
+      "selector": null,
       "transactionHash": null,
-      "reasonCode": null
+      "receiptStatus": null,
+      "resultingStateDigest": null,
+      "resultingStateStatus": null,
+      "reasonCode": null,
+      "revocationReasonCode": null
     },
     "post_revocation_action_rejected": {
       "state": "not_observed",
       "observedAtUnix": null,
+      "chainId": null,
+      "observedBlockNumber": null,
+      "target": null,
+      "selector": null,
       "transactionHash": null,
-      "reasonCode": null
+      "receiptStatus": null,
+      "resultingStateDigest": null,
+      "resultingStateStatus": null,
+      "reasonCode": null,
+      "revocationReasonCode": null
     }
   },
+  "attestation": null,
   "requiredAccess": [
     "Altana browser/passkey test account",
     "BNB testnet wallet with bounded funds",
