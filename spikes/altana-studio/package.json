@@ -1,0 +1,13 @@
+{
+  "name": "@bnbera/altana-studio-spike",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Phase-zero adapter contract and runner for browser-controlled Altana to Agent Studio validation",
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

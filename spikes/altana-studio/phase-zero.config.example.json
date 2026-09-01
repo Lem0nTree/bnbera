@@ -1,0 +1,52 @@
+{
+  "status": "not_run",
+  "selectedAlternative": null,
+  "network": "bsc-testnet",
+  "chainId": 97,
+  "studio": {
+    "cliVersion": "0.0.13",
+    "runtimeVersion": null,
+    "runtime": "agentcore",
+    "walletKind": "altana",
+    "protocols": [
+      "A2A",
+      "MCP",
+      "X402"
+    ],
+    "storageProvider": "ipfs"
+  },
+  "altana": {
+    "sdkVersion": null,
+    "administratorInteraction": "browser-passkey",
+    "sessionRegistration": null,
+    "sessionSerializationObserved": false
+  },
+  "aws": {
+    "region": null,
+    "secretDestination": "studio-delegated-secret-channel",
+    "runtimeSecretReference": null,
+    "runtimeRoleReference": null
+  },
+  "policy": {
+    "targetContract": null,
+    "selector": null,
+    "maxNativeValueWei": "0",
+    "tokenSpendLimitAtomic": null,
+    "expiryUnix": null
+  },
+  "observations": {
+    "grantTransactionHash": null,
+    "permittedActionTransactionHash": null,
+    "revocationTransactionHash": null,
+    "postRevocationReasonCode": null
+  },
+  "requiredSecretReferences": [
+    "ALTANA_BROWSER_TEST_ACCOUNT",
+    "BSC_TESTNET_RPC_URL",
+    "AWS_STUDIO_SECRET_DESTINATION"
+  ],
+  "limitations": [
+    "Example only. Null values are intentional and must be filled from an authorized run.",
+    "Never put credential values, session bytes, passkey exports, or raw environment files in this document."
+  ]
+}
