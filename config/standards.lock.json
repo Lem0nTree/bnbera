@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 1,
+  "lockStatus": "candidate",
+  "generatedAt": "2026-09-01",
+  "sources": {
+    "bscNetworks": {
+      "url": "https://docs.bnbchain.org/bnb-smart-chain/developers/wallet-configuration/"
+    },
+    "erc8004Spec": {
+      "url": "https://github.com/ethereum/ERCs",
+      "commit": "503591a6e80e6e1affdd6403341e25269141f046"
+    },
+    "erc8004Contracts": {
+      "url": "https://github.com/erc-8004/erc-8004-contracts"
+    },
+    "erc8183Spec": {
+      "url": "https://github.com/ethereum/ERCs",
+      "commit": "a078cab5cc8e9581c15f76c091ed96eed28f02f7"
+    },
+    "apexContracts": {
+      "url": "https://github.com/bnb-chain/apex-contracts",
+      "commit": "b40b18011407ba13516661d3784bcb727a0c7794"
+    },
+    "agentStudioCli": {
+      "url": "https://docs.bnbchain.org/developer-kit/bnbchain-studio/cli-reference/"
+    },
+    "greenfieldEndpoints": {
+      "url": "https://docs.bnbchain.org/bnb-greenfield/for-developers/network-endpoint/endpoints/"
+    },
+    "altanaNetworks": {
+      "mainnetUrl": "https://docs.altana.network/concepts/networks",
+      "testnetUrl": "https://docs.altana.network/concepts/networks/testnet"
+    }
+  },
+  "toolchain": {
+    "node": "22.x",
+    "pnpm": "10.15.1",
+    "agentStudioCli": {
+      "package": "@bnbagent/studio-cli",
+      "version": "0.0.13",
+      "integrity": null,
+      "verificationStatus": "pending-package-integrity"
+    },
+    "agentStudioRuntime": {
+      "package": "@bnbagent/studio-runtime",
+      "version": "0.0.13",
+      "integrity": null,
+      "verificationStatus": "pending-package-integrity"
+    },
+    "altanaSdk": {
+      "package": null,
+      "version": null,
+      "integrity": null,
+      "verificationStatus": "unresolved"
+    }
+  },
+  "networks": {
+    "56": {
+      "name": "bsc-mainnet",
+      "environment": "mainnet",
+      "erc8004": {
+        "identityRegistry": "0x8004a169fb4a3325136eb29fa0ceb6d2e539a432",
+        "reputationRegistry": "0x8004baa17c55a88189ae136b182e5fda19de9b63",
+        "validationRegistry": null,
+        "abiHashes": {
+          "identityRegistry": null,
+          "reputationRegistry": null
+        },
+        "verificationStatus": "pending-bytecode-and-abi-hash"
+      },
+      "erc8183": {
+        "commerceProxy": null,
+        "routerProxy": null,
+        "policy": null,
+        "paymentToken": null,
+        "verificationStatus": "pending-address-extraction-and-bytecode-check"
+      },
+      "b402": {
+        "enabled": false,
+        "facilitatorUrl": null,
+        "payTo": null,
+        "asset": null,
+        "trustedSpenders": [],
+        "verificationStatus": "blocked-pending-paid-canary"
+      }
+    },
+    "97": {
+      "name": "bsc-testnet",
+      "environment": "testnet",
+      "erc8004": {
+        "identityRegistry": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+        "reputationRegistry": "0x8004b663056a597dffe9ecc1965a193b7388713",
+        "validationRegistry": null,
+        "abiHashes": {
+          "identityRegistry": null,
+          "reputationRegistry": null
+        },
+        "verificationStatus": "pending-bytecode-and-abi-hash"
+      },
+      "erc8183": {
+        "commerceProxy": null,
+        "routerProxy": null,
+        "policy": null,
+        "paymentToken": null,
+        "verificationStatus": "blocked-policy-address-conflict"
+      },
+      "b402": {
+        "enabled": false,
+        "facilitatorUrl": null,
+        "payTo": null,
+        "asset": null,
+        "trustedSpenders": [],
+        "verificationStatus": "blocked-pending-domain-fix-and-paid-canary"
+      }
+    }
+  },
+  "greenfield": {
+    "environment": "testnet",
+    "networkId": "greenfield_5600-1",
+    "sdkChainId": "5600",
+    "sdkPackage": "@bnb-chain/greenfield-js-sdk",
+    "sdkVersion": null,
+    "storageProviders": [],
+    "selectionPolicy": "official-allowlist-with-runtime-health-check",
+    "verificationStatus": "pending-sdk-pin-and-provider-allowlist"
+  },
+  "altana": {
+    "mainnet": {
+      "relay": null,
+      "keyStore": null,
+      "controller": null,
+      "verificationStatus": "pending-address-capture-and-code-check"
+    },
+    "testnet": {
+      "relay": null,
+      "keyStore": null,
+      "controller": null,
+      "verificationStatus": "pending-address-capture-and-code-check"
+    }
+  },
+  "releaseGates": {
+    "bscMainTrackNetworkDecision": "unresolved",
+    "erc8004ValidationRegistry": "disabled-no-official-bsc-address",
+    "erc8183TestnetPolicyConflict": {
+      "readmeCandidate": "0x4f4678d4439fec812ac7674bb3efb4c8f5fb78a6",
+      "addressFileCandidate": "0xd6a4217588f6b1f5657a92a3e94e6422ad771cea",
+      "status": "must-verify-bytecode-linkage-and-authoritative-docs"
+    },
+    "b402HostedSettlement": "disabled-until-real-facilitator-canary",
+    "greenfieldProvider": "must-select-from-official-allowlist-at-runtime"
+  },
+  "requiredVerification": [
+    "eth_chainId",
+    "eth_getCode for every configured contract",
+    "proxy implementation and linkage checks",
+    "ABI SHA-256 verification from pinned source",
+    "payment token address, decimals, name, symbol, and domain separator",
+    "package integrity verification",
+    "testnet paid canary before enabling B402",
+    "Greenfield seal, readback, and content-hash verification"
+  ]
+}
