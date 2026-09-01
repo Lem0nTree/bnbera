@@ -1,0 +1,29 @@
+{
+  "name": "@bnbera/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./schema": {
+      "types": "./dist/schema.d.ts",
+      "import": "./dist/schema.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue",
+    "db:check": "drizzle-kit check --config drizzle.config.ts",
+    "lint": "eslint src --max-warnings 0",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@bnbera/domain": "workspace:*",
+    "drizzle-orm": "0.38.3",
+    "pg": "8.13.1"
+  }
+}

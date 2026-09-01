@@ -1,0 +1,31 @@
+{
+  "name": "bnbera",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.15.1",
+  "engines": {
+    "node": ">=22.0.0 <23"
+  },
+  "scripts": {
+    "build": "pnpm --recursive --if-present run build",
+    "clean": "pnpm --recursive --if-present run clean",
+    "db:generate": "pnpm exec drizzle-kit generate --config packages/db/drizzle.config.ts",
+    "db:check": "pnpm exec drizzle-kit check --config packages/db/drizzle.config.ts",
+    "lint": "pnpm --recursive --if-present run lint",
+    "test": "pnpm --recursive --if-present run test",
+    "typecheck": "pnpm --recursive --if-present run typecheck",
+    "check": "pnpm build && pnpm lint && pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@types/pg": "8.11.10",
+    "@typescript-eslint/eslint-plugin": "8.18.2",
+    "@typescript-eslint/parser": "8.18.2",
+    "drizzle-kit": "0.30.2",
+    "eslint": "9.17.0",
+    "tsx": "4.19.2",
+    "typescript": "5.7.2",
+    "vitest": "2.1.8"
+  }
+}

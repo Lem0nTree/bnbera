@@ -1,0 +1,19 @@
+# Dependencies and generated output
+node_modules/
+dist/
+coverage/
+.turbo/
+.drizzle/
+*.tsbuildinfo
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local tooling
+.DS_Store
+*.log
+pnpm-debug.log*
