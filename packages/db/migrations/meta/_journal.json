@@ -8,6 +8,27 @@
       "when": 1788294035106,
       "tag": "0000_round_wallflower",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788305592883,
+      "tag": "0001_identity_ingestion",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788305786795,
+      "tag": "0002_observation_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788305934211,
+      "tag": "0003_service_probe_results",
+      "breakpoints": true
     }
   ]
 }

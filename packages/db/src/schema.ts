@@ -188,6 +188,76 @@ export const agentDiscoverySources = pgTable(
   ]
 );
 
+/** Raw identity-scoped service observations collected before a marketplace
+ * version exists. A4 may promote verified observations to agent_services. */
+export const agentServiceObservations = pgTable(
+  "agent_service_observations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    identityId: uuid("identity_id")
+      .notNull()
+      .references(() => erc8004Identities.id, { onDelete: "cascade" }),
+    kind: serviceKindEnum("kind").notNull(),
+    url: text("url").notNull(),
+    protocolVersion: varchar("protocol_version", { length: 128 }).notNull(),
+    discoverySource: discoverySourceEnum("discovery_source").notNull(),
+    validationStatus: serviceValidationStatusEnum("validation_status").notNull().default("pending"),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    latencyMs: integer("latency_ms"),
+    safeCapabilityProbe: jsonb("safe_capability_probe").$type<Record<string, unknown>>(),
+    capabilityManifestDigest: varchar("capability_manifest_digest", { length: 64 }),
+    createdAt: now(),
+    updatedAt: now()
+  },
+  (table) => [
+    uniqueIndex("agent_service_observation_unique").on(table.identityId, table.kind, table.url),
+    index("agent_service_observation_validation_idx").on(table.validationStatus, table.observedAt)
+  ]
+);
+
+export const agentServiceProbeResults = pgTable(
+  "agent_service_probe_results",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    identityId: uuid("identity_id")
+      .notNull()
+      .references(() => erc8004Identities.id, { onDelete: "cascade" }),
+    kind: serviceKindEnum("kind").notNull(),
+    url: text("url").notNull(),
+    validationStatus: serviceValidationStatusEnum("validation_status").notNull(),
+    statusCode: integer("status_code"),
+    latencyMs: integer("latency_ms"),
+    safeCapabilityProbe: jsonb("safe_capability_probe").$type<Record<string, unknown>>(),
+    errorCode: varchar("error_code", { length: 64 }),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    index("agent_service_probe_identity_time_idx").on(table.identityId, table.kind, table.url, table.observedAt),
+    index("agent_service_probe_status_idx").on(table.validationStatus, table.observedAt)
+  ]
+);
+
+export const agentCapabilityObservations = pgTable(
+  "agent_capability_observations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    identityId: uuid("identity_id")
+      .notNull()
+      .references(() => erc8004Identities.id, { onDelete: "cascade" }),
+    source: discoverySourceEnum("source").notNull(),
+    schemaVersion: varchar("schema_version", { length: 64 }).notNull(),
+    capabilityManifest: jsonb("capability_manifest").$type<Record<string, unknown>>().notNull(),
+    manifestDigest: varchar("manifest_digest", { length: 64 }).notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    uniqueIndex("agent_capability_observation_unique").on(table.identityId, table.schemaVersion, table.manifestDigest),
+    index("agent_capability_observation_source_idx").on(table.source, table.observedAt)
+  ]
+);
+
 export const erc8004ChainObservations = pgTable(
   "erc8004_chain_observations",
   {
@@ -204,6 +274,7 @@ export const erc8004ChainObservations = pgTable(
     normalizedOwner: varchar("normalized_owner", { length: 42 }),
     normalizedAgentUri: text("normalized_agent_uri"),
     normalizedAgentWallet: varchar("normalized_agent_wallet", { length: 42 }),
+    observedFields: jsonb("observed_fields").$type<readonly string[]>().notNull(),
     firstObservedAt: timestamp("first_observed_at", { withTimezone: true }).notNull(),
     canonicalizedAt: timestamp("canonicalized_at", { withTimezone: true }),
     orphanedAt: timestamp("orphaned_at", { withTimezone: true }),
@@ -234,6 +305,49 @@ export const chainIngestionCheckpoints = pgTable(
   },
   (table) => [
     uniqueIndex("chain_ingestion_checkpoint_unique").on(table.chainId, table.identityRegistry)
+  ]
+);
+
+export const agentClaimEvents = pgTable(
+  "agent_claim_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    identityId: uuid("identity_id")
+      .notNull()
+      .references(() => erc8004Identities.id, { onDelete: "cascade" }),
+    eventType: varchar("event_type", { length: 32 }).notNull(),
+    claimantAddress: varchar("claimant_address", { length: 42 }),
+    observedOwnerAddress: varchar("observed_owner_address", { length: 42 }),
+    observedAgentWallet: varchar("observed_agent_wallet", { length: 42 }),
+    proofDigest: varchar("proof_digest", { length: 64 }),
+    reason: varchar("reason", { length: 500 }).notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    index("agent_claim_event_identity_time_idx").on(table.identityId, table.occurredAt),
+    index("agent_claim_event_type_idx").on(table.eventType, table.occurredAt)
+  ]
+);
+
+export const agentReorgReconciliations = pgTable(
+  "agent_reorg_reconciliations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    chainId: integer("chain_id").notNull(),
+    identityRegistry: varchar("identity_registry", { length: 42 }).notNull(),
+    previousScannedBlock: bigint("previous_scanned_block", { mode: "number" }).notNull(),
+    commonAncestorBlock: bigint("common_ancestor_block", { mode: "number" }).notNull(),
+    affectedIdentityKeys: jsonb("affected_identity_keys").$type<readonly string[]>().notNull(),
+    status: varchar("status", { length: 32 }).notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    errorCode: varchar("error_code", { length: 64 }),
+    createdAt: now()
+  },
+  (table) => [
+    index("agent_reorg_reconciliation_network_idx").on(table.chainId, table.identityRegistry, table.startedAt),
+    index("agent_reorg_reconciliation_status_idx").on(table.status, table.startedAt)
   ]
 );
 
@@ -708,8 +822,13 @@ export const schemaTables = {
   walletAddresses,
   erc8004Identities,
   agentDiscoverySources,
+  agentServiceObservations,
+  agentServiceProbeResults,
+  agentCapabilityObservations,
   erc8004ChainObservations,
   chainIngestionCheckpoints,
+  agentClaimEvents,
+  agentReorgReconciliations,
   agentTemplates,
   agents,
   agentVersions,
