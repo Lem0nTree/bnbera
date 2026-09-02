@@ -10,6 +10,7 @@ const clientPath = join(packageRoot, "src", "client.ts");
 describe("Wave 1 legacy upgrade path", () => {
   const combined = readFileSync(join(migrationsPath, "0001_wave1_combined.sql"), "utf8");
   const repair = readFileSync(join(migrationsPath, "0002_wave1_legacy_repair.sql"), "utf8");
+  const normalizedRepair = repair.replaceAll("\r\n", "\n");
   const journal = JSON.parse(readFileSync(join(migrationsPath, "meta", "_journal.json"), "utf8")) as {
     entries: Array<{ tag: string; when: number }>;
   };
@@ -39,10 +40,10 @@ describe("Wave 1 legacy upgrade path", () => {
     expect(repair).toContain('DROP COLUMN IF EXISTS "receipt_id"');
     expect(repair).toContain("legacy receipt ownership is inconsistent");
     expect(repair).toContain("canonical ERC-8183 identity indexes exist");
-    expect(repair).toContain("DECLARE\n  has_inconsistent_receipt_owner boolean;");
-    expect(repair).toContain("EXECUTE $receipt_ownership_check$");
-    expect(repair).toContain("$receipt_ownership_check$ INTO has_inconsistent_receipt_owner;");
-    expect(repair).not.toContain(") AND EXISTS (\n    SELECT 1\n    FROM \"payment_attempts\" attempt");
+    expect(normalizedRepair).toContain("DECLARE\n  has_inconsistent_receipt_owner boolean;");
+    expect(normalizedRepair).toContain("EXECUTE $receipt_ownership_check$");
+    expect(normalizedRepair).toContain("$receipt_ownership_check$ INTO has_inconsistent_receipt_owner;");
+    expect(normalizedRepair).not.toContain(") AND EXISTS (\n    SELECT 1\n    FROM \"payment_attempts\" attempt");
   });
 
   it("repairs all three legacy surfaces before normalized constraints are enforced", () => {
