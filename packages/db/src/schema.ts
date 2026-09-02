@@ -67,6 +67,78 @@ export const templateReleaseStatusEnum = pgEnum(
 export const draftStatusEnum = pgEnum("draft_status", enumValues(draftStatuses));
 export const deploymentStateEnum = pgEnum("deployment_state", enumValues(deploymentStates));
 export const commerceJobStatusEnum = pgEnum("commerce_job_status", enumValues(commerceJobStatuses));
+export const erc8183JobStateEnum = pgEnum("erc8183_job_state", [
+  "open",
+  "funded",
+  "submitted",
+  "completed",
+  "rejected",
+  "expired"
+]);
+export const erc8183JobEventTypeEnum = pgEnum("erc8183_job_event_type", [
+  "job_created",
+  "provider_set",
+  "budget_set",
+  "job_funded",
+  "job_submitted",
+  "job_completed",
+  "job_rejected",
+  "job_expired",
+  "reconciliation_requested",
+  "reconciliation_succeeded",
+  "reconciliation_failed"
+]);
+export const paymentRailEnum = pgEnum("payment_rail", ["x402_b402"]);
+export const paymentMethodEnum = pgEnum("payment_method", ["eip3009", "permit2_exact"]);
+export const paymentChallengeStatusEnum = pgEnum("payment_challenge_status", [
+  "issued",
+  "authorized",
+  "expired",
+  "rejected"
+]);
+export const paymentAttemptStatusEnum = pgEnum("payment_attempt_status", [
+  "challenged",
+  "authorized",
+  "relay_pending",
+  "relayed",
+  "settlement_pending",
+  "settled",
+  "delivered",
+  "rejected",
+  "expired",
+  "unknown",
+  "partial_failure",
+  "manual_review"
+]);
+export const paymentReceiptStatusEnum = pgEnum("payment_receipt_status", [
+  "settled",
+  "rejected",
+  "unknown",
+  "partial_failure"
+]);
+export const paymentEventTypeEnum = pgEnum("payment_event_type", [
+  "challenge_issued",
+  "payment_authorized",
+  "relay_started",
+  "relay_completed",
+  "settlement_observed",
+  "response_delivered",
+  "payment_rejected",
+  "payment_expired",
+  "payment_unknown",
+  "payment_partial_failure",
+  "reconciliation_requested",
+  "reconciliation_succeeded",
+  "reconciliation_failed"
+]);
+export const paymentReplayStateEnum = pgEnum("payment_replay_state", ["inflight", "consumed", "rejected"]);
+export const paymentReconciliationStateEnum = pgEnum("payment_reconciliation_state", [
+  "pending",
+  "in_progress",
+  "reconciled",
+  "failed",
+  "manual_review"
+]);
 export const evidenceStateEnum = pgEnum("evidence_state", enumValues(evidenceStates));
 export const eventActorTypeEnum = pgEnum("event_actor_type", enumValues(eventActorTypes));
 export const agentCategoryEnum = pgEnum("agent_category", enumValues(agentCategories));
@@ -709,12 +781,17 @@ export const b402SellerConfigurations = pgTable(
     agentCoreRelayAuthenticationReference: text("agent_core_relay_authentication_reference"),
     priceUsd: numeric("price_usd", { precision: 20, scale: 8 }).notNull(),
     configurationVersion: integer("configuration_version").notNull().default(1),
+    configurationDigest: varchar("configuration_digest", { length: 64 }).notNull(),
     lastPaidCanaryResult: jsonb("last_paid_canary_result").$type<Record<string, unknown>>(),
     createdAt: now(),
     updatedAt: now()
   },
   (table) => [
     uniqueIndex("b402_seller_agent_unique").on(table.agentId),
+    check("b402_seller_network_check", sql`${table.settlementNetwork} in (56, 97)`),
+    check("b402_seller_decimals_check", sql`${table.settlementDecimals} between 0 and 255`),
+    check("b402_seller_configuration_version_check", sql`${table.configurationVersion} > 0`),
+    check("b402_seller_configuration_digest_check", sql`${table.configurationDigest} ~ '^[0-9A-Fa-f]{64}$'`),
     index("b402_seller_enabled_idx").on(table.enabled, table.settlementNetwork)
   ]
 );
@@ -740,8 +817,310 @@ export const commerceJobs = pgTable(
     updatedAt: now()
   },
   (table) => [
-    uniqueIndex("commerce_erc8183_job_unique").on(table.erc8183JobId),
+    // Protocol identity is canonicalized in erc8183_jobs as
+    // (chain_id, commerce_contract, erc8183_job_id). Do not enforce a global
+    // protocol job-id uniqueness constraint on the legacy commerce projection.
     index("commerce_provider_status_idx").on(table.providerAgentId, table.status)
+  ]
+);
+
+/**
+ * Canonical ERC-8183 terms and on-chain state. `commerce_jobs` keeps the
+ * application-facing quote/job record; this table keeps protocol terms
+ * separate from the internal commerce status vocabulary.
+ */
+export const erc8183Jobs = pgTable(
+  "erc8183_jobs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    commerceJobId: uuid("commerce_job_id")
+      .notNull()
+      .references(() => commerceJobs.id, { onDelete: "cascade" }),
+    chainId: integer("chain_id").notNull(),
+    commerceContract: varchar("commerce_contract", { length: 42 }).notNull(),
+    erc8183JobId: text("erc8183_job_id").notNull(),
+    // Immutable standards-lock snapshot required to reconstruct validation.
+    specRevision: varchar("spec_revision", { length: 160 }).notNull(),
+    abiHash: varchar("abi_hash", { length: 64 }).notNull(),
+    evaluatorProfile: varchar("evaluator_profile", { length: 160 }).notNull(),
+    confirmationThreshold: integer("confirmation_threshold").notNull(),
+    minExpiryLeadSeconds: integer("min_expiry_lead_seconds").notNull(),
+    maxExpiryHorizonSeconds: integer("max_expiry_horizon_seconds").notNull(),
+    minBudgetAtomic: numeric("min_budget_atomic", { precision: 78, scale: 0 }).notNull(),
+    maxBudgetAtomic: numeric("max_budget_atomic", { precision: 78, scale: 0 }).notNull(),
+    deploymentPinDigest: varchar("deployment_pin_digest", { length: 64 }).notNull(),
+    paymentToken: varchar("payment_token", { length: 42 }).notNull(),
+    paymentDecimals: integer("payment_decimals").notNull(),
+    clientAddress: varchar("client_address", { length: 42 }).notNull(),
+    providerAddress: varchar("provider_address", { length: 42 }),
+    evaluatorAddress: varchar("evaluator_address", { length: 42 }).notNull(),
+    hookAddress: varchar("hook_address", { length: 42 }),
+    budgetAtomic: numeric("budget_atomic", { precision: 78, scale: 0 }).notNull(),
+    descriptionDigest: varchar("description_digest", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    state: erc8183JobStateEnum("state").notNull().default("open"),
+    deliverableDigest: varchar("deliverable_digest", { length: 64 }),
+    fundingTransactionHash: varchar("funding_transaction_hash", { length: 66 }),
+    submissionTransactionHash: varchar("submission_transaction_hash", { length: 66 }),
+    completionTransactionHash: varchar("completion_transaction_hash", { length: 66 }),
+    rejectionTransactionHash: varchar("rejection_transaction_hash", { length: 66 }),
+    refundTransactionHash: varchar("refund_transaction_hash", { length: 66 }),
+    lastObservedBlock: bigint("last_observed_block", { mode: "number" }),
+    lastObservedBlockHash: varchar("last_observed_block_hash", { length: 66 }),
+    lastObservedAt: timestamp("last_observed_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: now()
+  },
+  (table) => [
+    uniqueIndex("erc8183_job_commerce_job_unique").on(table.commerceJobId),
+    uniqueIndex("erc8183_job_network_identity_unique").on(table.chainId, table.commerceContract, table.erc8183JobId),
+    check("erc8183_job_chain_check", sql`${table.chainId} in (56, 97)`),
+    check("erc8183_job_decimals_check", sql`${table.paymentDecimals} between 0 and 255`),
+    check("erc8183_job_budget_check", sql`${table.budgetAtomic} >= 0`),
+    check("erc8183_job_contract_check", sql`${table.commerceContract} ~ '^0x[0-9A-Fa-f]{40}$' AND ${table.paymentToken} ~ '^0x[0-9A-Fa-f]{40}$'`),
+    check("erc8183_job_spec_check", sql`char_length(${table.specRevision}) > 0 AND char_length(${table.evaluatorProfile}) > 0`),
+    check("erc8183_job_abi_hash_check", sql`${table.abiHash} ~ '^[0-9A-Fa-f]{64}$'`),
+    check("erc8183_job_pin_digest_check", sql`${table.deploymentPinDigest} ~ '^[0-9A-Fa-f]{64}$'`),
+    check("erc8183_job_confirmation_check", sql`${table.confirmationThreshold} > 0`),
+    check("erc8183_job_expiry_bounds_check", sql`${table.minExpiryLeadSeconds} > 0 AND ${table.maxExpiryHorizonSeconds} >= ${table.minExpiryLeadSeconds}`),
+    check("erc8183_job_pin_budget_bounds_check", sql`${table.minBudgetAtomic} >= 0 AND ${table.maxBudgetAtomic} >= ${table.minBudgetAtomic} AND ${table.budgetAtomic} between ${table.minBudgetAtomic} and ${table.maxBudgetAtomic}`),
+    check("erc8183_job_id_decimal_check", sql`${table.erc8183JobId} ~ '^(0|[1-9][0-9]*)$'`),
+    index("erc8183_job_state_idx").on(table.state, table.expiresAt),
+    index("erc8183_job_provider_idx").on(table.providerAddress, table.state)
+  ]
+);
+
+export const erc8183JobEvents = pgTable(
+  "erc8183_job_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    erc8183JobId: uuid("erc8183_job_id")
+      .notNull()
+      .references(() => erc8183Jobs.id, { onDelete: "cascade" }),
+    eventKey: varchar("event_key", { length: 240 }).notNull(),
+    eventType: erc8183JobEventTypeEnum("event_type").notNull(),
+    previousState: erc8183JobStateEnum("previous_state"),
+    nextState: erc8183JobStateEnum("next_state"),
+    actorAddress: varchar("actor_address", { length: 42 }),
+    transactionHash: varchar("transaction_hash", { length: 66 }),
+    blockNumber: bigint("block_number", { mode: "number" }),
+    blockHash: varchar("block_hash", { length: 66 }),
+    logIndex: integer("log_index"),
+    confirmationState: chainObservationStateEnum("confirmation_state").notNull().default("canonical"),
+    payloadDigest: varchar("payload_digest", { length: 64 }).notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    correlationId: varchar("correlation_id", { length: 160 }).notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    uniqueIndex("erc8183_job_event_key_unique").on(table.eventKey),
+    uniqueIndex("erc8183_job_event_chain_log_unique").on(table.transactionHash, table.logIndex),
+    index("erc8183_job_event_job_time_idx").on(table.erc8183JobId, table.observedAt),
+    index("erc8183_job_event_state_idx").on(table.confirmationState, table.blockNumber)
+  ]
+);
+
+export const paymentChallenges = pgTable(
+  "payment_challenges",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    challengeId: varchar("challenge_id", { length: 240 }).notNull(),
+    rail: paymentRailEnum("rail").notNull(),
+    version: varchar("version", { length: 240 }).notNull(),
+    challengeDigest: varchar("challenge_digest", { length: 64 }).notNull(),
+    settlementNetwork: integer("settlement_network").notNull(),
+    settlementAsset: varchar("settlement_asset", { length: 42 }).notNull(),
+    settlementDecimals: integer("settlement_decimals").notNull(),
+    amountAtomic: numeric("amount_atomic", { precision: 78, scale: 0 }).notNull(),
+    recipient: varchar("recipient", { length: 42 }).notNull(),
+    method: paymentMethodEnum("method").notNull(),
+    destination: text("destination").notNull(),
+    facilitatorEndpoint: text("facilitator_endpoint").notNull(),
+    nonceDigest: varchar("nonce_digest", { length: 64 }).notNull(),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    status: paymentChallengeStatusEnum("status").notNull().default("issued"),
+    createdAt: now(),
+    updatedAt: now()
+  },
+  (table) => [
+    uniqueIndex("payment_challenge_id_unique").on(table.challengeId),
+    uniqueIndex("payment_challenge_digest_unique").on(table.challengeDigest),
+    check("payment_challenge_network_check", sql`${table.settlementNetwork} in (56, 97)`),
+    check("payment_challenge_decimals_check", sql`${table.settlementDecimals} between 0 and 255`),
+    check("payment_challenge_amount_check", sql`${table.amountAtomic} > 0`),
+    index("payment_challenge_expiry_idx").on(table.status, table.expiresAt)
+  ]
+);
+
+export const paymentAttempts = pgTable(
+  "payment_attempts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    commerceJobId: uuid("commerce_job_id").references(() => commerceJobs.id, { onDelete: "set null" }),
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
+    challengeId: uuid("challenge_id")
+      .notNull()
+      .references(() => paymentChallenges.id, { onDelete: "restrict" }),
+    rail: paymentRailEnum("rail").notNull(),
+    requestId: varchar("request_id", { length: 240 }).notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 240 }).notNull(),
+    challengeDigest: varchar("challenge_digest", { length: 64 }).notNull(),
+    authorizationDigest: varchar("authorization_digest", { length: 64 }),
+    payerAddress: varchar("payer_address", { length: 42 }),
+    settlementNetwork: integer("settlement_network").notNull(),
+    settlementAsset: varchar("settlement_asset", { length: 42 }).notNull(),
+    settlementDecimals: integer("settlement_decimals").notNull(),
+    amountAtomic: numeric("amount_atomic", { precision: 78, scale: 0 }).notNull(),
+    expectedRecipient: varchar("expected_recipient", { length: 42 }).notNull(),
+    method: paymentMethodEnum("method").notNull(),
+    destination: text("destination").notNull(),
+    facilitatorEndpoint: text("facilitator_endpoint").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    maxChallengeLifetimeSeconds: integer("max_challenge_lifetime_seconds").notNull(),
+    status: paymentAttemptStatusEnum("status").notNull().default("challenged"),
+    relayRequestDigest: varchar("relay_request_digest", { length: 64 }),
+    // Immutable request-time payment pin/config snapshot.
+    pinDigest: varchar("pin_digest", { length: 64 }).notNull(),
+    configurationVersion: integer("configuration_version").notNull(),
+    configurationDigest: varchar("configuration_digest", { length: 64 }).notNull(),
+    fixedEgressProfile: varchar("fixed_egress_profile", { length: 160 }).notNull(),
+    payoutAddress: varchar("payout_address", { length: 42 }).notNull(),
+    payoutVerificationState: varchar("payout_verification_state", { length: 64 }).notNull(),
+    failureCode: varchar("failure_code", { length: 240 }),
+    sanitizedFailure: varchar("sanitized_failure", { length: 500 }),
+    createdAt: now(),
+    updatedAt: now()
+  },
+  (table) => [
+    uniqueIndex("payment_attempt_rail_idempotency_unique").on(table.rail, table.idempotencyKey),
+    uniqueIndex("payment_attempt_challenge_unique").on(table.challengeId),
+    check("payment_attempt_network_check", sql`${table.settlementNetwork} in (56, 97)`),
+    check("payment_attempt_decimals_check", sql`${table.settlementDecimals} between 0 and 255`),
+    check("payment_attempt_amount_check", sql`${table.amountAtomic} > 0`),
+    check("payment_attempt_pin_digest_check", sql`${table.pinDigest} ~ '^[0-9A-Fa-f]{64}$' AND ${table.configurationDigest} ~ '^[0-9A-Fa-f]{64}$'`),
+    check("payment_attempt_configuration_version_check", sql`${table.configurationVersion} > 0`),
+    check("payment_attempt_challenge_lifetime_check", sql`${table.maxChallengeLifetimeSeconds} > 0`),
+    check("payment_attempt_payout_verification_check", sql`${table.payoutVerificationState} = 'verified'`),
+    check("payment_attempt_address_check", sql`${table.settlementAsset} ~ '^0x[0-9A-Fa-f]{40}$' AND ${table.expectedRecipient} ~ '^0x[0-9A-Fa-f]{40}$' AND ${table.payoutAddress} ~ '^0x[0-9A-Fa-f]{40}$'`),
+    index("payment_attempt_status_idx").on(table.status, table.updatedAt),
+    index("payment_attempt_request_idx").on(table.requestId)
+  ]
+);
+
+export const paymentAttemptEvents = pgTable(
+  "payment_attempt_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    attemptId: uuid("attempt_id")
+      .notNull()
+      .references(() => paymentAttempts.id, { onDelete: "cascade" }),
+    eventKey: varchar("event_key", { length: 240 }).notNull(),
+    eventType: paymentEventTypeEnum("event_type").notNull(),
+    previousStatus: paymentAttemptStatusEnum("previous_status"),
+    nextStatus: paymentAttemptStatusEnum("next_status"),
+    paymentTransactionHash: varchar("payment_transaction_hash", { length: 66 }),
+    settlementTransactionHash: varchar("settlement_transaction_hash", { length: 66 }),
+    payloadDigest: varchar("payload_digest", { length: 64 }).notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    correlationId: varchar("correlation_id", { length: 240 }).notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    uniqueIndex("payment_attempt_event_key_unique").on(table.eventKey),
+    index("payment_attempt_event_attempt_time_idx").on(table.attemptId, table.observedAt)
+  ]
+);
+
+export const paymentReceipts = pgTable(
+  "payment_receipts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    attemptId: uuid("attempt_id")
+      .notNull()
+      .references(() => paymentAttempts.id, { onDelete: "cascade" }),
+    challengeId: uuid("challenge_id")
+      .notNull()
+      .references(() => paymentChallenges.id, { onDelete: "restrict" }),
+    rail: paymentRailEnum("rail").notNull(),
+    status: paymentReceiptStatusEnum("status").notNull(),
+    settlementNetwork: integer("settlement_network").notNull(),
+    settlementAsset: varchar("settlement_asset", { length: 42 }).notNull(),
+    settlementDecimals: integer("settlement_decimals").notNull(),
+    amountAtomic: numeric("amount_atomic", { precision: 78, scale: 0 }).notNull(),
+    expectedRecipient: varchar("expected_recipient", { length: 42 }).notNull(),
+    actualRecipient: varchar("actual_recipient", { length: 42 }),
+    method: paymentMethodEnum("method").notNull(),
+    destination: text("destination").notNull(),
+    paymentTransactionHash: varchar("payment_transaction_hash", { length: 66 }),
+    settlementTransactionHash: varchar("settlement_transaction_hash", { length: 66 }),
+    payoutAddress: varchar("payout_address", { length: 42 }),
+    payoutVerified: boolean("payout_verified").notNull().default(false),
+    facilitatorRequestReference: varchar("facilitator_request_reference", { length: 240 }),
+    responseStatus: integer("response_status"),
+    responseDigest: varchar("response_digest", { length: 64 }),
+    receiptDigest: varchar("receipt_digest", { length: 64 }).notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    settledAt: timestamp("settled_at", { withTimezone: true }),
+    createdAt: now()
+  },
+  (table) => [
+    // Receipt ownership is a single-direction relationship. The attempt
+    // record intentionally has no receipt backlink; unknown/partial
+    // receipts are replaced by the canonical attempt row here.
+    uniqueIndex("payment_receipt_attempt_unique").on(table.attemptId),
+    uniqueIndex("payment_receipt_digest_unique").on(table.receiptDigest),
+    check("payment_receipt_network_check", sql`${table.settlementNetwork} in (56, 97)`),
+    check("payment_receipt_decimals_check", sql`${table.settlementDecimals} between 0 and 255`),
+    check("payment_receipt_amount_check", sql`${table.amountAtomic} > 0`),
+    index("payment_receipt_status_time_idx").on(table.status, table.observedAt)
+  ]
+);
+
+export const paymentReplayReservations = pgTable(
+  "payment_replay_reservations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    replayKey: varchar("replay_key", { length: 64 }).notNull(),
+    attemptId: uuid("attempt_id")
+      .notNull()
+      .references(() => paymentAttempts.id, { onDelete: "cascade" }),
+    state: paymentReplayStateEnum("state").notNull().default("inflight"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    responseDigest: varchar("response_digest", { length: 64 }),
+    createdAt: now(),
+    updatedAt: now(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    rejectedAt: timestamp("rejected_at", { withTimezone: true })
+  },
+  (table) => [
+    uniqueIndex("payment_replay_key_unique").on(table.replayKey),
+    index("payment_replay_state_expiry_idx").on(table.state, table.expiresAt)
+  ]
+);
+
+export const paymentReconciliations = pgTable(
+  "payment_reconciliations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    attemptId: uuid("attempt_id")
+      .notNull()
+      .references(() => paymentAttempts.id, { onDelete: "cascade" }),
+    reasonCode: varchar("reason_code", { length: 240 }).notNull(),
+    state: paymentReconciliationStateEnum("state").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    observedPaymentTransactionHash: varchar("observed_payment_transaction_hash", { length: 66 }),
+    observedSettlementTransactionHash: varchar("observed_settlement_transaction_hash", { length: 66 }),
+    detailDigest: varchar("detail_digest", { length: 64 }),
+    createdAt: now(),
+    updatedAt: now()
+  },
+  (table) => [
+    uniqueIndex("payment_reconciliation_reason_unique").on(table.attemptId, table.reasonCode),
+    index("payment_reconciliation_due_idx").on(table.state, table.nextAttemptAt)
   ]
 );
 
@@ -864,6 +1243,14 @@ export const schemaTables = {
   agentEnrichmentObservations,
   b402SellerConfigurations,
   commerceJobs,
+  erc8183Jobs,
+  erc8183JobEvents,
+  paymentChallenges,
+  paymentAttempts,
+  paymentAttemptEvents,
+  paymentReceipts,
+  paymentReplayReservations,
+  paymentReconciliations,
   agentRuns,
   evidenceObjects,
   auditEvents,
