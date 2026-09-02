@@ -127,6 +127,8 @@ export type DiscoverySourceRecord = {
 
 export type ClaimRecord = {
   readonly identityKey: IdentityKey;
+  /** Monotonic row version used by claim mutations for compare-and-swap. */
+  readonly version: number;
   readonly status: ClaimStatus;
   readonly claimantAddress: string | null;
   readonly ownerAddressAtVerification: string | null;
@@ -143,8 +145,39 @@ export type ClaimEvent = {
   readonly observedOwnerAddress: string | null;
   readonly observedAgentWallet: string | null;
   readonly proofDigest: string | null;
+  readonly actorType: "owner" | "operator";
+  readonly actorId: string;
   readonly reason: string;
   readonly occurredAt: Date;
+};
+
+export type ClaimMutationActor =
+  | {
+      readonly type: "owner";
+      readonly walletAddress: string;
+      readonly proofDigest: string;
+    }
+  | {
+      readonly type: "operator";
+      /** Authenticated operator principal, never a caller-supplied display name. */
+      readonly operatorId: string;
+      /** Scope granted by the authenticated operator session. */
+      readonly scope: "identity.claim.revoke" | "identity.claim.reconcile";
+  };
+
+export type AuthenticatedOperator = {
+  readonly operatorId: string;
+  readonly scopes: readonly ("identity.claim.revoke" | "identity.claim.reconcile")[];
+};
+
+export type ClaimMutation = {
+  readonly identityKey: IdentityKey;
+  /** Null means the caller expects that no claim row exists yet. */
+  readonly expectedVersion: number | null;
+  readonly expectedStatus: ClaimStatus | null;
+  readonly claim: ClaimRecord;
+  readonly event: ClaimEvent;
+  readonly actor: ClaimMutationActor;
 };
 
 export type ServiceObservation = AdvertisedService & {
@@ -201,12 +234,35 @@ export type IngestionFilter = {
 };
 
 export type ClaimVerificationProof = {
+  /** Full ERC-8004 identity bound into the signed SIWE message. */
+  readonly identity: Erc8004Identity;
   readonly address: string;
   readonly chainId: number;
+  /** EIP-4361 domain supplied by the server-side SIWE challenge. */
+  readonly domain: string;
+  /** EIP-4361 URI supplied by the server-side SIWE challenge. */
+  readonly uri: string;
+  /** EIP-4361 resources supplied by the server-side SIWE challenge. */
+  readonly resources: readonly string[];
+  /** BNBEra claim action bound into the SIWE challenge. */
+  readonly action: "claim";
   readonly issuedAt: Date;
   readonly expirationTime: Date;
   readonly nonce: string;
-  readonly signatureDigest?: string;
+  /** Digest of the verified signature or signed SIWE payload. */
+  readonly signatureDigest: string;
+};
+
+export type ClaimVerificationContext = Pick<
+  ClaimVerificationProof,
+  "domain" | "uri" | "resources" | "action"
+> & {
+  readonly chainId: number;
+};
+
+export type VerifiedClaimProof = ClaimVerificationProof & {
+  /** Set by the verifier only after signature and address recovery succeed. */
+  readonly verifiedAt: Date;
 };
 
 export interface IdentityRepository {
@@ -259,8 +315,12 @@ export interface CheckpointRepository {
 
 export interface ClaimRepository {
   getClaim(identityKey: IdentityKey): Promise<ClaimRecord | null>;
-  saveClaim(input: ClaimRecord): Promise<ClaimRecord>;
-  appendClaimEvent(input: ClaimEvent): Promise<void>;
+  /**
+   * Atomically compare-and-swaps the claim row, identity claim axis, and
+   * append-only event. Implementations must execute all three writes in one
+   * database transaction and reject a stale expectedVersion/status.
+   */
+  mutateClaim(input: ClaimMutation): Promise<ClaimRecord>;
   listClaimEvents(identityKey: IdentityKey): Promise<readonly ClaimEvent[]>;
 }
 
@@ -286,5 +346,10 @@ export interface IngestionRepository
     ClaimRepository,
     ServiceRepository,
     ReconciliationRepository {
+  /**
+   * Execute a unit of work with atomic commit/rollback semantics. A
+   * checkpoint may be persisted only inside the same unit after all
+   * ingestion, canonicalization, and identity/claim updates succeed.
+   */
   withTransaction<T>(work: (repository: IngestionRepository) => Promise<T>): Promise<T>;
 }

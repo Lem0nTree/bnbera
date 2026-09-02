@@ -14,6 +14,7 @@ import type {
   ChainCheckpoint,
   ChainObservation,
   ClaimEvent,
+  ClaimMutation,
   ClaimRecord,
   DiscoverySourceRecord,
   IdentityCanonicalUpdate,
@@ -54,6 +55,19 @@ function serviceKey(identityKey: IdentityKey, kind: string, url: string): string
   return `${identityKey}:${kind}:${url}`;
 }
 
+type RepositorySnapshot = {
+  readonly identities: Map<IdentityKey, IdentityRecord>;
+  readonly sources: Map<string, DiscoverySourceRecord>;
+  readonly observations: Map<string, ChainObservation>;
+  readonly checkpoints: Map<string, ChainCheckpoint>;
+  readonly claims: Map<IdentityKey, ClaimRecord>;
+  readonly claimEvents: Map<IdentityKey, ClaimEvent[]>;
+  readonly services: Map<string, ServiceObservation>;
+  readonly capabilities: Map<string, CapabilityObservation>;
+  readonly probeResults: ServiceProbeRecord[];
+  readonly reconciliations: ReconciliationRecord[];
+};
+
 /**
  * Deterministic repository used by unit tests and local contract fixtures.
  * Production callers should implement the same ports over the Drizzle schema.
@@ -80,11 +94,48 @@ export class InMemoryIngestionRepository implements IngestionRepository {
       release = resolve;
     });
     await previous;
+    const snapshot = this.snapshot();
     try {
       return await work(this);
+    } catch (error) {
+      this.restore(snapshot);
+      throw error;
     } finally {
       release?.();
     }
+  }
+
+  /**
+   * The fixture implements the same all-or-nothing guarantee expected from a
+   * production database transaction. Copying every mutable collection makes
+   * failure tests catch accidental checkpoint/state/event partial commits.
+   */
+  private snapshot(): RepositorySnapshot {
+    return {
+      identities: new Map(this.identities),
+      sources: new Map(this.sources),
+      observations: new Map(this.observations),
+      checkpoints: new Map(this.checkpoints),
+      claims: new Map(this.claims),
+      claimEvents: new Map([...this.claimEvents].map(([key, events]) => [key, [...events]])),
+      services: new Map(this.services),
+      capabilities: new Map(this.capabilities),
+      probeResults: [...this.probeResults],
+      reconciliations: [...this.reconciliations]
+    };
+  }
+
+  private restore(snapshot: RepositorySnapshot): void {
+    this.identities = snapshot.identities;
+    this.sources = snapshot.sources;
+    this.observations = snapshot.observations;
+    this.checkpoints = snapshot.checkpoints;
+    this.claims = snapshot.claims;
+    this.claimEvents = snapshot.claimEvents;
+    this.services = snapshot.services;
+    this.capabilities = snapshot.capabilities;
+    this.probeResults = snapshot.probeResults;
+    this.reconciliations = snapshot.reconciliations;
   }
 
   async findIdentity(input: Parameters<typeof normalizeErc8004Identity>[0]): Promise<IdentityRecord | null> {
@@ -346,25 +397,75 @@ export class InMemoryIngestionRepository implements IngestionRepository {
     return this.claims.get(identityKey) ?? null;
   }
 
-  async saveClaim(input: ClaimRecord): Promise<ClaimRecord> {
-    this.claims.set(input.identityKey, input);
-    const identity = [...this.identities.entries()].find(([key]) => key === input.identityKey)?.[1];
-    if (identity !== undefined) {
-      const nextState = { ...identity.state, claimStatus: input.status };
-      this.identities.set(input.identityKey, {
-        ...identity,
-        state: nextState,
-        ownerClaimVerifiedAt: input.verifiedAt,
-        updatedAt: new Date()
-      });
+  async mutateClaim(input: ClaimMutation): Promise<ClaimRecord> {
+    const existing = this.claims.get(input.identityKey) ?? null;
+    if (
+      (existing === null && input.expectedVersion !== null) ||
+      (existing !== null &&
+        (input.expectedVersion !== existing.version || input.expectedStatus !== existing.status)) ||
+      (existing === null && input.expectedStatus !== null)
+    ) {
+      throw ingestionError(
+        "CLAIM_CONFLICT",
+        "The claim changed before this operation completed.",
+        "reload_claim",
+        { existing, expectedVersion: input.expectedVersion, expectedStatus: input.expectedStatus }
+      );
     }
-    return input;
-  }
-
-  async appendClaimEvent(input: ClaimEvent): Promise<void> {
+    if (
+      input.claim.identityKey !== input.identityKey ||
+      input.event.identityKey !== input.identityKey ||
+      input.claim.version !== (existing?.version ?? 0) + 1 ||
+      input.event.actorId.trim().length === 0 ||
+      input.event.actorType !== input.actor.type
+    ) {
+      throw ingestionError("CLAIM_CONFLICT", "The claim mutation is internally inconsistent.", "reload_claim");
+    }
+    if (existing !== null && existing.status !== input.claim.status) {
+      try {
+        assertStateTransition("claimStatus", existing.status, input.claim.status);
+      } catch (cause) {
+        throw ingestionError("CLAIM_CONFLICT", "The claim status transition is not allowed.", "reload_claim", cause);
+      }
+    }
+    if (
+      (input.claim.status === "claimed" && input.event.eventType !== "claimed") ||
+      (input.claim.status === "stale" && !["stale", "revoked"].includes(input.event.eventType))
+    ) {
+      throw ingestionError("CLAIM_CONFLICT", "The claim event does not describe the next claim state.", "reload_claim");
+    }
+    const identity = [...this.identities.entries()].find(([key]) => key === input.identityKey)?.[1];
+    if (identity === undefined) {
+      throw ingestionError("CLAIM_NOT_ACTIVE", "The identity is not in the ingestion index.", "import_identity");
+    }
+    if (input.actor.type === "owner") {
+      if (
+        input.claim.claimantAddress !== normalizeEvmAddress(input.actor.walletAddress) ||
+        input.event.proofDigest !== input.actor.proofDigest ||
+        input.event.actorId !== normalizeEvmAddress(input.actor.walletAddress)
+      ) {
+        throw ingestionError("CLAIM_CONFLICT", "The owner claim actor does not match the verified proof.", "reload_claim");
+      }
+    } else if (input.event.actorId !== input.actor.operatorId || input.actor.operatorId.trim().length === 0) {
+      throw ingestionError("CLAIM_CONFLICT", "The operator claim actor is invalid.", "authenticate_operator");
+    } else if (
+      (input.event.eventType === "revoked" && input.actor.scope !== "identity.claim.revoke") ||
+      (input.event.eventType !== "revoked" && input.actor.scope !== "identity.claim.reconcile")
+    ) {
+      throw ingestionError("CLAIM_CONFLICT", "The operator scope does not authorize this claim event.", "authenticate_operator");
+    }
+    const nextState = { ...identity.state, claimStatus: input.claim.status };
+    this.claims.set(input.identityKey, input.claim);
+    this.identities.set(input.identityKey, {
+      ...identity,
+      state: nextState,
+      ownerClaimVerifiedAt: input.claim.verifiedAt,
+      updatedAt: new Date()
+    });
     const events = this.claimEvents.get(input.identityKey) ?? [];
-    events.push(input);
+    events.push(input.event);
     this.claimEvents.set(input.identityKey, events);
+    return input.claim;
   }
 
   async listClaimEvents(identityKey: IdentityKey): Promise<readonly ClaimEvent[]> {

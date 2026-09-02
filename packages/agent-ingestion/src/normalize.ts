@@ -17,6 +17,8 @@ import { directIdentityFields } from "./types.js";
 import type {
   CapabilityObservation,
   ChainObservation,
+  ClaimVerificationContext,
+  ClaimVerificationProof,
   IdentityCandidate,
   IdentityKey,
   IngestionSource,
@@ -105,6 +107,157 @@ export function normalizeDigest(value: unknown, fieldName = "digest"): string | 
     throw ingestionError("INGESTION_INPUT_INVALID", `The ${fieldName} must be a SHA-256 digest.`, "fix_digest", result.error);
   }
   return result.data.toLowerCase();
+}
+
+const claimActionSchema = z.literal("claim");
+const claimTextSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(2_048)
+  .refine((value) => !/[\u0000-\u001f\u007f]/u.test(value), "Claim context contains control characters");
+
+/**
+ * Normalize the server-issued SIWE challenge context. The caller must supply
+ * this context; the ingestion package intentionally does not invent a site
+ * domain, URI, resource, or route.
+ */
+export function normalizeClaimVerificationContext(input: ClaimVerificationContext): ClaimVerificationContext {
+  const chainId = Number(input.chainId);
+  if (!Number.isSafeInteger(chainId) || chainId <= 0) {
+    throw ingestionError("CLAIM_PROOF_INVALID", "The SIWE chain context is invalid.", "issue_claim_challenge");
+  }
+  const domain = z
+    .string()
+    .trim()
+    .min(1)
+    .max(253)
+    .refine((value) => !/[\u0000-\u001f\u007f]/u.test(value), "Domain contains control characters")
+    .safeParse(input.domain);
+  const uri = claimTextSchema.safeParse(input.uri);
+  const resources = Array.isArray(input.resources) && input.resources.length <= 32
+    ? input.resources.map((resource) => claimTextSchema.safeParse(resource))
+    : null;
+  if (
+    !domain.success ||
+    !uri.success ||
+    resources === null ||
+    resources.some((resource) => !resource.success) ||
+    !claimActionSchema.safeParse(input.action).success
+  ) {
+    throw ingestionError("CLAIM_PROOF_INVALID", "The SIWE claim context is invalid.", "issue_claim_challenge");
+  }
+  let parsedUri: URL;
+  try {
+    parsedUri = new URL(uri.data);
+  } catch (cause) {
+    throw ingestionError("CLAIM_PROOF_INVALID", "The SIWE claim URI is invalid.", "issue_claim_challenge", cause);
+  }
+  if (
+    (parsedUri.protocol !== "http:" && parsedUri.protocol !== "https:") ||
+    parsedUri.username !== "" ||
+    parsedUri.password !== "" ||
+    parsedUri.hash !== "" ||
+    parsedUri.host.toLowerCase() !== domain.data.toLowerCase()
+  ) {
+    throw ingestionError("CLAIM_PROOF_INVALID", "The SIWE claim domain and URI do not match.", "issue_claim_challenge");
+  }
+  const normalizedResources = resources
+    .filter((resource): resource is { readonly success: true; readonly data: string } => resource.success)
+    .map((resource) => resource.data);
+  return {
+    chainId,
+    domain: domain.data.toLowerCase(),
+    uri: parsedUri.toString(),
+    resources: normalizedResources,
+    action: "claim"
+  };
+}
+
+/** Normalize all signed fields before verification and persistence. */
+export function normalizeClaimVerificationProof(input: ClaimVerificationProof): ClaimVerificationProof {
+  const identity = normalizeIdentity(input.identity);
+  const context = normalizeClaimVerificationContext({
+    chainId: input.chainId,
+    domain: input.domain,
+    uri: input.uri,
+    resources: input.resources,
+    action: input.action
+  });
+  const issuedAt = input.issuedAt instanceof Date ? input.issuedAt : new Date(NaN);
+  const expirationTime = input.expirationTime instanceof Date ? input.expirationTime : new Date(NaN);
+  const nonce = typeof input.nonce === "string" ? input.nonce.trim() : "";
+  const signatureDigest = normalizeDigest(input.signatureDigest, "claim signature digest");
+  if (
+    !Number.isFinite(issuedAt.getTime()) ||
+    !Number.isFinite(expirationTime.getTime()) ||
+    nonce.length < 8 ||
+    signatureDigest === null
+  ) {
+    throw ingestionError("CLAIM_PROOF_INVALID", "The SIWE proof fields are invalid.", "sign_in_again");
+  }
+  let address: string;
+  try {
+    address = normalizeEvmAddress(input.address);
+  } catch (cause) {
+    throw ingestionError("CLAIM_PROOF_INVALID", "The SIWE proof address is invalid.", "sign_in_again", cause);
+  }
+  return {
+    identity,
+    address,
+    chainId: context.chainId,
+    domain: context.domain,
+    uri: context.uri,
+    resources: context.resources,
+    action: context.action,
+    issuedAt,
+    expirationTime,
+    nonce,
+    signatureDigest
+  };
+}
+
+/**
+ * Stable digest input for claim audit events. This binds the complete
+ * ERC-8004 identity and every server-issued SIWE context field, rather than
+ * recording only a wallet address or a verifier boolean.
+ */
+export function canonicalClaimProofBinding(
+  proof: ClaimVerificationProof,
+  context: ClaimVerificationContext
+): Readonly<Record<string, unknown>> {
+  const normalizedProof = normalizeClaimVerificationProof(proof);
+  const normalizedContext = normalizeClaimVerificationContext(context);
+  if (
+    normalizedProof.chainId !== normalizedContext.chainId ||
+    normalizedProof.domain !== normalizedContext.domain ||
+    normalizedProof.uri !== normalizedContext.uri ||
+    normalizedProof.action !== normalizedContext.action ||
+    normalizedProof.resources.length !== normalizedContext.resources.length ||
+    normalizedProof.resources.some((resource, index) => resource !== normalizedContext.resources[index])
+  ) {
+    throw ingestionError("CLAIM_PROOF_INVALID", "The SIWE chain context does not match the proof.", "sign_in_again");
+  }
+  return {
+    identity: normalizedProof.identity,
+    ownerAddress: normalizedProof.address,
+    chainId: normalizedContext.chainId,
+    domain: normalizedContext.domain,
+    uri: normalizedContext.uri,
+    resources: [...normalizedContext.resources],
+    action: normalizedContext.action,
+    issuedAt: normalizedProof.issuedAt.toISOString(),
+    expirationTime: normalizedProof.expirationTime.toISOString(),
+    nonce: normalizedProof.nonce,
+    signatureDigest: normalizedProof.signatureDigest
+  };
+}
+
+export function canonicalClaimProofDigest(
+  proof: ClaimVerificationProof,
+  context: ClaimVerificationContext
+): string {
+  return canonicalSha256Hex(canonicalClaimProofBinding(proof, context));
 }
 
 export function normalizeIdentity(value: unknown) {

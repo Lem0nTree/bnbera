@@ -1,6 +1,6 @@
 {
-  "id": "cbcaa854-6ada-4c85-8a9c-b45fbece1af6",
-  "prevId": "105ddaf8-5867-45e6-93f0-778482d268c1",
+  "id": "f50a993b-21eb-4f02-89ad-a881e4858ca0",
+  "prevId": "cbcaa854-6ada-4c85-8a9c-b45fbece1af6",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -543,6 +543,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "actor_type": {
+          "name": "actor_type",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "varchar(160)",
+          "primaryKey": false,
+          "notNull": true
         }
       },
       "indexes": {
@@ -2697,6 +2709,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "claim_version": {
+          "name": "claim_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         }
       },
       "indexes": {

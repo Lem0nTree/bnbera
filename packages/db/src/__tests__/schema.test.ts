@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
@@ -57,6 +58,32 @@ describe("foundation database schema", () => {
     expect(Object.keys(schemaTables).length).toBeGreaterThanOrEqual(20);
   });
 
+  it("keeps the circular current-version FK in every migration snapshot", () => {
+    const migrationsPath = fileURLToPath(new URL("../../migrations", import.meta.url));
+    const metaPath = join(migrationsPath, "meta");
+    const snapshotFiles = readdirSync(metaPath)
+      .filter((file) => /^\d+_snapshot\.json$/u.test(file))
+      .sort();
+    expect(snapshotFiles.length).toBeGreaterThan(0);
+    for (const file of snapshotFiles) {
+      const snapshot = JSON.parse(readFileSync(join(metaPath, file), "utf8")) as {
+        tables?: Record<string, { foreignKeys?: Record<string, unknown> }>;
+      };
+      expect(
+        snapshot.tables?.["public.agents"]?.foreignKeys?.["agents_current_version_id_agent_versions_id_fk"],
+        `${file} must retain the circular currentVersion FK`
+      ).toBeDefined();
+    }
+    const sqlFiles = readdirSync(migrationsPath)
+      .filter((file) => /^\d+_.*\.sql$/u.test(file))
+      .sort();
+    for (const file of sqlFiles) {
+      expect(readFileSync(join(migrationsPath, file), "utf8")).not.toMatch(
+        /DROP CONSTRAINT ["']agents_current_version_id_agent_versions_id_fk["']/u
+      );
+    }
+  });
+
   it("exports identity-ingestion observations and its additive migration", () => {
     const migrationPath = fileURLToPath(new URL("../../migrations/0001_identity_ingestion.sql", import.meta.url));
     const migration = readFileSync(migrationPath, "utf8");
@@ -64,12 +91,16 @@ describe("foundation database schema", () => {
     const observationMigration = readFileSync(observationMigrationPath, "utf8");
     const probeMigrationPath = fileURLToPath(new URL("../../migrations/0003_service_probe_results.sql", import.meta.url));
     const probeMigration = readFileSync(probeMigrationPath, "utf8");
+    const claimCasMigrationPath = fileURLToPath(new URL("../../migrations/0004_claim_cas.sql", import.meta.url));
+    const claimCasMigration = readFileSync(claimCasMigrationPath, "utf8");
     expect(migration).toContain('CREATE TABLE "agent_service_observations"');
     expect(migration).toContain('CREATE TABLE "agent_capability_observations"');
     expect(migration).toContain('CREATE TABLE "agent_claim_events"');
     expect(migration).toContain('CREATE TABLE "agent_reorg_reconciliations"');
     expect(observationMigration).toContain('ADD COLUMN "observed_fields" jsonb NOT NULL');
     expect(probeMigration).toContain('CREATE TABLE "agent_service_probe_results"');
+    expect(claimCasMigration).toContain('ADD COLUMN "claim_version" integer');
+    expect(claimCasMigration).toContain('ADD COLUMN "actor_type" varchar(32)');
     expect(Object.keys(schemaTables)).toEqual(
       expect.arrayContaining([
         "agentServiceObservations",
@@ -92,5 +123,7 @@ describe("foundation database schema", () => {
       expect.arrayContaining(["chainId", "identityRegistry", "commonAncestorBlock", "affectedIdentityKeys"])
     );
     expect(Object.keys(schemaTables.erc8004ChainObservations)).toContain("observedFields");
+    expect(Object.keys(agents)).toContain("claimVersion");
+    expect(Object.keys(agentClaimEvents)).toEqual(expect.arrayContaining(["actorType", "actorId"]));
   });
 });

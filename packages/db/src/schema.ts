@@ -320,6 +320,8 @@ export const agentClaimEvents = pgTable(
     observedOwnerAddress: varchar("observed_owner_address", { length: 42 }),
     observedAgentWallet: varchar("observed_agent_wallet", { length: 42 }),
     proofDigest: varchar("proof_digest", { length: 64 }),
+    actorType: varchar("actor_type", { length: 32 }).notNull(),
+    actorId: varchar("actor_id", { length: 160 }).notNull(),
     reason: varchar("reason", { length: 500 }).notNull(),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
     createdAt: now()
@@ -389,6 +391,8 @@ export const agents = pgTable(
     observedExternalOwner: varchar("observed_external_owner", { length: 42 }),
     originType: originTypeEnum("origin_type").notNull(),
     claimStatus: claimStatusEnum("claim_status").notNull().default("unclaimed"),
+    // Compare-and-swap token for atomic claim and claim-event mutations.
+    claimVersion: integer("claim_version").notNull().default(0),
     verificationStatus: verificationStatusEnum("verification_status").notNull().default("pending"),
     runtimeStatus: runtimeStatusEnum("runtime_status").notNull().default("unavailable"),
     authorityStatus: authorityStatusEnum("authority_status").notNull().default("none"),

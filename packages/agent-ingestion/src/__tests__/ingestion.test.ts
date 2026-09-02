@@ -9,7 +9,7 @@ import {
   type RegistryChainReader,
   type RegistryEvent
 } from "../index.js";
-import type { Erc8004Identity } from "@bnbera/domain";
+import { erc8004IdentityKey, type Erc8004Identity } from "@bnbera/domain";
 
 const identity: Erc8004Identity = {
   namespace: "eip155",
@@ -21,6 +21,31 @@ const identity: Erc8004Identity = {
 const ownerA = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const ownerB = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const walletA = "0xcccccccccccccccccccccccccccccccccccccccc";
+const claimContext = {
+  chainId: 97,
+  domain: "bnbera.example",
+  uri: "https://bnbera.example/claim",
+  resources: ["https://bnbera.example/claim-resource"],
+  action: "claim" as const
+};
+
+function claimProof(address: string, nonce: string, issuedAt = new Date("2026-09-02T00:00:00.000Z")): ClaimVerificationProof {
+  return {
+    identity,
+    address,
+    ...claimContext,
+    issuedAt,
+    expirationTime: new Date("2026-09-02T00:10:00.000Z"),
+    nonce,
+    signatureDigest: "a".repeat(64)
+  };
+}
+
+function verifiedProof(proof: ClaimVerificationProof) {
+  return { ...proof, verifiedAt: new Date("2026-09-02T00:01:00.000Z") };
+}
+
+const testOperator = { operatorId: "operator:test", scopes: ["identity.claim.revoke"] as const };
 
 function registryEvent(input: Partial<RegistryEvent> & Pick<RegistryEvent, "transactionHash" | "logIndex" | "blockNumber" | "blockHash">): RegistryEvent {
   return {
@@ -135,21 +160,14 @@ describe("A3 identity and discovery ingestion", () => {
       }
     };
     await ingestion.reconcileIdentity(reader, identity);
-    const proof: ClaimVerificationProof = {
-      address: ownerA,
-      chainId: 97,
-      issuedAt: new Date("2026-09-02T00:00:00.000Z"),
-      expirationTime: new Date("2026-09-02T00:10:00.000Z"),
-      nonce: "nonce-1234",
-      signatureDigest: "a".repeat(64)
-    };
+    const proof = claimProof(ownerA, "nonce-1234");
     const claims = new IdentityClaimService(
       repository,
       reader,
-      { async verify() { return true; } },
-      { now: () => new Date("2026-09-02T00:01:00.000Z") }
+      { async verify({ proof: verified }) { return verifiedProof(verified); } },
+      { now: () => new Date("2026-09-02T00:01:00.000Z"), internalOperatorId: "operator:indexer" }
     );
-    const claimed = await claims.claim({ identity, proof });
+    const claimed = await claims.claim({ identity, proof, context: claimContext });
 
     expect(claimed.ownerAddress).toBe(ownerA);
     expect(claimed.agentWallet).toBe(walletA);
@@ -177,18 +195,13 @@ describe("A3 identity and discovery ingestion", () => {
     const claims = new IdentityClaimService(
       repository,
       reader,
-      { async verify() { return true; } },
-      { now: () => new Date("2026-09-02T00:01:00.000Z") }
+      { async verify({ proof: verified }) { return verifiedProof(verified); } },
+      { now: () => new Date("2026-09-02T00:01:00.000Z"), internalOperatorId: "operator:indexer" }
     );
     await claims.claim({
       identity,
-      proof: {
-        address: ownerA,
-        chainId: 97,
-        issuedAt: new Date("2026-09-02T00:00:00.000Z"),
-        expirationTime: new Date("2026-09-02T00:10:00.000Z"),
-        nonce: "nonce-1234"
-      }
+      proof: claimProof(ownerA, "nonce-1234"),
+      context: claimContext
     });
     currentOwner = ownerB;
     const revalidated = await claims.revalidate(identity);
@@ -196,6 +209,100 @@ describe("A3 identity and discovery ingestion", () => {
     expect(revalidated.state.claimStatus).toBe("stale");
     expect(revalidated.state.listingStatus).toBe("draft");
     expect((await repository.listClaimEvents("eip155:97:0x1111111111111111111111111111111111111111:115792089237316195423570985008687907853269984665640564039457584007913129639935"))[1]?.eventType).toBe("stale");
+  });
+
+  it("rejects a stale claim CAS and leaves the claim event log unchanged", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const ingestion = new AgentIngestionService(repository);
+    await ingestion.ingestCandidate({
+      identity,
+      source: "manual",
+      sourceReference: "manual-cas",
+      observedAt: new Date("2026-09-02T00:00:00.000Z"),
+      normalizedIngestionVersion: "manual-v1"
+    });
+    const identityKey = erc8004IdentityKey(identity);
+    const actor = { type: "owner" as const, walletAddress: ownerA, proofDigest: "b".repeat(64) };
+    const claim = {
+      identityKey,
+      version: 1,
+      status: "claimed" as const,
+      claimantAddress: ownerA,
+      ownerAddressAtVerification: ownerA,
+      agentWalletAtVerification: walletA,
+      verifiedAt: new Date("2026-09-02T00:01:00.000Z"),
+      staleAt: null,
+      lastReason: "claimed" as const
+    };
+    await repository.mutateClaim({
+      identityKey,
+      expectedVersion: null,
+      expectedStatus: null,
+      claim,
+      actor,
+      event: {
+        identityKey,
+        eventType: "claimed",
+        claimantAddress: ownerA,
+        observedOwnerAddress: ownerA,
+        observedAgentWallet: walletA,
+        proofDigest: actor.proofDigest,
+        actorType: "owner",
+        actorId: ownerA,
+        reason: "test",
+        occurredAt: claim.verifiedAt
+      }
+    });
+    await expect(
+      repository.mutateClaim({
+        identityKey,
+        expectedVersion: null,
+        expectedStatus: null,
+        claim: { ...claim, version: 2 },
+        actor,
+        event: {
+          identityKey,
+          eventType: "claimed",
+          claimantAddress: ownerA,
+          observedOwnerAddress: ownerA,
+          observedAgentWallet: walletA,
+          proofDigest: actor.proofDigest,
+          actorType: "owner",
+          actorId: ownerA,
+          reason: "stale test",
+          occurredAt: claim.verifiedAt
+        }
+      })
+    ).rejects.toMatchObject({ code: "CLAIM_CONFLICT" });
+    expect(await repository.listClaimEvents(identityKey)).toHaveLength(1);
+  });
+
+  it("rejects a verifier result bound to a different SIWE resource", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const ingestion = new AgentIngestionService(repository);
+    await ingestion.ingestCandidate({
+      identity,
+      source: "manual",
+      sourceReference: "manual-proof-binding",
+      observedAt: new Date("2026-09-02T00:00:00.000Z"),
+      normalizedIngestionVersion: "manual-v1"
+    });
+    const reader = { async readIdentity() { return state(ownerA, walletA, 35); } };
+    await ingestion.reconcileIdentity(reader, identity);
+    const claims = new IdentityClaimService(
+      repository,
+      reader,
+      {
+        async verify({ proof: verified }) {
+          return verifiedProof({ ...verified, resources: ["https://evil.example/resource"] });
+        }
+      },
+      { now: () => new Date("2026-09-02T00:01:00.000Z"), internalOperatorId: "operator:indexer" }
+    );
+    await expect(
+      claims.claim({ identity, proof: claimProof(ownerA, "nonce-binding"), context: claimContext })
+    ).rejects.toMatchObject({ code: "CLAIM_PROOF_INVALID" });
+    expect(await repository.getClaim(erc8004IdentityKey(identity))).toBeNull();
   });
 
   it("does not erase unaffected canonical fields when an event declares only the fields it changed", async () => {
@@ -232,6 +339,10 @@ describe("A3 identity and discovery ingestion", () => {
       identityRegistry: identity.identityRegistry,
       throughBlock: 11,
       finalizedBlockHash: "0x" + "11".repeat(32)
+    }, {
+      async getTrustedBlockHash(blockNumber) {
+        return "0x" + blockNumber.toString(10).padStart(2, "0").repeat(32);
+      }
     });
     const record = await repository.findIdentity(identity);
 
@@ -255,20 +366,19 @@ describe("A3 identity and discovery ingestion", () => {
     const claims = new IdentityClaimService(
       repository,
       reader,
-      { async verify() { return true; } },
-      { now: () => new Date("2026-09-02T00:01:00.000Z") }
+      {
+        async verify({ proof: verified }) { return verifiedProof(verified); }
+      },
+      { now: () => new Date("2026-09-02T00:01:00.000Z"), internalOperatorId: "operator:indexer", operatorAuthorizer: {
+        async authorize({ operator }) { return operator; }
+      } }
     );
     await claims.claim({
       identity,
-      proof: {
-        address: ownerA,
-        chainId: 97,
-        issuedAt: new Date("2026-09-02T00:00:00.000Z"),
-        expirationTime: new Date("2026-09-02T00:10:00.000Z"),
-        nonce: "nonce-revoke"
-      }
+      proof: claimProof(ownerA, "nonce-revoke"),
+      context: claimContext
     });
-    const revoked = await claims.revoke(identity, "operator revoked owner-management proof");
+    const revoked = await claims.revoke(identity, "operator revoked owner-management proof", testOperator);
 
     expect(revoked.state.claimStatus).toBe("stale");
     expect((await repository.listClaimEvents("eip155:97:0x1111111111111111111111111111111111111111:115792089237316195423570985008687907853269984665640564039457584007913129639935"))[1]?.eventType).toBe("revoked");
@@ -276,6 +386,70 @@ describe("A3 identity and discovery ingestion", () => {
 });
 
 describe("reorg-aware registry synchronization", () => {
+  it("fails closed when a trusted provider hash disagrees with an event before promotion", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const ingestion = new AgentIngestionService(repository);
+    const event = registryEvent({
+      transactionHash: "0x" + "09".repeat(32),
+      logIndex: 0,
+      blockNumber: 9,
+      blockHash: "0x" + "09".repeat(32)
+    });
+    await ingestion.ingestRegistryEvents([event], { chainId: 97, identityRegistry: identity.identityRegistry });
+
+    await expect(
+      ingestion.canonicalizeThrough(
+        {
+          chainId: 97,
+          identityRegistry: identity.identityRegistry,
+          throughBlock: 9,
+          finalizedBlockHash: "0x" + "aa".repeat(32)
+        },
+        { async getTrustedBlockHash() { return "0x" + "aa".repeat(32); } }
+      )
+    ).rejects.toMatchObject({ code: "REORG_RECONCILIATION_REQUIRED" });
+    expect(
+      (await repository.listObservations({ chainId: 97, identityRegistry: identity.identityRegistry }))[0]?.confirmationState
+    ).toBe("provisional");
+  });
+
+  it("rolls back observations, identities, and checkpoint when the final checkpoint write fails", async () => {
+    class FailingCheckpointRepository extends InMemoryIngestionRepository {
+      override async saveCheckpoint(): Promise<never> {
+        throw new Error("checkpoint write failed");
+      }
+    }
+    const repository = new FailingCheckpointRepository();
+    const ingestion = new AgentIngestionService(repository);
+    const blockHash = "0x" + "0a".repeat(32);
+    const reader: RegistryChainReader = {
+      async getLatestBlock() { return 10; },
+      async getTrustedBlockHash() { return blockHash; },
+      async getRegistryEvents() {
+        return [registryEvent({
+          transactionHash: "0x" + "0a".repeat(32),
+          logIndex: 0,
+          blockNumber: 10,
+          blockHash
+        })];
+      },
+      async readIdentity() { return state(ownerA, walletA, 10); },
+      async findCommonAncestor() { return 0; }
+    };
+
+    await expect(
+      ingestion.syncRegistry(reader, {
+        chainId: 97,
+        identityRegistry: identity.identityRegistry,
+        startBlock: 10,
+        confirmationThreshold: 0
+      })
+    ).rejects.toThrow("checkpoint write failed");
+    expect(await repository.getCheckpoint(97, identity.identityRegistry)).toBeNull();
+    expect(await repository.listIdentities()).toHaveLength(0);
+    expect(await repository.listObservations({ chainId: 97, identityRegistry: identity.identityRegistry })).toHaveLength(0);
+  });
+
   it("promotes finalized observations, rewinds on block-hash mismatch, and replays the replacement chain", async () => {
     const repository = new InMemoryIngestionRepository();
     const ingestion = new AgentIngestionService(repository);
@@ -286,10 +460,16 @@ describe("reorg-aware registry synchronization", () => {
       13: "0x" + "13".repeat(32)
     };
     let phase = 1;
+    let checkpointProbe = true;
     const reader: RegistryChainReader = {
       async getLatestBlock() { return phase === 1 ? 12 : 13; },
-      async getBlockHash(blockNumber) {
-        if (phase === 2 && blockNumber === 12) return "0x" + "aa".repeat(32);
+      async getTrustedBlockHash(blockNumber) {
+        if (phase === 2 && blockNumber === 12 && checkpointProbe) {
+          checkpointProbe = false;
+          return "0x" + "aa".repeat(32);
+        }
+        if (phase === 2 && blockNumber === 11) return "0x" + "bb".repeat(32);
+        if (phase === 2 && blockNumber === 12) return "0x" + "cc".repeat(32);
         return hashes[blockNumber] ?? null;
       },
       async getRegistryEvents(query) {

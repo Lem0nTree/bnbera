@@ -29,6 +29,13 @@
       "when": 1788305934211,
       "tag": "0003_service_probe_results",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788306000000,
+      "tag": "0004_claim_cas",
+      "breakpoints": true
     }
   ]
 }

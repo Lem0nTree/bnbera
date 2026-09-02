@@ -6,20 +6,45 @@ import {
   type Erc8004Identity
 } from "@bnbera/domain";
 import { ingestionError } from "./errors.js";
+import {
+  canonicalClaimProofDigest,
+  normalizeClaimVerificationContext,
+  normalizeClaimVerificationProof
+} from "./normalize.js";
 import type {
+  AuthenticatedOperator,
+  ClaimMutationActor,
   ClaimRecord,
+  ClaimVerificationContext,
   ClaimVerificationProof,
   DirectIdentityState,
   IdentityRecord,
-  IngestionRepository
+  IngestionRepository,
+  VerifiedClaimProof
 } from "./types.js";
 
+/**
+ * Signature verification must return the verified SIWE fields. A boolean is
+ * deliberately not sufficient: the caller must be able to compare the
+ * recovered address, identity, action, resources, URI, domain, chain, time,
+ * nonce, and signature digest to the issued challenge.
+ */
 export interface OwnerProofVerifier {
   verify(input: {
     readonly identity: Erc8004Identity;
     readonly ownerAddress: string;
+    readonly context: ClaimVerificationContext;
     readonly proof: ClaimVerificationProof;
-  }): Promise<boolean>;
+  }): Promise<VerifiedClaimProof | null>;
+}
+
+export interface ClaimOperatorAuthorizer {
+  /** Return the authenticated principal and scopes, or null on denial. */
+  authorize(input: {
+    readonly identity: Erc8004Identity;
+    readonly action: "revoke";
+    readonly operator: AuthenticatedOperator;
+  }): Promise<AuthenticatedOperator | null>;
 }
 
 export interface ClaimIdentityReader {
@@ -28,11 +53,16 @@ export interface ClaimIdentityReader {
 
 export type ClaimServiceOptions = {
   readonly now?: () => Date;
+  /** Authenticated internal principal used for reconciliation transitions. */
+  readonly internalOperatorId?: string;
+  /** Authorization boundary for explicit operator revocation. */
+  readonly operatorAuthorizer?: ClaimOperatorAuthorizer;
 };
 
 /**
  * ERC-721 owner control is verified independently from the ERC-8004
  * `agentWallet`. A valid owner proof never changes the agentWallet field.
+ * Claim and claim-event writes go through one repository CAS mutation.
  */
 export class IdentityClaimService {
   public constructor(
@@ -45,9 +75,15 @@ export class IdentityClaimService {
   async claim(input: {
     readonly identity: Erc8004Identity;
     readonly proof: ClaimVerificationProof;
+    /** Server-issued SIWE challenge context expected for this request. */
+    readonly context: ClaimVerificationContext;
   }): Promise<IdentityRecord> {
     const identity = normalizeErc8004Identity(input.identity);
     const identityKey = erc8004IdentityKey(identity);
+    const context = normalizeClaimVerificationContext(input.context);
+    const proof = normalizeClaimVerificationProof(input.proof);
+    this.assertProofBindsToChallenge(identity, proof, context);
+
     const existing = await this.repository.findIdentity(identity);
     if (existing === null) {
       throw ingestionError("CLAIM_NOT_ACTIVE", "The identity must be discovered before it can be claimed.", "import_identity");
@@ -57,56 +93,80 @@ export class IdentityClaimService {
     if (ownerAddress === null) {
       throw ingestionError("CLAIM_OWNER_MISMATCH", "The identity has no current ERC-721 owner.", "retry_owner_read");
     }
-    const proofAddress = normalizeEvmAddress(input.proof.address);
-    if (proofAddress !== ownerAddress || input.proof.chainId !== identity.chainId) {
+    if (proof.address !== ownerAddress || proof.chainId !== identity.chainId) {
       throw ingestionError(
         "CLAIM_OWNER_MISMATCH",
         "The connected wallet is not the current ERC-721 owner.",
         "connect_owner_wallet"
       );
     }
-    this.assertProofTime(input.proof);
-    let verified = false;
+    this.assertProofTime(proof);
+
+    let verified: VerifiedClaimProof | null;
     try {
-      verified = await this.proofVerifier.verify({ identity, ownerAddress, proof: input.proof });
+      verified = await this.proofVerifier.verify({ identity, ownerAddress, context, proof });
     } catch (cause) {
       throw ingestionError("CLAIM_PROOF_INVALID", "The wallet proof could not be verified.", "sign_in_again", cause);
     }
-    if (verified !== true) {
+    if (verified === null) {
       throw ingestionError("CLAIM_PROOF_INVALID", "The wallet proof could not be verified.", "sign_in_again");
     }
+    const normalizedVerified = this.normalizeVerifiedProof(verified);
+    this.assertProofBindsToChallenge(identity, normalizedVerified, context);
+    if (!sameProofFields(proof, normalizedVerified)) {
+      throw ingestionError(
+        "CLAIM_PROOF_INVALID",
+        "The verified wallet proof does not match the issued SIWE challenge.",
+        "sign_in_again"
+      );
+    }
 
-    const canonical = await this.repository.applyCanonicalState({ identity, ...current });
-    const now = this.now();
-    const priorClaim = await this.repository.getClaim(identityKey);
-    if (priorClaim?.status === "claimed" && priorClaim.claimantAddress !== ownerAddress) {
-      throw ingestionError("CLAIM_NOT_ACTIVE", "Another active owner claim must be reconciled first.", "reconcile_claim");
-    }
-    if (priorClaim !== null && priorClaim.status !== "claimed") {
-      assertStateTransition("claimStatus", priorClaim.status, "claimed");
-    }
-    const claim: ClaimRecord = {
-      identityKey,
-      status: "claimed",
-      claimantAddress: ownerAddress,
-      ownerAddressAtVerification: ownerAddress,
-      agentWalletAtVerification: canonical.agentWallet,
-      verifiedAt: now,
-      staleAt: null,
-      lastReason: "claimed"
-    };
-    await this.repository.saveClaim(claim);
-    await this.repository.appendClaimEvent({
-      identityKey,
-      eventType: "claimed",
-      claimantAddress: ownerAddress,
-      observedOwnerAddress: canonical.ownerAddress,
-      observedAgentWallet: canonical.agentWallet,
-      proofDigest: input.proof.signatureDigest ?? null,
-      reason: "Current ERC-721 owner proved control with SIWE.",
-      occurredAt: now
+    const proofDigest = canonicalClaimProofDigest(proof, context);
+    return this.repository.withTransaction(async (unitOfWork) => {
+      // Re-read the claim row in the unit of work. The CAS below prevents two
+      // concurrent owners or stale requests from overwriting one another.
+      const canonical = await unitOfWork.applyCanonicalState({ identity, ...current });
+      const priorClaim = await unitOfWork.getClaim(identityKey);
+      if (priorClaim?.status === "claimed" && priorClaim.claimantAddress !== ownerAddress) {
+        throw ingestionError("CLAIM_NOT_ACTIVE", "Another active owner claim must be reconciled first.", "reconcile_claim");
+      }
+      if (priorClaim !== null && priorClaim.status !== "claimed") {
+        assertStateTransition("claimStatus", priorClaim.status, "claimed");
+      }
+      const now = this.now();
+      const claim: ClaimRecord = {
+        identityKey,
+        version: (priorClaim?.version ?? 0) + 1,
+        status: "claimed",
+        claimantAddress: ownerAddress,
+        ownerAddressAtVerification: ownerAddress,
+        agentWalletAtVerification: canonical.agentWallet,
+        verifiedAt: now,
+        staleAt: null,
+        lastReason: "claimed"
+      };
+      const actor: ClaimMutationActor = { type: "owner", walletAddress: ownerAddress, proofDigest };
+      await unitOfWork.mutateClaim({
+        identityKey,
+        expectedVersion: priorClaim?.version ?? null,
+        expectedStatus: priorClaim?.status ?? null,
+        claim,
+        actor,
+        event: {
+          identityKey,
+          eventType: "claimed",
+          claimantAddress: ownerAddress,
+          observedOwnerAddress: canonical.ownerAddress,
+          observedAgentWallet: canonical.agentWallet,
+          proofDigest,
+          actorType: "owner",
+          actorId: ownerAddress,
+          reason: "Current ERC-721 owner proved control with SIWE.",
+          occurredAt: now
+        }
+      });
+      return (await unitOfWork.findIdentity(identity)) ?? canonical;
     });
-    return (await this.repository.findIdentity(identity)) ?? canonical;
   }
 
   async revalidate(identityInput: Erc8004Identity, reason = "reconciliation"): Promise<IdentityRecord> {
@@ -117,36 +177,77 @@ export class IdentityClaimService {
     }
     const current = await this.reader.readIdentity(identity);
     const currentOwner = current.ownerAddress === null ? null : normalizeEvmAddress(current.ownerAddress);
-    const claim = await this.repository.getClaim(erc8004IdentityKey(identity));
-    const record = await this.repository.applyCanonicalState({ identity, ...current });
-    if (claim?.status === "claimed" && claim.claimantAddress !== currentOwner) {
-      assertStateTransition("claimStatus", claim.status, "stale");
-      const staleAt = this.now();
-      await this.repository.saveClaim({
-        ...claim,
-        status: "stale",
-        staleAt,
-        lastReason: reason === "revoked" ? "revoked" : "reconciliation"
-      });
-      await this.repository.appendClaimEvent({
-        identityKey: erc8004IdentityKey(identity),
-        eventType: reason === "revoked" ? "revoked" : "stale",
-        claimantAddress: claim.claimantAddress,
-        observedOwnerAddress: currentOwner,
-        observedAgentWallet: record.agentWallet,
-        proofDigest: null,
-        reason,
-        occurredAt: staleAt
-      });
-    }
-    return (await this.repository.findIdentity(identity)) ?? record;
+    return this.repository.withTransaction(async (unitOfWork) => {
+      const claim = await unitOfWork.getClaim(erc8004IdentityKey(identity));
+      const record = await unitOfWork.applyCanonicalState({ identity, ...current });
+      if (claim?.status === "claimed" && claim.claimantAddress !== currentOwner) {
+        assertStateTransition("claimStatus", claim.status, "stale");
+        const staleAt = this.now();
+        const operator = this.internalOperator("reconciliation");
+        await unitOfWork.mutateClaim({
+          identityKey: erc8004IdentityKey(identity),
+          expectedVersion: claim.version,
+          expectedStatus: claim.status,
+          claim: {
+            ...claim,
+            version: claim.version + 1,
+            status: "stale",
+            staleAt,
+            lastReason: reason === "revoked" ? "revoked" : "reconciliation"
+          },
+          actor: operator,
+          event: {
+            identityKey: erc8004IdentityKey(identity),
+            eventType: reason === "revoked" ? "revoked" : "stale",
+            claimantAddress: claim.claimantAddress,
+            observedOwnerAddress: currentOwner,
+            observedAgentWallet: record.agentWallet,
+            proofDigest: null,
+            actorType: "operator",
+            actorId: operator.operatorId,
+            reason,
+            occurredAt: staleAt
+          }
+        });
+      }
+      return (await unitOfWork.findIdentity(identity)) ?? record;
+    });
   }
 
-  async revoke(identityInput: Erc8004Identity, reason = "revoked"): Promise<IdentityRecord> {
+  /**
+   * Revoke requires a caller-provided authenticated operator context and a
+   * server-side authorizer. There is intentionally no unauthenticated
+   * convenience overload.
+   */
+  async revoke(
+    identityInput: Erc8004Identity,
+    reason: string,
+    operator: AuthenticatedOperator
+  ): Promise<IdentityRecord> {
     const identity = normalizeErc8004Identity(identityInput);
     const record = await this.repository.findIdentity(identity);
     if (record === null) {
       throw ingestionError("CLAIM_NOT_ACTIVE", "The identity is not in the ingestion index.", "import_identity");
+    }
+    const authorizer = this.options.operatorAuthorizer;
+    if (authorizer === undefined) {
+      throw ingestionError(
+        "CLAIM_AUTHORIZATION_REQUIRED",
+        "An authenticated operator session is required to revoke a claim.",
+        "authenticate_operator"
+      );
+    }
+    const authorized = await authorizer.authorize({ identity, action: "revoke", operator });
+    if (
+      authorized === null ||
+      authorized.operatorId.trim().length === 0 ||
+      !authorized.scopes.includes("identity.claim.revoke")
+    ) {
+      throw ingestionError(
+        "CLAIM_AUTHORIZATION_REQUIRED",
+        "The operator is not authorized to revoke this claim.",
+        "authenticate_operator"
+      );
     }
     const claim = await this.repository.getClaim(erc8004IdentityKey(identity));
     if (claim === null || claim.status !== "claimed") {
@@ -154,18 +255,71 @@ export class IdentityClaimService {
     }
     assertStateTransition("claimStatus", claim.status, "stale");
     const now = this.now();
-    await this.repository.saveClaim({ ...claim, status: "stale", staleAt: now, lastReason: "revoked" });
-    await this.repository.appendClaimEvent({
-      identityKey: erc8004IdentityKey(identity),
-      eventType: "revoked",
-      claimantAddress: claim.claimantAddress,
-      observedOwnerAddress: record.ownerAddress,
-      observedAgentWallet: record.agentWallet,
-      proofDigest: null,
-      reason,
-      occurredAt: now
+    const actor: ClaimMutationActor = {
+      type: "operator",
+      operatorId: authorized.operatorId,
+      scope: "identity.claim.revoke"
+    };
+    await this.repository.withTransaction(async (unitOfWork) => {
+      await unitOfWork.mutateClaim({
+        identityKey: erc8004IdentityKey(identity),
+        expectedVersion: claim.version,
+        expectedStatus: claim.status,
+        claim: {
+          ...claim,
+          version: claim.version + 1,
+          status: "stale",
+          staleAt: now,
+          lastReason: "revoked"
+        },
+        actor,
+        event: {
+          identityKey: erc8004IdentityKey(identity),
+          eventType: "revoked",
+          claimantAddress: claim.claimantAddress,
+          observedOwnerAddress: record.ownerAddress,
+          observedAgentWallet: record.agentWallet,
+          proofDigest: null,
+          actorType: "operator",
+          actorId: authorized.operatorId,
+          reason,
+          occurredAt: now
+        }
+      });
     });
     return (await this.repository.findIdentity(identity)) ?? record;
+  }
+
+  private normalizeVerifiedProof(proof: VerifiedClaimProof): VerifiedClaimProof {
+    const normalized = normalizeClaimVerificationProof(proof);
+    if (!(proof.verifiedAt instanceof Date) || !Number.isFinite(proof.verifiedAt.getTime())) {
+      throw ingestionError("CLAIM_PROOF_INVALID", "The wallet verifier returned incomplete proof fields.", "sign_in_again");
+    }
+    return { ...normalized, verifiedAt: proof.verifiedAt };
+  }
+
+  private assertProofBindsToChallenge(
+    identity: Erc8004Identity,
+    proof: ClaimVerificationProof,
+    context: ClaimVerificationContext
+  ): void {
+    const normalizedContext = normalizeClaimVerificationContext(context);
+    if (
+      erc8004IdentityKey(proof.identity) !== erc8004IdentityKey(identity) ||
+      proof.chainId !== identity.chainId ||
+      proof.chainId !== normalizedContext.chainId ||
+      proof.domain !== normalizedContext.domain ||
+      proof.uri !== normalizedContext.uri ||
+      proof.action !== normalizedContext.action ||
+      proof.resources.length !== normalizedContext.resources.length ||
+      proof.resources.some((resource, index) => resource !== normalizedContext.resources[index])
+    ) {
+      throw ingestionError(
+        "CLAIM_PROOF_INVALID",
+        "The wallet proof is not bound to this identity or SIWE challenge.",
+        "sign_in_again"
+      );
+    }
   }
 
   private assertProofTime(proof: ClaimVerificationProof): void {
@@ -186,7 +340,40 @@ export class IdentityClaimService {
     }
   }
 
+  private internalOperator(scope: "reconciliation"): Extract<ClaimMutationActor, { type: "operator" }> {
+    const operatorId = this.options.internalOperatorId?.trim();
+    if (operatorId === undefined || operatorId.length === 0) {
+      throw ingestionError(
+        "CLAIM_AUTHORIZATION_REQUIRED",
+        "An authenticated internal operator is required for claim reconciliation.",
+        "configure_identity_indexer"
+      );
+    }
+    return {
+      type: "operator",
+      operatorId,
+      scope: scope === "reconciliation" ? "identity.claim.reconcile" : "identity.claim.revoke"
+    };
+  }
+
   private now(): Date {
     return this.options.now?.() ?? new Date();
   }
+}
+
+function sameProofFields(a: ClaimVerificationProof, b: ClaimVerificationProof): boolean {
+  return (
+    erc8004IdentityKey(a.identity) === erc8004IdentityKey(b.identity) &&
+    a.address === b.address &&
+    a.chainId === b.chainId &&
+    a.domain === b.domain &&
+    a.uri === b.uri &&
+    a.action === b.action &&
+    a.resources.length === b.resources.length &&
+    a.resources.every((resource, index) => resource === b.resources[index]) &&
+    a.issuedAt.getTime() === b.issuedAt.getTime() &&
+    a.expirationTime.getTime() === b.expirationTime.getTime() &&
+    a.nonce === b.nonce &&
+    a.signatureDigest === b.signatureDigest
+  );
 }

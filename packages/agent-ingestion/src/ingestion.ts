@@ -13,11 +13,17 @@ import {
   normalizeServices,
   registryEventToObservation
 } from "./normalize.js";
-import { normalizeRegistryCheckpoint, type RegistryChainReader } from "./adapters/registry.js";
+import {
+  normalizeRegistryCheckpoint,
+  normalizeRegistryEvents,
+  type TrustedBlockHashReader,
+  type RegistryChainReader
+} from "./adapters/registry.js";
 import type {
   ChainCheckpoint,
   ChainObservation,
   ClaimRecord,
+  ClaimMutationActor,
   IdentityCandidate,
   IdentityKey,
   IdentityRecord,
@@ -85,17 +91,28 @@ export type RegistrySyncOptions = {
 export class AgentIngestionService {
   public constructor(
     private readonly repository: IngestionRepository,
-    private readonly options: { readonly now?: () => Date } = {}
+    private readonly options: {
+      readonly now?: () => Date;
+      /** Trusted internal principal for automatic stale/reorg transitions. */
+      readonly internalOperatorId?: string;
+    } = {}
   ) {}
 
   async ingestCandidate(input: IdentityCandidate): Promise<CandidateIngestionResult> {
+    return this.ingestCandidateInTransaction(this.repository, input);
+  }
+
+  private async ingestCandidateInTransaction(
+    repository: IngestionRepository,
+    input: IdentityCandidate
+  ): Promise<CandidateIngestionResult> {
     const candidate = normalizeCandidate(input);
     const identityKey = erc8004IdentityKey(candidate.identity);
-    const identity = await this.repository.upsertIdentity({
+    const identity = await repository.upsertIdentity({
       identity: candidate.identity,
       originType: originForSource(candidate.source)
     });
-    await this.repository.recordSource({
+    await repository.recordSource({
       identityKey,
       source: candidate.source,
       sourceReference: candidate.sourceReference,
@@ -115,7 +132,7 @@ export class AgentIngestionService {
           candidate.observedAt
         );
         capabilityDigest = capability.manifestDigest;
-        await this.repository.upsertCapabilities(capability);
+        await repository.upsertCapabilities(capability);
       } catch (error) {
         capabilityError = error instanceof Error ? error.message : "invalid capability manifest";
       }
@@ -129,7 +146,7 @@ export class AgentIngestionService {
       candidate.observedAt
     );
     for (const service of servicesResult.accepted) {
-      await this.repository.upsertService(service);
+      await repository.upsertService(service);
     }
 
     return {
@@ -144,10 +161,10 @@ export class AgentIngestionService {
   }
 
   async ingestCandidates(inputs: readonly IdentityCandidate[]): Promise<readonly CandidateIngestionResult[]> {
-    return this.repository.withTransaction(async () => {
+    return this.repository.withTransaction(async (unitOfWork) => {
       const results: CandidateIngestionResult[] = [];
       for (const input of inputs) {
-        results.push(await this.ingestCandidate(input));
+        results.push(await this.ingestCandidateInTransaction(unitOfWork, input));
       }
       return results;
     });
@@ -158,56 +175,84 @@ export class AgentIngestionService {
     expected: { readonly chainId: number; readonly identityRegistry: string },
     normalizedIngestionVersion = "registry-event-v1"
   ): Promise<RegistryIngestionResult> {
+    return this.repository.withTransaction((unitOfWork) =>
+      this.ingestRegistryEventsInTransaction(unitOfWork, inputs, expected, normalizedIngestionVersion)
+    );
+  }
+
+  private async ingestRegistryEventsInTransaction(
+    repository: IngestionRepository,
+    inputs: readonly RegistryEvent[],
+    expected: { readonly chainId: number; readonly identityRegistry: string },
+    normalizedIngestionVersion: string
+  ): Promise<RegistryIngestionResult> {
     const registry = normalizeEvmAddress(expected.identityRegistry);
     const observations: ChainObservation[] = [];
     let duplicateCount = 0;
-    await this.repository.withTransaction(async () => {
-      for (const input of inputs) {
-        const normalized = normalizeRegistryEvent(input);
-        if (
-          normalized.identity.chainId !== expected.chainId ||
-          normalized.identity.identityRegistry !== registry
-        ) {
-          throw ingestionError(
-            "IDENTITY_CONFLICT",
-            "A registry event belongs to a different configured network.",
-            "review_chain_configuration"
-          );
-        }
-        const observation = registryEventToObservation(input);
-        const previous = await this.repository.findObservation(
-          observation.transactionHash,
-          observation.logIndex
+    for (const input of inputs) {
+      const normalized = normalizeRegistryEvent(input);
+      if (
+        normalized.identity.chainId !== expected.chainId ||
+        normalized.identity.identityRegistry !== registry
+      ) {
+        throw ingestionError(
+          "IDENTITY_CONFLICT",
+          "A registry event belongs to a different configured network.",
+          "review_chain_configuration"
         );
-        const stored = await this.repository.appendObservation(observation);
-        if (previous !== null) {
-          duplicateCount += 1;
-        }
-        await this.repository.upsertIdentity({
-          identity: observation.identity,
-          originType: "discovered"
-        });
-        await this.repository.recordSource({
-          identityKey: observation.identityKey,
-          source: "registry_event",
-          sourceReference: registrySourceReference(observation),
-          observedAt: observation.firstObservedAt,
-          rawResponseDigest: observation.payloadDigest,
-          normalizedIngestionVersion
-        });
-        observations.push(stored);
       }
-    });
+      const observation = registryEventToObservation(input);
+      const previous = await repository.findObservation(
+        observation.transactionHash,
+        observation.logIndex
+      );
+      const stored = await repository.appendObservation(observation);
+      if (previous !== null) {
+        duplicateCount += 1;
+      }
+      await repository.upsertIdentity({
+        identity: observation.identity,
+        originType: "discovered"
+      });
+      await repository.recordSource({
+        identityKey: observation.identityKey,
+        source: "registry_event",
+        sourceReference: registrySourceReference(observation),
+        observedAt: observation.firstObservedAt,
+        rawResponseDigest: observation.payloadDigest,
+        normalizedIngestionVersion
+      });
+      observations.push(stored);
+    }
     return { observations, duplicateCount };
   }
 
-  async canonicalizeThrough(input: {
+  async canonicalizeThrough(
+    input: {
+      readonly chainId: number;
+      readonly identityRegistry: string;
+      readonly throughBlock: number;
+      readonly finalizedBlockHash: string;
+      readonly canonicalizedAt?: Date;
+    },
+    trustedBlockHashReader: TrustedBlockHashReader
+  ): Promise<readonly ChainObservation[]> {
+    return this.repository.withTransaction((unitOfWork) =>
+      this.canonicalizeThroughInTransaction(unitOfWork, input, trustedBlockHashReader)
+    );
+  }
+
+  private async canonicalizeThroughInTransaction(
+    repository: IngestionRepository,
+    input: {
     readonly chainId: number;
     readonly identityRegistry: string;
     readonly throughBlock: number;
     readonly finalizedBlockHash: string;
     readonly canonicalizedAt?: Date;
-  }): Promise<readonly ChainObservation[]> {
+    },
+    trustedBlockHashReader: TrustedBlockHashReader
+  ): Promise<readonly ChainObservation[]> {
     const registry = normalizeEvmAddress(input.identityRegistry);
     if (
       !Number.isSafeInteger(input.throughBlock) ||
@@ -216,21 +261,34 @@ export class AgentIngestionService {
     ) {
       throw ingestionError("INGESTION_INPUT_INVALID", "The finality block is invalid.", "fix_finality");
     }
-    const promoted = await this.repository.markCanonical({
+    await this.assertTrustedBlockHash(
+      trustedBlockHashReader,
+      input.throughBlock,
+      input.finalizedBlockHash,
+      "The finality block hash changed before canonicalization."
+    );
+    const candidates = await repository.listObservations({
+      chainId: input.chainId,
+      identityRegistry: registry,
+      toBlock: input.throughBlock,
+      state: "provisional"
+    });
+    await this.assertTrustedObservationHashes(trustedBlockHashReader, candidates);
+    const promoted = await repository.markCanonical({
       chainId: input.chainId,
       identityRegistry: registry,
       throughBlock: input.throughBlock,
       canonicalizedAt: input.canonicalizedAt ?? this.now()
     });
     for (const observation of promoted) {
-      const previous = await this.repository.findIdentity(observation.identity);
+      const previous = await repository.findIdentity(observation.identity);
       const previousState = previous ?? {
         ownerAddress: null,
         agentWallet: null,
         agentUri: null,
         contentDigest: null
       };
-      const record = await this.repository.applyCanonicalState({
+      const record = await repository.applyCanonicalState({
         identity: observation.identity,
         ownerAddress: observation.observedFields.includes("ownerAddress")
           ? observation.ownerAddress
@@ -252,6 +310,7 @@ export class AgentIngestionService {
         previous.state.claimStatus === "claimed"
       ) {
         await this.markClaimStale(
+          repository,
           record,
           "owner_transfer",
           "Canonical registry ownership changed; prior claim is stale."
@@ -262,6 +321,16 @@ export class AgentIngestionService {
   }
 
   async syncRegistry(reader: RegistryChainReader, options: RegistrySyncOptions): Promise<RegistrySyncResult> {
+    return this.repository.withTransaction((unitOfWork) =>
+      this.syncRegistryInTransaction(unitOfWork, reader, options)
+    );
+  }
+
+  private async syncRegistryInTransaction(
+    repository: IngestionRepository,
+    reader: RegistryChainReader,
+    options: RegistrySyncOptions
+  ): Promise<RegistrySyncResult> {
     const registry = normalizeEvmAddress(options.identityRegistry);
     const now = options.now ?? this.options.now ?? (() => new Date());
     if (!Number.isSafeInteger(options.confirmationThreshold) || options.confirmationThreshold < 0) {
@@ -272,15 +341,15 @@ export class AgentIngestionService {
       throw ingestionError("INGESTION_INPUT_INVALID", "The chain head is invalid.", "retry_chain_read");
     }
     const finalizedBlock = Math.max(0, latestBlock - options.confirmationThreshold);
-    let checkpoint = await this.repository.getCheckpoint(options.chainId, registry);
+    let checkpoint = await repository.getCheckpoint(options.chainId, registry);
     let reorgRewound = false;
     let orphanedObservationCount = 0;
     const affectedIdentityKeys = new Set<IdentityKey>();
 
     if (checkpoint !== null && checkpoint.lastScannedBlock > 0) {
-      const currentHash = await reader.getBlockHash(checkpoint.lastScannedBlock);
+      const currentHash = await reader.getTrustedBlockHash(checkpoint.lastScannedBlock);
       if (currentHash === null || currentHash.toLowerCase() !== checkpoint.lastScannedBlockHash.toLowerCase()) {
-        const reorg = await this.rewindAndReconcile(reader, checkpoint, now);
+        const reorg = await this.rewindAndReconcile(repository, reader, checkpoint, now);
         reorgRewound = true;
         orphanedObservationCount = reorg.orphanedObservationCount;
         for (const key of reorg.affectedIdentityKeys) {
@@ -297,9 +366,11 @@ export class AgentIngestionService {
     let promotedObservationCount = 0;
     let scannedFromBlock: number | null = null;
     let scannedThrough: number | null = null;
+    let scannedBlock: number | null = checkpoint?.lastScannedBlock ?? null;
     if (fromBlock <= latestBlock) {
       scannedFromBlock = fromBlock;
       scannedThrough = latestBlock;
+      scannedBlock = latestBlock;
       const events = await reader.getRegistryEvents({
         chainId: options.chainId,
         identityRegistry: registry,
@@ -313,16 +384,22 @@ export class AgentIngestionService {
           "review_chain_provider"
         );
       }
-      const ingested = await this.ingestRegistryEvents(events, {
+      const normalizedEvents = normalizeRegistryEvents(events);
+      await this.assertTrustedObservationHashes(reader, normalizedEvents);
+      const ingested = await this.ingestRegistryEventsInTransaction(repository, events, {
         chainId: options.chainId,
         identityRegistry: registry
-      }, options.normalizedIngestionVersion);
+      }, options.normalizedIngestionVersion ?? "registry-event-v1");
       insertedObservationCount = ingested.observations.length - ingested.duplicateCount;
       for (const observation of ingested.observations) {
         affectedIdentityKeys.add(observation.identityKey);
       }
-      const scannedHash = await reader.getBlockHash(latestBlock);
-      const finalizedHash = await reader.getBlockHash(finalizedBlock);
+    }
+
+    if (scannedBlock !== null) {
+      const finalityBlock = Math.min(finalizedBlock, scannedBlock);
+      const scannedHash = await reader.getTrustedBlockHash(scannedBlock);
+      const finalizedHash = await reader.getTrustedBlockHash(finalityBlock);
       if (scannedHash === null || finalizedHash === null) {
         throw ingestionError(
           "REORG_RECONCILIATION_REQUIRED",
@@ -332,25 +409,29 @@ export class AgentIngestionService {
           true
         );
       }
-      checkpoint = normalizeRegistryCheckpoint({
+      const promoted = await this.canonicalizeThroughInTransaction(repository, {
         chainId: options.chainId,
         identityRegistry: registry,
-        lastScannedBlock: latestBlock,
+        throughBlock: finalityBlock,
+        finalizedBlockHash: finalizedHash,
+        canonicalizedAt: now()
+      }, reader);
+      // This is deliberately the final write in the unit of work. If
+      // canonicalization or any identity/claim mutation fails, the enclosing
+      // transaction rolls back and this checkpoint is never committed.
+      const nextCheckpoint = normalizeRegistryCheckpoint({
+        chainId: options.chainId,
+        identityRegistry: registry,
+        lastScannedBlock: scannedBlock,
         lastScannedBlockHash: scannedHash,
-        lastFinalizedBlock: finalizedBlock,
+        lastFinalizedBlock: finalityBlock,
         lastFinalizedBlockHash: finalizedHash,
         confirmationThreshold: options.confirmationThreshold,
         cursorVersion: (checkpoint?.cursorVersion ?? 0) + 1,
         lastReconciliationAt: checkpoint?.lastReconciliationAt ?? null
       });
-      await this.repository.saveCheckpoint(checkpoint);
-      const promoted = await this.canonicalizeThrough({
-        chainId: options.chainId,
-        identityRegistry: registry,
-        throughBlock: finalizedBlock,
-        finalizedBlockHash: finalizedHash,
-        canonicalizedAt: now()
-      });
+      await repository.saveCheckpoint(nextCheckpoint);
+      checkpoint = nextCheckpoint;
       promotedObservationCount = promoted.length;
       for (const observation of promoted) {
         affectedIdentityKeys.add(observation.identityKey);
@@ -376,19 +457,22 @@ export class AgentIngestionService {
   ): Promise<IdentityRecord> {
     const normalizedIdentity = normalizeErc8004Identity(identity);
     const current = await reader.readIdentity(normalizedIdentity);
-    const previous = await this.repository.findIdentity(normalizedIdentity);
-    const record = await this.repository.applyCanonicalState({ identity: normalizedIdentity, ...current });
-    if (
-      previous !== null &&
-      previous.state.claimStatus === "claimed" &&
-      previous.ownerAddress !== record.ownerAddress
-    ) {
-      await this.markClaimStale(record, "reconciliation", reason);
-    }
-    return record;
+    return this.repository.withTransaction(async (unitOfWork) => {
+      const previous = await unitOfWork.findIdentity(normalizedIdentity);
+      const record = await unitOfWork.applyCanonicalState({ identity: normalizedIdentity, ...current });
+      if (
+        previous !== null &&
+        previous.state.claimStatus === "claimed" &&
+        previous.ownerAddress !== record.ownerAddress
+      ) {
+        await this.markClaimStale(unitOfWork, record, "reconciliation", reason);
+      }
+      return record;
+    });
   }
 
   private async rewindAndReconcile(
+    repository: IngestionRepository,
     reader: RegistryChainReader,
     checkpoint: ChainCheckpoint,
     now: () => Date
@@ -411,7 +495,7 @@ export class AgentIngestionService {
         "review_chain_reconciliation"
       );
     }
-    const ancestorHash = await reader.getBlockHash(commonAncestor);
+    const ancestorHash = await reader.getTrustedBlockHash(commonAncestor);
     if (ancestorHash === null) {
       throw ingestionError(
         "REORG_RECONCILIATION_REQUIRED",
@@ -421,7 +505,7 @@ export class AgentIngestionService {
         true
       );
     }
-    const affectedIdentityKeys = await this.repository.markOrphaned({
+    const affectedIdentityKeys = await repository.markOrphaned({
       chainId: checkpoint.chainId,
       identityRegistry: checkpoint.identityRegistry,
       fromBlock: commonAncestor + 1,
@@ -429,7 +513,7 @@ export class AgentIngestionService {
     });
     const affectedSet = new Set(affectedIdentityKeys);
     for (const identityKey of affectedIdentityKeys) {
-      const record = (await this.repository.listIdentities()).find(
+      const record = (await repository.listIdentities()).find(
         (candidate) => erc8004IdentityKey(candidate.identity) === identityKey
       );
       if (record === undefined) {
@@ -437,9 +521,9 @@ export class AgentIngestionService {
       }
       const current = await reader.readIdentity(record.identity);
       const previousOwner = record.ownerAddress;
-      const reconciled = await this.repository.applyCanonicalState({ identity: record.identity, ...current });
+      const reconciled = await repository.applyCanonicalState({ identity: record.identity, ...current });
       if (previousOwner !== reconciled.ownerAddress && record.state.claimStatus === "claimed") {
-        await this.markClaimStale(reconciled, "reconciliation", "Canonical state was reread after a reorg.");
+        await this.markClaimStale(repository, reconciled, "reconciliation", "Canonical state was reread after a reorg.");
       }
     }
     const nextCheckpoint: ChainCheckpoint = {
@@ -454,9 +538,8 @@ export class AgentIngestionService {
       cursorVersion: checkpoint.cursorVersion + 1,
       lastReconciliationAt: startedAt
     };
-    await this.repository.saveCheckpoint(nextCheckpoint);
     const finishedAt = now();
-    await this.repository.appendReconciliation({
+    await repository.appendReconciliation({
       chainId: checkpoint.chainId,
       identityRegistry: checkpoint.identityRegistry,
       previousScannedBlock: checkpoint.lastScannedBlock,
@@ -467,7 +550,7 @@ export class AgentIngestionService {
       finishedAt,
       errorCode: null
     });
-    const observations = await this.repository.listObservations({
+    const observations = await repository.listObservations({
       chainId: checkpoint.chainId,
       identityRegistry: checkpoint.identityRegistry,
       fromBlock: commonAncestor + 1
@@ -480,32 +563,112 @@ export class AgentIngestionService {
   }
 
   private async markClaimStale(
+    repository: IngestionRepository,
     identity: IdentityRecord,
     reason: ClaimRecord["lastReason"],
     message: string
   ): Promise<void> {
-    const existing = await this.repository.getClaim(erc8004IdentityKey(identity.identity));
+    const existing = await repository.getClaim(erc8004IdentityKey(identity.identity));
     if (existing === null || existing.status !== "claimed") {
       return;
     }
     assertStateTransition("claimStatus", existing.status, "stale");
     const staleAt = this.now();
-    await this.repository.saveClaim({
-      ...existing,
-      status: "stale",
-      staleAt,
-      lastReason: reason
-    });
-    await this.repository.appendClaimEvent({
+    const operator: ClaimMutationActor = {
+      type: "operator",
+      operatorId: this.options.internalOperatorId?.trim() || "identity-indexer",
+      scope: "identity.claim.reconcile"
+    };
+    await repository.mutateClaim({
       identityKey: erc8004IdentityKey(identity.identity),
-      eventType: reason === "revoked" ? "revoked" : "stale",
-      claimantAddress: existing.claimantAddress,
-      observedOwnerAddress: identity.ownerAddress,
-      observedAgentWallet: identity.agentWallet,
-      proofDigest: null,
-      reason: message,
-      occurredAt: staleAt
+      expectedVersion: existing.version,
+      expectedStatus: existing.status,
+      claim: {
+        ...existing,
+        version: existing.version + 1,
+        status: "stale",
+        staleAt,
+        lastReason: reason
+      },
+      actor: operator,
+      event: {
+        identityKey: erc8004IdentityKey(identity.identity),
+        eventType: reason === "revoked" ? "revoked" : "stale",
+        claimantAddress: existing.claimantAddress,
+        observedOwnerAddress: identity.ownerAddress,
+        observedAgentWallet: identity.agentWallet,
+        proofDigest: null,
+        actorType: "operator",
+        actorId: operator.operatorId,
+        reason: message,
+        occurredAt: staleAt
+      }
     });
+  }
+
+  private async assertTrustedObservationHashes(
+    reader: TrustedBlockHashReader,
+    observations: readonly ChainObservation[]
+  ): Promise<void> {
+    const checked = new Map<number, string | null>();
+    for (const observation of observations) {
+      let trustedHash = checked.get(observation.blockNumber);
+      if (trustedHash === undefined && !checked.has(observation.blockNumber)) {
+        try {
+          trustedHash = await reader.getTrustedBlockHash(observation.blockNumber);
+        } catch (cause) {
+          throw ingestionError(
+            "REORG_RECONCILIATION_REQUIRED",
+            "The trusted chain provider could not validate an event block hash.",
+            "retry_chain_read",
+            cause,
+            true
+          );
+        }
+        checked.set(observation.blockNumber, trustedHash);
+      }
+      if (
+        trustedHash === null ||
+        trustedHash === undefined ||
+        !/^0x[0-9a-fA-F]{64}$/u.test(trustedHash) ||
+        trustedHash.toLowerCase() !== observation.blockHash.toLowerCase()
+      ) {
+        throw ingestionError(
+          "REORG_RECONCILIATION_REQUIRED",
+          "A registry event block hash does not match the trusted canonical chain.",
+          "reconcile_chain",
+          { blockNumber: observation.blockNumber, eventHash: observation.blockHash, trustedHash },
+          true
+        );
+      }
+    }
+  }
+
+  private async assertTrustedBlockHash(
+    reader: TrustedBlockHashReader,
+    blockNumber: number,
+    expectedHash: string,
+    message: string
+  ): Promise<void> {
+    let trustedHash: string | null;
+    try {
+      trustedHash = await reader.getTrustedBlockHash(blockNumber);
+    } catch (cause) {
+      throw ingestionError("REORG_RECONCILIATION_REQUIRED", message, "retry_chain_read", cause, true);
+    }
+    if (
+      trustedHash === null ||
+      !/^0x[0-9a-fA-F]{64}$/u.test(trustedHash) ||
+      trustedHash.toLowerCase() !== expectedHash.toLowerCase()
+    ) {
+      throw ingestionError(
+        "REORG_RECONCILIATION_REQUIRED",
+        message,
+        "reconcile_chain",
+        { blockNumber, expectedHash, trustedHash },
+        true
+      );
+    }
   }
 
   private now(): Date {

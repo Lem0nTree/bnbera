@@ -19,14 +19,22 @@ export type RegistryEventQuery = {
   readonly toBlock: number;
 };
 
+export interface TrustedBlockHashReader {
+  /** Hashes must come from the provider's canonical/finality-aware view. */
+  getTrustedBlockHash(blockNumber: number): Promise<string | null>;
+}
+
 /**
  * Chain access is a port, not an embedded RPC implementation. This prevents a
  * guessed registry address, provider endpoint, event ABI, or universal health
  * route from silently becoming protocol truth.
  */
-export interface RegistryChainReader {
+export interface RegistryChainReader extends TrustedBlockHashReader {
   getLatestBlock(): Promise<number>;
-  getBlockHash(blockNumber: number): Promise<string | null>;
+  /**
+   * Read the canonical hash from a trusted/finality-aware chain provider.
+   * Ordinary event payload hashes are never accepted as a substitute.
+   */
   getRegistryEvents(query: RegistryEventQuery): Promise<readonly RegistryEvent[]>;
   readIdentity(identity: Erc8004Identity): Promise<DirectIdentityState>;
   findCommonAncestor(input: {
