@@ -49,8 +49,11 @@ standards lock and secret manager, not in this package.
   signature digest. Claim/event writes use a versioned CAS mutation; explicit
   revocation requires an authenticated operator scope.
 - `InMemoryIngestionRepository` is a deterministic contract fixture. The
-  application persistence adapter should implement the same repository ports
-  over the identity-scoped observation tables in `@bnbera/db`. The exported
+  exported `PostgresIngestionRepository` implements the same ports over the
+  identity-scoped observation tables in `@bnbera/db`, including transaction
+  boundaries and claim/checkpoint compare-and-set behavior. Construct it with
+  a `DATABASE_URL`, use `withTransaction` around ingestion/reconciliation or
+  claim mutations, and close it during worker shutdown. The exported
   repository mappings round-trip observation `contentDigest`/`payloadDigest`,
   lossless identity field/read provenance, and complete claim provenance
   without requiring Drizzle in this package.

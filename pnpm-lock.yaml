@@ -56,6 +56,9 @@ importers:
       '@bnbera/domain':
         specifier: workspace:*
         version: link:../domain
+      pg:
+        specifier: 8.13.1
+        version: 8.13.1
       zod:
         specifier: 3.24.1
         version: 3.24.1

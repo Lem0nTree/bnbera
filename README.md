@@ -31,6 +31,12 @@ explicitly with `DATABASE_URL=... pnpm db:migrate`; the command never logs the
 connection string. `pnpm db:check` validates schema/migration consistency only
 and does not connect to PostgreSQL.
 
+Remote Wave 0/1 operations are documented in
+[`docs/operations/wave0-wave1-remote.md`](./docs/operations/wave0-wave1-remote.md).
+After migrations, use `pnpm ops:ingestion-smoke` with a disposable database to
+verify durable identity ingestion, and `pnpm ops:standards-check` with explicit
+read-only BSC RPC endpoints to verify the configured ERC-8004 contracts.
+
 ## Security boundary
 
 The complete ERC-8004 identity key is `(namespace, chainId,
