@@ -39,6 +39,15 @@ importers:
         specifier: 2.1.8
         version: 2.1.8(@types/node@22.10.2)
 
+  packages/agent-commerce:
+    dependencies:
+      '@bnbera/domain':
+        specifier: workspace:*
+        version: link:../domain
+      zod:
+        specifier: 3.24.1
+        version: 3.24.1
+
   packages/altana: {}
 
   packages/auth:
@@ -79,6 +88,15 @@ importers:
 
   packages/domain:
     dependencies:
+      zod:
+        specifier: 3.24.1
+        version: 3.24.1
+
+  packages/payment-gateway:
+    dependencies:
+      '@bnbera/domain':
+        specifier: workspace:*
+        version: link:../domain
       zod:
         specifier: 3.24.1
         version: 3.24.1
