@@ -8,6 +8,48 @@
       "when": 1788294035106,
       "tag": "0000_round_wallflower",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788305592883,
+      "tag": "0001_identity_ingestion",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788305786795,
+      "tag": "0002_observation_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788305934211,
+      "tag": "0003_service_probe_results",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788306000000,
+      "tag": "0004_claim_cas",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788322087293,
+      "tag": "0005_claim_provenance_observation_digests",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788329419741,
+      "tag": "0006_identity_read_provenance",
+      "breakpoints": true
     }
   ]
 }

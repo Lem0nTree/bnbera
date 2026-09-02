@@ -59,6 +59,18 @@ importers:
         specifier: 3.24.1
         version: 3.24.1
 
+  packages/agent-ingestion:
+    dependencies:
+      '@bnbera/config':
+        specifier: workspace:*
+        version: link:../config
+      '@bnbera/domain':
+        specifier: workspace:*
+        version: link:../domain
+      zod:
+        specifier: 3.24.1
+        version: 3.24.1
+
   packages/config:
     dependencies:
       zod:
