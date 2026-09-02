@@ -36,6 +36,13 @@
       "when": 1788306000000,
       "tag": "0004_claim_cas",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788322087293,
+      "tag": "0005_claim_provenance_observation_digests",
+      "breakpoints": true
     }
   ]
 }

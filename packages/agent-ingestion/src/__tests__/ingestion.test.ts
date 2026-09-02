@@ -175,6 +175,38 @@ describe("A3 identity and discovery ingestion", () => {
     expect((await repository.getClaim("eip155:97:0x1111111111111111111111111111111111111111:115792089237316195423570985008687907853269984665640564039457584007913129639935"))?.claimantAddress).toBe(ownerA);
   });
 
+  it("closes the owner-read TOCTOU window before the claim CAS", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const ingestion = new AgentIngestionService(repository);
+    await ingestion.ingestCandidate({
+      identity,
+      source: "manual",
+      sourceReference: "manual-owner-toctou",
+      observedAt: new Date("2026-09-02T00:00:00.000Z"),
+      normalizedIngestionVersion: "manual-v1"
+    });
+    await ingestion.reconcileIdentity({ async readIdentity() { return state(ownerA, walletA, 21); } }, identity);
+    let reads = 0;
+    const reader = {
+      async readIdentity() {
+        reads += 1;
+        return reads === 1 ? state(ownerA, walletA, 22) : state(ownerB, walletA, 23);
+      }
+    };
+    const claims = new IdentityClaimService(
+      repository,
+      reader,
+      { async verify({ proof: verified }) { return verifiedProof(verified); } },
+      { now: () => new Date("2026-09-02T00:01:00.000Z"), internalOperatorId: "operator:indexer" }
+    );
+
+    await expect(
+      claims.claim({ identity, proof: claimProof(ownerA, "nonce-toctou"), context: claimContext })
+    ).rejects.toMatchObject({ code: "CLAIM_OWNER_MISMATCH" });
+    expect(await repository.getClaim(erc8004IdentityKey(identity))).toBeNull();
+    expect((await repository.findIdentity(identity))?.ownerAddress).toBe(ownerA);
+  });
+
   it("marks an old claim stale after a canonical owner transfer without delisting the identity", async () => {
     const repository = new InMemoryIngestionRepository();
     const ingestion = new AgentIngestionService(repository);
@@ -221,6 +253,7 @@ describe("A3 identity and discovery ingestion", () => {
       observedAt: new Date("2026-09-02T00:00:00.000Z"),
       normalizedIngestionVersion: "manual-v1"
     });
+    await ingestion.reconcileIdentity({ async readIdentity() { return state(ownerA, walletA, 25); } }, identity);
     const identityKey = erc8004IdentityKey(identity);
     const actor = { type: "owner" as const, walletAddress: ownerA, proofDigest: "b".repeat(64) };
     const claim = {
@@ -238,6 +271,7 @@ describe("A3 identity and discovery ingestion", () => {
       identityKey,
       expectedVersion: null,
       expectedStatus: null,
+      expectedOwnerAddress: ownerA,
       claim,
       actor,
       event: {
@@ -258,6 +292,7 @@ describe("A3 identity and discovery ingestion", () => {
         identityKey,
         expectedVersion: null,
         expectedStatus: null,
+        expectedOwnerAddress: ownerA,
         claim: { ...claim, version: 2 },
         actor,
         event: {
@@ -338,7 +373,7 @@ describe("A3 identity and discovery ingestion", () => {
       chainId: 97,
       identityRegistry: identity.identityRegistry,
       throughBlock: 11,
-      finalizedBlockHash: "0x" + "11".repeat(32)
+      finalizedBlockTag: { blockNumber: 11, blockHash: "0x" + "11".repeat(32) }
     }, {
       async getTrustedBlockHash(blockNumber) {
         return "0x" + blockNumber.toString(10).padStart(2, "0").repeat(32);
@@ -403,7 +438,7 @@ describe("reorg-aware registry synchronization", () => {
           chainId: 97,
           identityRegistry: identity.identityRegistry,
           throughBlock: 9,
-          finalizedBlockHash: "0x" + "aa".repeat(32)
+          finalizedBlockTag: { blockNumber: 9, blockHash: "0x" + "aa".repeat(32) }
         },
         { async getTrustedBlockHash() { return "0x" + "aa".repeat(32); } }
       )
@@ -450,6 +485,114 @@ describe("reorg-aware registry synchronization", () => {
     expect(await repository.listObservations({ chainId: 97, identityRegistry: identity.identityRegistry })).toHaveLength(0);
   });
 
+  it("fails closed when a reorg crosses the finalized checkpoint", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const ingestion = new AgentIngestionService(repository);
+    const checkpoint = {
+      chainId: 97,
+      identityRegistry: identity.identityRegistry,
+      indexerVersion: "registry-indexer-v1",
+      lastScannedBlock: 12,
+      lastScannedBlockHash: "0x" + "12".repeat(32),
+      lastFinalizedBlock: 11,
+      lastFinalizedBlockHash: "0x" + "11".repeat(32),
+      confirmationThreshold: 1,
+      cursorVersion: 1,
+      lastReconciliationAt: null
+    } as const;
+    await repository.saveCheckpoint(checkpoint, {
+      expectedCursorVersion: null,
+      expectedLastScannedBlockHash: null
+    });
+    const reader: RegistryChainReader = {
+      async getLatestBlock() { return 13; },
+      async getTrustedBlockHash(blockNumber) {
+        return blockNumber === 12 ? "0x" + "aa".repeat(32) : "0x" + blockNumber.toString(16).padStart(2, "0").repeat(32);
+      },
+      async getRegistryEvents() { return []; },
+      async readIdentity(_identity, _blockTag) { return state(ownerA, walletA, 10); },
+      async findCommonAncestor() { return 10; }
+    };
+
+    await expect(
+      ingestion.syncRegistry(reader, {
+        chainId: 97,
+        identityRegistry: identity.identityRegistry,
+        startBlock: 10,
+        confirmationThreshold: 1
+      })
+    ).rejects.toMatchObject({ code: "REORG_RECONCILIATION_REQUIRED", nextAction: "manual_review_finality" });
+    expect(await repository.getCheckpoint(97, identity.identityRegistry)).toEqual(checkpoint);
+  });
+
+  it("requires checkpoint CAS, continuity, and immutable threshold configuration", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const first = {
+      chainId: 97,
+      identityRegistry: identity.identityRegistry,
+      indexerVersion: "registry-indexer-v1",
+      lastScannedBlock: 10,
+      lastScannedBlockHash: "0x" + "10".repeat(32),
+      lastFinalizedBlock: 10,
+      lastFinalizedBlockHash: "0x" + "10".repeat(32),
+      confirmationThreshold: 1,
+      cursorVersion: 1,
+      lastReconciliationAt: null
+    } as const;
+    await repository.saveCheckpoint(first, {
+      expectedCursorVersion: null,
+      expectedLastScannedBlockHash: null
+    });
+
+    await expect(
+      repository.saveCheckpoint(
+        { ...first, cursorVersion: 2, confirmationThreshold: 2 },
+        {
+          expectedCursorVersion: first.cursorVersion,
+          expectedLastScannedBlockHash: first.lastScannedBlockHash,
+          previousScannedBlock: first.lastScannedBlock,
+          previousScannedBlockHash: first.lastScannedBlockHash
+        }
+      )
+    ).rejects.toMatchObject({ code: "CHECKPOINT_CONFLICT" });
+
+    await expect(
+      repository.saveCheckpoint(
+        { ...first, cursorVersion: 2, lastScannedBlock: 12, lastScannedBlockHash: "0x" + "12".repeat(32) },
+        {
+          expectedCursorVersion: first.cursorVersion,
+          expectedLastScannedBlockHash: first.lastScannedBlockHash,
+          previousScannedBlock: 9,
+          previousScannedBlockHash: "0x" + "09".repeat(32)
+        }
+      )
+    ).rejects.toMatchObject({ code: "CHECKPOINT_CONFLICT" });
+
+    const rewound = await repository.saveCheckpoint(
+      {
+        ...first,
+        cursorVersion: 2,
+        lastScannedBlock: 9,
+        lastScannedBlockHash: "0x" + "09".repeat(32),
+        lastFinalizedBlock: 9,
+        lastFinalizedBlockHash: "0x" + "09".repeat(32)
+      },
+      {
+        expectedCursorVersion: first.cursorVersion,
+        expectedLastScannedBlockHash: first.lastScannedBlockHash,
+        previousScannedBlock: first.lastScannedBlock,
+        previousScannedBlockHash: first.lastScannedBlockHash,
+        verifiedRewind: {
+          previousScannedBlock: first.lastScannedBlock,
+          previousScannedBlockHash: first.lastScannedBlockHash,
+          commonAncestorBlock: 9,
+          commonAncestorHash: "0x" + "09".repeat(32)
+        }
+      }
+    );
+    expect(rewound.lastFinalizedBlock).toBe(9);
+  });
+
   it("promotes finalized observations, rewinds on block-hash mismatch, and replays the replacement chain", async () => {
     const repository = new InMemoryIngestionRepository();
     const ingestion = new AgentIngestionService(repository);
@@ -457,12 +600,13 @@ describe("reorg-aware registry synchronization", () => {
       10: "0x" + "10".repeat(32),
       11: "0x" + "11".repeat(32),
       12: "0x" + "12".repeat(32),
-      13: "0x" + "13".repeat(32)
+      13: "0x" + "13".repeat(32),
+      14: "0x" + "14".repeat(32)
     };
     let phase = 1;
     let checkpointProbe = true;
     const reader: RegistryChainReader = {
-      async getLatestBlock() { return phase === 1 ? 12 : 13; },
+      async getLatestBlock() { return phase === 1 ? 12 : 14; },
       async getTrustedBlockHash(blockNumber) {
         if (phase === 2 && blockNumber === 12 && checkpointProbe) {
           checkpointProbe = false;
@@ -474,34 +618,42 @@ describe("reorg-aware registry synchronization", () => {
       },
       async getRegistryEvents(query) {
         if (phase === 1) {
+          expect(query.blockTag).toEqual({ blockNumber: 12, blockHash: hashes[12] });
           return [
             registryEvent({ transactionHash: "0x" + "01".repeat(32), logIndex: 0, blockNumber: 10, blockHash: hashes[10]! }),
             registryEvent({ transactionHash: "0x" + "02".repeat(32), logIndex: 0, blockNumber: 11, blockHash: hashes[11]! })
           ];
         }
         expect(query.fromBlock).toBe(11);
+        expect(query.toBlock).toBe(14);
+        expect(query.blockTag).toEqual({ blockNumber: 14, blockHash: hashes[14] });
         return [
           registryEvent({ transactionHash: "0x" + "03".repeat(32), logIndex: 0, blockNumber: 11, blockHash: "0x" + "bb".repeat(32), ownerAddress: ownerB }),
           registryEvent({ transactionHash: "0x" + "04".repeat(32), logIndex: 0, blockNumber: 12, blockHash: "0x" + "cc".repeat(32), ownerAddress: ownerB })
         ];
       },
-      async readIdentity() { return state(ownerB, walletA, phase === 1 ? 11 : 12); },
+      async readIdentity(_identity, blockTag) {
+        if (phase === 2) {
+          expect(blockTag).toEqual({ blockNumber: 10, blockHash: hashes[10] });
+        }
+        return state(ownerB, walletA, phase === 1 ? 11 : 10);
+      },
       async findCommonAncestor() { return 10; }
     };
     const first = await ingestion.syncRegistry(reader, {
       chainId: 97,
       identityRegistry: identity.identityRegistry,
       startBlock: 10,
-      confirmationThreshold: 1
+      confirmationThreshold: 2
     });
-    expect(first.promotedObservationCount).toBe(2);
+    expect(first.promotedObservationCount).toBe(1);
     expect(first.reorgRewound).toBe(false);
     phase = 2;
     const second = await ingestion.syncRegistry(reader, {
       chainId: 97,
       identityRegistry: identity.identityRegistry,
       startBlock: 10,
-      confirmationThreshold: 1
+      confirmationThreshold: 2
     });
 
     expect(second.reorgRewound).toBe(true);

@@ -9,6 +9,7 @@ import {
   agentReorgReconciliations,
   agentServiceObservations,
   agents,
+  chainIngestionCheckpoints,
   authSessions,
   erc8004Identities,
   schemaTables
@@ -93,6 +94,8 @@ describe("foundation database schema", () => {
     const probeMigration = readFileSync(probeMigrationPath, "utf8");
     const claimCasMigrationPath = fileURLToPath(new URL("../../migrations/0004_claim_cas.sql", import.meta.url));
     const claimCasMigration = readFileSync(claimCasMigrationPath, "utf8");
+    const provenanceMigrationPath = fileURLToPath(new URL("../../migrations/0005_claim_provenance_observation_digests.sql", import.meta.url));
+    const provenanceMigration = readFileSync(provenanceMigrationPath, "utf8");
     expect(migration).toContain('CREATE TABLE "agent_service_observations"');
     expect(migration).toContain('CREATE TABLE "agent_capability_observations"');
     expect(migration).toContain('CREATE TABLE "agent_claim_events"');
@@ -101,6 +104,10 @@ describe("foundation database schema", () => {
     expect(probeMigration).toContain('CREATE TABLE "agent_service_probe_results"');
     expect(claimCasMigration).toContain('ADD COLUMN "claim_version" integer');
     expect(claimCasMigration).toContain('ADD COLUMN "actor_type" varchar(32)');
+    expect(provenanceMigration).toContain('ADD COLUMN "normalized_content_digest" varchar(64)');
+    expect(provenanceMigration).toContain('ADD COLUMN "payload_digest" varchar(64)');
+    expect(provenanceMigration).toContain('ADD COLUMN "claim_owner_address_at_verification" varchar(42)');
+    expect(provenanceMigration).not.toContain('DROP CONSTRAINT "agents_current_version_id_agent_versions_id_fk"');
     expect(Object.keys(schemaTables)).toEqual(
       expect.arrayContaining([
         "agentServiceObservations",
@@ -122,8 +129,21 @@ describe("foundation database schema", () => {
     expect(Object.keys(agentReorgReconciliations)).toEqual(
       expect.arrayContaining(["chainId", "identityRegistry", "commonAncestorBlock", "affectedIdentityKeys"])
     );
-    expect(Object.keys(schemaTables.erc8004ChainObservations)).toContain("observedFields");
+    expect(Object.keys(schemaTables.erc8004ChainObservations)).toEqual(
+      expect.arrayContaining(["observedFields", "normalizedContentDigest", "payloadDigest"])
+    );
+    expect(Object.keys(chainIngestionCheckpoints)).toContain("indexerVersion");
     expect(Object.keys(agents)).toContain("claimVersion");
+    expect(Object.keys(agents)).toEqual(
+      expect.arrayContaining([
+        "claimantAddress",
+        "claimOwnerAddressAtVerification",
+        "claimAgentWalletAtVerification",
+        "claimVerifiedAt",
+        "claimStaleAt",
+        "claimLastReason"
+      ])
+    );
     expect(Object.keys(agentClaimEvents)).toEqual(expect.arrayContaining(["actorType", "actorId"]));
   });
 });

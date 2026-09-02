@@ -7,4 +7,5 @@ export * from "./ingestion.js";
 export * from "./memory-repository.js";
 export * from "./normalize.js";
 export * from "./probe.js";
+export * from "./repository-mapping.js";
 export * from "./types.js";

@@ -9,10 +9,12 @@ import {
   type OriginType
 } from "@bnbera/domain";
 import { ingestionError } from "./errors.js";
+import { normalizeRegistryCheckpoint } from "./adapters/registry.js";
 import type {
   CapabilityObservation,
   ChainCheckpoint,
   ChainObservation,
+  CheckpointWriteCondition,
   ClaimEvent,
   ClaimMutation,
   ClaimRecord,
@@ -374,23 +376,79 @@ export class InMemoryIngestionRepository implements IngestionRepository {
     return this.checkpoints.get(checkpointKey(chainId, identityRegistry)) ?? null;
   }
 
-  async saveCheckpoint(input: ChainCheckpoint): Promise<ChainCheckpoint> {
-    const key = checkpointKey(input.chainId, input.identityRegistry);
+  async saveCheckpoint(input: ChainCheckpoint, condition: CheckpointWriteCondition): Promise<ChainCheckpoint> {
+    const normalized = normalizeRegistryCheckpoint(input);
+    const key = checkpointKey(normalized.chainId, normalized.identityRegistry);
     const existing = this.checkpoints.get(key);
-    if (
-      existing !== undefined &&
-      input.cursorVersion < existing.cursorVersion &&
-      input.lastScannedBlock >= existing.lastScannedBlock
-    ) {
-      throw ingestionError(
-        "CHECKPOINT_CONFLICT",
-        "The ingestion checkpoint would move backwards without a reorg rewind.",
-        "reconcile_chain",
-        { existing, input }
-      );
+    if (existing === undefined) {
+      if (condition.expectedCursorVersion !== null || condition.expectedLastScannedBlockHash !== null) {
+        throw checkpointConflict("The checkpoint create condition does not match an empty cursor.", { condition, input: normalized });
+      }
+      if (normalized.cursorVersion < 1) {
+        throw checkpointConflict("The initial ingestion checkpoint version is invalid.", { input: normalized });
+      }
+      this.checkpoints.set(key, normalized);
+      return normalized;
     }
-    this.checkpoints.set(key, input);
-    return input;
+
+    if (
+      condition.expectedCursorVersion !== existing.cursorVersion ||
+      !sameNullableHash(condition.expectedLastScannedBlockHash, existing.lastScannedBlockHash)
+    ) {
+      throw checkpointConflict("The ingestion checkpoint changed before this update completed.", { existing, input: normalized, condition });
+    }
+    if (normalized.indexerVersion === existing.indexerVersion && normalized.confirmationThreshold !== existing.confirmationThreshold) {
+      throw checkpointConflict("The confirmation threshold is immutable for an indexer version.", {
+        existing,
+        input: normalized,
+        reason: "confirmation_threshold_changed"
+      });
+    }
+    if (normalized.cursorVersion !== existing.cursorVersion + 1) {
+      throw checkpointConflict("The ingestion checkpoint cursor must advance exactly once.", { existing, input: normalized });
+    }
+    const continuityBlock = condition.previousScannedBlock;
+    const continuityHash = condition.previousScannedBlockHash;
+    if (
+      normalized.lastScannedBlock > existing.lastScannedBlock &&
+      (continuityBlock !== existing.lastScannedBlock ||
+        !sameNullableHash(continuityHash ?? null, existing.lastScannedBlockHash))
+    ) {
+      throw checkpointConflict("The checkpoint predecessor does not match the persisted scan cursor.", { existing, input: normalized, condition });
+    }
+
+    const rewind = condition.verifiedRewind;
+    const lowersScanned = normalized.lastScannedBlock < existing.lastScannedBlock;
+    const lowersFinality = normalized.lastFinalizedBlock < existing.lastFinalizedBlock;
+    if (lowersScanned || lowersFinality) {
+      if (
+        rewind === undefined ||
+        rewind.previousScannedBlock !== existing.lastScannedBlock ||
+        !sameNullableHash(rewind.previousScannedBlockHash, existing.lastScannedBlockHash) ||
+        rewind.commonAncestorBlock !== normalized.lastScannedBlock ||
+        !sameNullableHash(rewind.commonAncestorHash, normalized.lastScannedBlockHash)
+      ) {
+        throw checkpointConflict("The checkpoint would move backwards without an explicit verified rewind.", {
+          existing,
+          input: normalized,
+          condition
+        });
+      }
+    } else if (
+      normalized.lastScannedBlock === existing.lastScannedBlock &&
+      !sameNullableHash(normalized.lastScannedBlockHash, existing.lastScannedBlockHash)
+    ) {
+      throw checkpointConflict("A checkpoint block cannot change its hash without a verified rewind.", { existing, input: normalized });
+    }
+    if (
+      normalized.lastFinalizedBlock === existing.lastFinalizedBlock &&
+      !sameNullableHash(normalized.lastFinalizedBlockHash, existing.lastFinalizedBlockHash) &&
+      rewind === undefined
+    ) {
+      throw checkpointConflict("A finalized block cannot change its hash without a verified rewind.", { existing, input: normalized });
+    }
+    this.checkpoints.set(key, normalized);
+    return normalized;
   }
 
   async getClaim(identityKey: IdentityKey): Promise<ClaimRecord | null> {
@@ -438,13 +496,27 @@ export class InMemoryIngestionRepository implements IngestionRepository {
     if (identity === undefined) {
       throw ingestionError("CLAIM_NOT_ACTIVE", "The identity is not in the ingestion index.", "import_identity");
     }
+    const canonicalOwner = identity.ownerAddress;
+    const expectedOwner = input.expectedOwnerAddress === null
+      ? null
+      : normalizeEvmAddress(input.expectedOwnerAddress);
+    if (expectedOwner !== canonicalOwner) {
+      throw ingestionError(
+        "CLAIM_OWNER_MISMATCH",
+        "The claim owner expectation does not match the canonical identity owner.",
+        "reload_identity"
+      );
+    }
     if (input.actor.type === "owner") {
       if (
-        input.claim.claimantAddress !== normalizeEvmAddress(input.actor.walletAddress) ||
+        canonicalOwner === null ||
+        normalizeEvmAddress(input.actor.walletAddress) !== canonicalOwner ||
+        input.claim.claimantAddress !== canonicalOwner ||
+        input.claim.ownerAddressAtVerification !== canonicalOwner ||
         input.event.proofDigest !== input.actor.proofDigest ||
-        input.event.actorId !== normalizeEvmAddress(input.actor.walletAddress)
+        input.event.actorId !== canonicalOwner
       ) {
-        throw ingestionError("CLAIM_CONFLICT", "The owner claim actor does not match the verified proof.", "reload_claim");
+        throw ingestionError("CLAIM_OWNER_MISMATCH", "The owner claim actor does not match the canonical identity owner.", "reload_identity");
       }
     } else if (input.event.actorId !== input.actor.operatorId || input.actor.operatorId.trim().length === 0) {
       throw ingestionError("CLAIM_CONFLICT", "The operator claim actor is invalid.", "authenticate_operator");
@@ -530,6 +602,14 @@ export class InMemoryIngestionRepository implements IngestionRepository {
   ): Promise<readonly ChainObservation[]> {
     return this.listObservations({ chainId, identityRegistry, state: "canonical" });
   }
+}
+
+function sameNullableHash(a: string | null, b: string | null): boolean {
+  return a === null || b === null ? a === b : a.toLowerCase() === b.toLowerCase();
+}
+
+function checkpointConflict(message: string, details: unknown): ReturnType<typeof ingestionError> {
+  return ingestionError("CHECKPOINT_CONFLICT", message, "reconcile_chain", details);
 }
 
 function normalizeNullableAddress(value: string | null): string | null {

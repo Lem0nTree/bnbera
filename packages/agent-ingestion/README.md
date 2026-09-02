@@ -30,18 +30,24 @@ standards lock and secret manager, not in this package.
   Probes call the exact advertised URL and persist bounded, non-secret
   telemetry; they do not invent a universal readiness endpoint.
 - Registry observations are provisional until the configured finality depth.
-  A trusted block-hash mismatch rewinds to a provider-selected common
-  ancestor, orphaning replaced observations and rereading affected identities.
+  A trusted block-hash mismatch rewinds only the unfinalized scan cursor to a
+  provider-selected common ancestor, orphaning replaced observations and
+  rereading affected identities at an explicit ancestor block tag. A reorg
+  below finalized history fails closed for manual review.
 - Registry sync is one atomic unit of work: event ingestion, trusted-hash
   validation, finality promotion, identity/claim transitions, and checkpoint
-  persistence commit together or roll back together.
+  persistence commit together or roll back together. Checkpoint updates use a
+  cursor/hash CAS, predecessor continuity, and an immutable confirmation
+  threshold per indexer configuration version.
 - SIWE claim proofs bind the complete ERC-8004 identity to the server-issued
   domain, URI, resources, action, chain, time window, nonce, and verified
   signature digest. Claim/event writes use a versioned CAS mutation; explicit
   revocation requires an authenticated operator scope.
 - `InMemoryIngestionRepository` is a deterministic contract fixture. The
   application persistence adapter should implement the same repository ports
-  over the identity-scoped observation tables in `@bnbera/db`.
+  over the identity-scoped observation tables in `@bnbera/db`. The exported
+  repository mappings round-trip observation `contentDigest`/`payloadDigest`
+  and complete claim provenance without requiring Drizzle in this package.
 
 ## Adapter usage
 
@@ -53,8 +59,10 @@ same validation and never claims or verifies an identity as an import side
 effect.
 
 `RegistryChainReader` requires explicit `getTrustedBlockHash`, event retrieval,
-current identity reads, and common-ancestor discovery. Missing block hashes or
-an invalid ancestor fail closed with a structured ingestion error.
+current identity reads, and common-ancestor discovery. Finality promotion
+requires a `finalizedBlockTag`; reorg identity rereads receive an ancestor
+tag. Missing block hashes, head-state returned for an ancestor tag, or an
+invalid ancestor fail closed with a structured ingestion error.
 
 ## Verification
 

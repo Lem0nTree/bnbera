@@ -123,10 +123,44 @@ export class IdentityClaimService {
 
     const proofDigest = canonicalClaimProofDigest(proof, context);
     return this.repository.withTransaction(async (unitOfWork) => {
-      // Re-read the claim row in the unit of work. The CAS below prevents two
-      // concurrent owners or stale requests from overwriting one another.
-      const canonical = await unitOfWork.applyCanonicalState({ identity, ...current });
       const priorClaim = await unitOfWork.getClaim(identityKey);
+      const storedBefore = await unitOfWork.findIdentity(identity);
+      if (storedBefore === null) {
+        throw ingestionError("CLAIM_NOT_ACTIVE", "The identity must be discovered before it can be claimed.", "import_identity");
+      }
+
+      // The first owner read only gates signature verification. Re-read the
+      // chain-backed state while inside the unit of work, immediately before
+      // applying the canonical row and claim CAS. The repository then checks
+      // the stored owner itself; the request cannot establish ownership by
+      // supplying an expected owner value.
+      const canonicalRead = await this.reader.readIdentity(identity);
+      const canonicalOwner = canonicalRead.ownerAddress === null
+        ? null
+        : normalizeEvmAddress(canonicalRead.ownerAddress);
+      if (canonicalOwner === null || canonicalOwner !== ownerAddress) {
+        throw ingestionError(
+          "CLAIM_OWNER_MISMATCH",
+          "The ERC-721 owner changed before the claim was committed.",
+          "reload_identity"
+        );
+      }
+      if (storedBefore.ownerAddress !== null && storedBefore.ownerAddress !== canonicalOwner) {
+        throw ingestionError(
+          "CLAIM_OWNER_MISMATCH",
+          "The canonical identity owner changed during claim verification.",
+          "reload_identity"
+        );
+      }
+      const canonical = await unitOfWork.applyCanonicalState({ identity, ...canonicalRead });
+      const canonicalStored = await unitOfWork.findIdentity(identity);
+      if (canonicalStored === null || canonicalStored.ownerAddress !== canonicalOwner) {
+        throw ingestionError(
+          "CLAIM_OWNER_MISMATCH",
+          "The canonical identity owner could not be confirmed for the claim.",
+          "reload_identity"
+        );
+      }
       if (priorClaim?.status === "claimed" && priorClaim.claimantAddress !== ownerAddress) {
         throw ingestionError("CLAIM_NOT_ACTIVE", "Another active owner claim must be reconciled first.", "reconcile_claim");
       }
@@ -150,6 +184,7 @@ export class IdentityClaimService {
         identityKey,
         expectedVersion: priorClaim?.version ?? null,
         expectedStatus: priorClaim?.status ?? null,
+        expectedOwnerAddress: ownerAddress,
         claim,
         actor,
         event: {
@@ -188,6 +223,7 @@ export class IdentityClaimService {
           identityKey: erc8004IdentityKey(identity),
           expectedVersion: claim.version,
           expectedStatus: claim.status,
+          expectedOwnerAddress: record.ownerAddress,
           claim: {
             ...claim,
             version: claim.version + 1,
@@ -261,10 +297,15 @@ export class IdentityClaimService {
       scope: "identity.claim.revoke"
     };
     await this.repository.withTransaction(async (unitOfWork) => {
+      const canonical = await unitOfWork.findIdentity(identity);
+      if (canonical === null) {
+        throw ingestionError("CLAIM_NOT_ACTIVE", "The identity is not in the ingestion index.", "import_identity");
+      }
       await unitOfWork.mutateClaim({
         identityKey: erc8004IdentityKey(identity),
         expectedVersion: claim.version,
         expectedStatus: claim.status,
+        expectedOwnerAddress: canonical.ownerAddress,
         claim: {
           ...claim,
           version: claim.version + 1,
@@ -277,8 +318,8 @@ export class IdentityClaimService {
           identityKey: erc8004IdentityKey(identity),
           eventType: "revoked",
           claimantAddress: claim.claimantAddress,
-          observedOwnerAddress: record.ownerAddress,
-          observedAgentWallet: record.agentWallet,
+          observedOwnerAddress: canonical.ownerAddress,
+          observedAgentWallet: canonical.agentWallet,
           proofDigest: null,
           actorType: "operator",
           actorId: authorized.operatorId,

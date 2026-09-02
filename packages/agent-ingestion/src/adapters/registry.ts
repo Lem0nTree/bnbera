@@ -12,11 +12,19 @@ import type {
   RegistryEvent
 } from "../types.js";
 
+/** A provider read pinned to one canonical block, never an implicit head read. */
+export type ChainBlockTag = {
+  readonly blockNumber: number;
+  readonly blockHash: string;
+};
+
 export type RegistryEventQuery = {
   readonly chainId: number;
   readonly identityRegistry: string;
   readonly fromBlock: number;
   readonly toBlock: number;
+  /** The provider must evaluate this range against this exact chain view. */
+  readonly blockTag?: ChainBlockTag;
 };
 
 export interface TrustedBlockHashReader {
@@ -36,7 +44,11 @@ export interface RegistryChainReader extends TrustedBlockHashReader {
    * Ordinary event payload hashes are never accepted as a substitute.
    */
   getRegistryEvents(query: RegistryEventQuery): Promise<readonly RegistryEvent[]>;
-  readIdentity(identity: Erc8004Identity): Promise<DirectIdentityState>;
+  /**
+   * Read identity state at an explicit block tag for reorg/finality replay.
+   * A missing tag is retained only for non-finality, operator-triggered reads.
+   */
+  readIdentity(identity: Erc8004Identity, blockTag?: ChainBlockTag): Promise<DirectIdentityState>;
   findCommonAncestor(input: {
     readonly chainId: number;
     readonly identityRegistry: string;
@@ -48,6 +60,7 @@ export interface RegistryChainReader extends TrustedBlockHashReader {
 export function normalizeRegistryCheckpoint(input: ChainCheckpoint): ChainCheckpoint {
   const registry = normalizeEvmAddress(input.identityRegistry);
   const hashPattern = /^0x[0-9a-fA-F]{64}$/u;
+  const indexerVersion = typeof input.indexerVersion === "string" ? input.indexerVersion.trim() : "";
   if (
     !Number.isSafeInteger(input.chainId) ||
     input.chainId <= 0 ||
@@ -57,6 +70,8 @@ export function normalizeRegistryCheckpoint(input: ChainCheckpoint): ChainCheckp
     input.lastFinalizedBlock < 0 ||
     !Number.isSafeInteger(input.confirmationThreshold) ||
     input.confirmationThreshold < 0 ||
+    indexerVersion.length === 0 ||
+    indexerVersion.length > 64 ||
     !hashPattern.test(input.lastScannedBlockHash) ||
     !hashPattern.test(input.lastFinalizedBlockHash)
   ) {
@@ -65,7 +80,18 @@ export function normalizeRegistryCheckpoint(input: ChainCheckpoint): ChainCheckp
   if (input.lastFinalizedBlock > input.lastScannedBlock) {
     throw ingestionError("INGESTION_INPUT_INVALID", "A finalized block cannot exceed the scanned block.", "fix_checkpoint");
   }
-  return { ...input, identityRegistry: registry };
+  return { ...input, identityRegistry: registry, indexerVersion };
+}
+
+export function normalizeChainBlockTag(input: ChainBlockTag): ChainBlockTag {
+  if (
+    !Number.isSafeInteger(input.blockNumber) ||
+    input.blockNumber < 0 ||
+    !/^0x[0-9a-fA-F]{64}$/u.test(input.blockHash)
+  ) {
+    throw ingestionError("INGESTION_INPUT_INVALID", "The chain block tag is invalid.", "fix_chain_read");
+  }
+  return { blockNumber: input.blockNumber, blockHash: input.blockHash.toLowerCase() };
 }
 
 export function normalizeRegistryEvents(inputs: readonly RegistryEvent[]): readonly ChainObservation[] {
@@ -77,7 +103,13 @@ export function normalizeRegistryEvents(inputs: readonly RegistryEvent[]): reado
 
 export function registryQueryFromCheckpoint(
   checkpoint: ChainCheckpoint | null,
-  input: { readonly chainId: number; readonly identityRegistry: string; readonly startBlock: number; readonly endBlock: number }
+  input: {
+    readonly chainId: number;
+    readonly identityRegistry: string;
+    readonly startBlock: number;
+    readonly endBlock: number;
+    readonly blockTag?: ChainBlockTag;
+  }
 ): RegistryEventQuery {
   const registry = normalizeEvmAddress(input.identityRegistry);
   const fromBlock = checkpoint === null ? input.startBlock : Math.max(input.startBlock, checkpoint.lastScannedBlock + 1);
@@ -88,7 +120,8 @@ export function registryQueryFromCheckpoint(
     chainId: input.chainId,
     identityRegistry: registry,
     fromBlock,
-    toBlock: input.endBlock
+    toBlock: input.endBlock,
+    ...(input.blockTag === undefined ? {} : { blockTag: normalizeChainBlockTag(input.blockTag) })
   };
 }
 

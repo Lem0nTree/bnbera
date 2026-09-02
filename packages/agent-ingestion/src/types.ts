@@ -92,6 +92,8 @@ export type ChainObservation = {
 export type ChainCheckpoint = {
   readonly chainId: number;
   readonly identityRegistry: string;
+  /** Immutable configuration identity for this cursor stream. */
+  readonly indexerVersion: string;
   readonly lastScannedBlock: number;
   readonly lastScannedBlockHash: string;
   readonly lastFinalizedBlock: number;
@@ -99,6 +101,26 @@ export type ChainCheckpoint = {
   readonly confirmationThreshold: number;
   readonly cursorVersion: number;
   readonly lastReconciliationAt: Date | null;
+};
+
+/**
+ * Compare-and-swap conditions for a checkpoint write. A production adapter
+ * must evaluate this condition in the same transaction as the upsert; the
+ * in-memory adapter models the same contract for tests.
+ */
+export type CheckpointWriteCondition = {
+  readonly expectedCursorVersion: number | null;
+  readonly expectedLastScannedBlockHash: string | null;
+  /** Persisted predecessor used to prove scan continuity and avoid gaps. */
+  readonly previousScannedBlock?: number | null;
+  readonly previousScannedBlockHash?: string | null;
+  /** Required only when an explicitly verified maintenance rewind is requested. */
+  readonly verifiedRewind?: {
+    readonly previousScannedBlock: number;
+    readonly previousScannedBlockHash: string;
+    readonly commonAncestorBlock: number;
+    readonly commonAncestorHash: string;
+  };
 };
 
 export type IdentityRecord = {
@@ -175,6 +197,12 @@ export type ClaimMutation = {
   /** Null means the caller expects that no claim row exists yet. */
   readonly expectedVersion: number | null;
   readonly expectedStatus: ClaimStatus | null;
+  /**
+   * Canonical owner value expected by this mutation. Repositories must compare
+   * it with the stored identity row in the same transaction; callers cannot
+   * use this field to establish ownership.
+   */
+  readonly expectedOwnerAddress: string | null;
   readonly claim: ClaimRecord;
   readonly event: ClaimEvent;
   readonly actor: ClaimMutationActor;
@@ -310,7 +338,7 @@ export interface ObservationRepository {
 
 export interface CheckpointRepository {
   getCheckpoint(chainId: number, identityRegistry: string): Promise<ChainCheckpoint | null>;
-  saveCheckpoint(input: ChainCheckpoint): Promise<ChainCheckpoint>;
+  saveCheckpoint(input: ChainCheckpoint, condition: CheckpointWriteCondition): Promise<ChainCheckpoint>;
 }
 
 export interface ClaimRepository {

@@ -16,6 +16,8 @@ import {
 import {
   normalizeRegistryCheckpoint,
   normalizeRegistryEvents,
+  normalizeChainBlockTag,
+  type ChainBlockTag,
   type TrustedBlockHashReader,
   type RegistryChainReader
 } from "./adapters/registry.js";
@@ -79,6 +81,8 @@ export type RegistrySyncOptions = {
   readonly identityRegistry: string;
   readonly startBlock: number;
   readonly confirmationThreshold: number;
+  /** Changing this value is an explicit cursor/configuration migration. */
+  readonly indexerVersion?: string;
   readonly normalizedIngestionVersion?: string;
   readonly now?: () => Date;
 };
@@ -232,7 +236,8 @@ export class AgentIngestionService {
       readonly chainId: number;
       readonly identityRegistry: string;
       readonly throughBlock: number;
-      readonly finalizedBlockHash: string;
+      /** Finality promotion is pinned to this exact trusted block. */
+      readonly finalizedBlockTag: ChainBlockTag;
       readonly canonicalizedAt?: Date;
     },
     trustedBlockHashReader: TrustedBlockHashReader
@@ -248,23 +253,24 @@ export class AgentIngestionService {
     readonly chainId: number;
     readonly identityRegistry: string;
     readonly throughBlock: number;
-    readonly finalizedBlockHash: string;
+    readonly finalizedBlockTag: ChainBlockTag;
     readonly canonicalizedAt?: Date;
     },
     trustedBlockHashReader: TrustedBlockHashReader
   ): Promise<readonly ChainObservation[]> {
     const registry = normalizeEvmAddress(input.identityRegistry);
+    const finalizedBlockTag = normalizeChainBlockTag(input.finalizedBlockTag);
     if (
       !Number.isSafeInteger(input.throughBlock) ||
       input.throughBlock < 0 ||
-      !/^0x[0-9a-fA-F]{64}$/u.test(input.finalizedBlockHash)
+      finalizedBlockTag.blockNumber !== input.throughBlock
     ) {
       throw ingestionError("INGESTION_INPUT_INVALID", "The finality block is invalid.", "fix_finality");
     }
     await this.assertTrustedBlockHash(
       trustedBlockHashReader,
-      input.throughBlock,
-      input.finalizedBlockHash,
+      finalizedBlockTag.blockNumber,
+      finalizedBlockTag.blockHash,
       "The finality block hash changed before canonicalization."
     );
     const candidates = await repository.listObservations({
@@ -336,14 +342,33 @@ export class AgentIngestionService {
     if (!Number.isSafeInteger(options.confirmationThreshold) || options.confirmationThreshold < 0) {
       throw ingestionError("INGESTION_INPUT_INVALID", "The confirmation threshold is invalid.", "fix_finality");
     }
+    const indexerVersion = normalizeIndexerVersion(options.indexerVersion);
     const latestBlock = await reader.getLatestBlock();
     if (!Number.isSafeInteger(latestBlock) || latestBlock < 0) {
       throw ingestionError("INGESTION_INPUT_INVALID", "The chain head is invalid.", "retry_chain_read");
     }
     const finalizedBlock = Math.max(0, latestBlock - options.confirmationThreshold);
     let checkpoint = await repository.getCheckpoint(options.chainId, registry);
+    const persistedCheckpoint = checkpoint;
+    if (
+      checkpoint !== null &&
+      checkpoint.indexerVersion === indexerVersion &&
+      checkpoint.confirmationThreshold !== options.confirmationThreshold
+    ) {
+      throw ingestionError(
+        "CHECKPOINT_CONFLICT",
+        "The confirmation threshold is immutable for the configured indexer version.",
+        "bump_indexer_version"
+      );
+    }
     let reorgRewound = false;
     let orphanedObservationCount = 0;
+    let verifiedRewind: {
+      readonly previousScannedBlock: number;
+      readonly previousScannedBlockHash: string;
+      readonly commonAncestorBlock: number;
+      readonly commonAncestorHash: string;
+    } | undefined;
     const affectedIdentityKeys = new Set<IdentityKey>();
 
     if (checkpoint !== null && checkpoint.lastScannedBlock > 0) {
@@ -356,6 +381,7 @@ export class AgentIngestionService {
           affectedIdentityKeys.add(key);
         }
         checkpoint = reorg.checkpoint;
+        verifiedRewind = reorg.verifiedRewind;
       }
     }
 
@@ -367,15 +393,27 @@ export class AgentIngestionService {
     let scannedFromBlock: number | null = null;
     let scannedThrough: number | null = null;
     let scannedBlock: number | null = checkpoint?.lastScannedBlock ?? null;
+    let scannedHashForQuery: string | null = null;
     if (fromBlock <= latestBlock) {
       scannedFromBlock = fromBlock;
       scannedThrough = latestBlock;
       scannedBlock = latestBlock;
+      scannedHashForQuery = await reader.getTrustedBlockHash(latestBlock);
+      if (scannedHashForQuery === null) {
+        throw ingestionError(
+          "REORG_RECONCILIATION_REQUIRED",
+          "The chain provider did not return a trusted scan-head hash.",
+          "retry_chain_read",
+          undefined,
+          true
+        );
+      }
       const events = await reader.getRegistryEvents({
         chainId: options.chainId,
         identityRegistry: registry,
         fromBlock,
-        toBlock: latestBlock
+        toBlock: latestBlock,
+        blockTag: { blockNumber: latestBlock, blockHash: scannedHashForQuery }
       });
       if (events.some((event) => event.blockNumber < fromBlock || event.blockNumber > latestBlock)) {
         throw ingestionError(
@@ -398,6 +436,13 @@ export class AgentIngestionService {
 
     if (scannedBlock !== null) {
       const finalityBlock = Math.min(finalizedBlock, scannedBlock);
+      if (persistedCheckpoint !== null && finalityBlock < persistedCheckpoint.lastFinalizedBlock) {
+        throw ingestionError(
+          "REORG_RECONCILIATION_REQUIRED",
+          "The computed finality would move backwards; manual review is required.",
+          "manual_review_finality"
+        );
+      }
       const scannedHash = await reader.getTrustedBlockHash(scannedBlock);
       const finalizedHash = await reader.getTrustedBlockHash(finalityBlock);
       if (scannedHash === null || finalizedHash === null) {
@@ -413,7 +458,7 @@ export class AgentIngestionService {
         chainId: options.chainId,
         identityRegistry: registry,
         throughBlock: finalityBlock,
-        finalizedBlockHash: finalizedHash,
+        finalizedBlockTag: { blockNumber: finalityBlock, blockHash: finalizedHash },
         canonicalizedAt: now()
       }, reader);
       // This is deliberately the final write in the unit of work. If
@@ -427,10 +472,17 @@ export class AgentIngestionService {
         lastFinalizedBlock: finalityBlock,
         lastFinalizedBlockHash: finalizedHash,
         confirmationThreshold: options.confirmationThreshold,
-        cursorVersion: (checkpoint?.cursorVersion ?? 0) + 1,
+        indexerVersion,
+        cursorVersion: (persistedCheckpoint?.cursorVersion ?? 0) + 1,
         lastReconciliationAt: checkpoint?.lastReconciliationAt ?? null
       });
-      await repository.saveCheckpoint(nextCheckpoint);
+      await repository.saveCheckpoint(nextCheckpoint, {
+        expectedCursorVersion: persistedCheckpoint?.cursorVersion ?? null,
+        expectedLastScannedBlockHash: persistedCheckpoint?.lastScannedBlockHash ?? null,
+        previousScannedBlock: persistedCheckpoint?.lastScannedBlock ?? null,
+        previousScannedBlockHash: persistedCheckpoint?.lastScannedBlockHash ?? null,
+        ...(verifiedRewind === undefined ? {} : { verifiedRewind })
+      });
       checkpoint = nextCheckpoint;
       promotedObservationCount = promoted.length;
       for (const observation of promoted) {
@@ -480,6 +532,12 @@ export class AgentIngestionService {
     readonly checkpoint: ChainCheckpoint;
     readonly orphanedObservationCount: number;
     readonly affectedIdentityKeys: readonly IdentityKey[];
+    readonly verifiedRewind: {
+      readonly previousScannedBlock: number;
+      readonly previousScannedBlockHash: string;
+      readonly commonAncestorBlock: number;
+      readonly commonAncestorHash: string;
+    };
   }> {
     const startedAt = now();
     const commonAncestor = await reader.findCommonAncestor({
@@ -495,6 +553,13 @@ export class AgentIngestionService {
         "review_chain_reconciliation"
       );
     }
+    if (commonAncestor < checkpoint.lastFinalizedBlock) {
+      throw ingestionError(
+        "REORG_RECONCILIATION_REQUIRED",
+        "The reorganization crosses finalized history and requires manual review.",
+        "manual_review_finality"
+      );
+    }
     const ancestorHash = await reader.getTrustedBlockHash(commonAncestor);
     if (ancestorHash === null) {
       throw ingestionError(
@@ -503,6 +568,16 @@ export class AgentIngestionService {
         "retry_chain_read",
         undefined,
         true
+      );
+    }
+    if (
+      commonAncestor === checkpoint.lastFinalizedBlock &&
+      ancestorHash.toLowerCase() !== checkpoint.lastFinalizedBlockHash.toLowerCase()
+    ) {
+      throw ingestionError(
+        "REORG_RECONCILIATION_REQUIRED",
+        "The finalized block hash changed and requires manual review.",
+        "manual_review_finality"
       );
     }
     const affectedIdentityKeys = await repository.markOrphaned({
@@ -519,7 +594,17 @@ export class AgentIngestionService {
       if (record === undefined) {
         continue;
       }
-      const current = await reader.readIdentity(record.identity);
+      const current = await reader.readIdentity(record.identity, {
+        blockNumber: commonAncestor,
+        blockHash: ancestorHash
+      });
+      if (current.observedBlock > commonAncestor) {
+        throw ingestionError(
+          "REORG_RECONCILIATION_REQUIRED",
+          "The identity provider returned head state for an ancestor-tagged replay.",
+          "review_chain_provider"
+        );
+      }
       const previousOwner = record.ownerAddress;
       const reconciled = await repository.applyCanonicalState({ identity: record.identity, ...current });
       if (previousOwner !== reconciled.ownerAddress && record.state.claimStatus === "claimed") {
@@ -530,11 +615,10 @@ export class AgentIngestionService {
       ...checkpoint,
       lastScannedBlock: commonAncestor,
       lastScannedBlockHash: ancestorHash.toLowerCase(),
-      lastFinalizedBlock: Math.min(checkpoint.lastFinalizedBlock, commonAncestor),
-      lastFinalizedBlockHash:
-        checkpoint.lastFinalizedBlock <= commonAncestor
-          ? checkpoint.lastFinalizedBlockHash
-          : ancestorHash.toLowerCase(),
+      // A verified reorg is allowed to rewind the scan cursor only after the
+      // finalized boundary. Finality itself is never silently lowered.
+      lastFinalizedBlock: checkpoint.lastFinalizedBlock,
+      lastFinalizedBlockHash: checkpoint.lastFinalizedBlockHash,
       cursorVersion: checkpoint.cursorVersion + 1,
       lastReconciliationAt: startedAt
     };
@@ -558,7 +642,13 @@ export class AgentIngestionService {
     return {
       checkpoint: nextCheckpoint,
       orphanedObservationCount: observations.filter((observation) => observation.confirmationState === "orphaned").length,
-      affectedIdentityKeys: [...affectedSet].sort()
+      affectedIdentityKeys: [...affectedSet].sort(),
+      verifiedRewind: {
+        previousScannedBlock: checkpoint.lastScannedBlock,
+        previousScannedBlockHash: checkpoint.lastScannedBlockHash,
+        commonAncestorBlock: commonAncestor,
+        commonAncestorHash: ancestorHash.toLowerCase()
+      }
     };
   }
 
@@ -583,6 +673,7 @@ export class AgentIngestionService {
       identityKey: erc8004IdentityKey(identity.identity),
       expectedVersion: existing.version,
       expectedStatus: existing.status,
+      expectedOwnerAddress: identity.ownerAddress,
       claim: {
         ...existing,
         version: existing.version + 1,
@@ -674,4 +765,12 @@ export class AgentIngestionService {
   private now(): Date {
     return this.options.now?.() ?? new Date();
   }
+}
+
+function normalizeIndexerVersion(value: string | undefined): string {
+  const normalized = (value ?? "registry-indexer-v1").trim();
+  if (normalized.length === 0 || normalized.length > 64) {
+    throw ingestionError("INGESTION_INPUT_INVALID", "The indexer configuration version is invalid.", "fix_indexer_configuration");
+  }
+  return normalized;
 }
