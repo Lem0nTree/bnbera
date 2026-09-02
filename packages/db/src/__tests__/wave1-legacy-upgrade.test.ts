@@ -21,6 +21,18 @@ describe("Wave 1 legacy upgrade path", () => {
     expect(repairEntry?.when).toBeGreaterThan(1788330015593); // A8 0002
   });
 
+  it("chains the repair snapshot from the combined Wave 1 snapshot", () => {
+    const combinedSnapshot = JSON.parse(
+      readFileSync(join(migrationsPath, "meta", "0001_snapshot.json"), "utf8")
+    ) as { id: string };
+    const repairSnapshot = JSON.parse(
+      readFileSync(join(migrationsPath, "meta", "0002_snapshot.json"), "utf8")
+    ) as { id: string; prevId: string };
+
+    expect(repairSnapshot.id).not.toBe(combinedSnapshot.id);
+    expect(repairSnapshot.prevId).toBe(combinedSnapshot.id);
+  });
+
   it("keeps the combined migration fresh-install safe and moves destructive cleanup into guarded repair", () => {
     expect(combined).not.toContain('DROP INDEX "commerce_erc8183_job_unique"');
     expect(repair).toContain('DROP INDEX IF EXISTS "commerce_erc8183_job_unique"');
