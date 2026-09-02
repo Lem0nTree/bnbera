@@ -137,6 +137,45 @@ export const evidenceStates = [
 ] as const;
 export type EvidenceState = (typeof evidenceStates)[number];
 
+/** Provider-specific evidence state is kept separate from the marketplace's
+ * aggregate evidence state so IPFS and Greenfield can fail independently. */
+export const publicationProviders = ["ipfs", "greenfield"] as const;
+export type PublicationProvider = (typeof publicationProviders)[number];
+
+export const publicationAttemptStates = [
+  "pending",
+  "validating",
+  "creating_object",
+  "submitted",
+  "uploading",
+  "awaiting_seal",
+  "reading_back",
+  "verified",
+  "validation_failed",
+  "create_failed",
+  "upload_failed",
+  "seal_timeout",
+  "readback_failed",
+  "hash_mismatch",
+  "duplicate",
+  "provider_failed",
+  "retrying"
+] as const;
+export type PublicationAttemptState = (typeof publicationAttemptStates)[number];
+
+export const evidenceVerificationStatuses = ["not_verified", "verified", "failed"] as const;
+export type EvidenceVerificationStatus = (typeof evidenceVerificationStatuses)[number];
+
+export const evidenceReadbackStatuses = [
+  "not_attempted",
+  "matched",
+  "missing",
+  "corrupt",
+  "timeout",
+  "provider_failed"
+] as const;
+export type EvidenceReadbackStatus = (typeof evidenceReadbackStatuses)[number];
+
 export const eventActorTypes = ["user", "agent", "system", "administrator"] as const;
 export type EventActorType = (typeof eventActorTypes)[number];
 

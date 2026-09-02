@@ -77,6 +77,30 @@ importers:
         specifier: 8.13.1
         version: 8.13.1
 
+  packages/evidence:
+    dependencies:
+      '@bnbera/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@noble/hashes':
+        specifier: 2.4.0
+        version: 2.4.0
+      zod:
+        specifier: 3.24.1
+        version: 3.24.1
+
+  packages/greenfield:
+    dependencies:
+      '@bnbera/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@bnbera/evidence':
+        specifier: workspace:*
+        version: link:../evidence
+      zod:
+        specifier: 3.24.1
+        version: 3.24.1
+
   packages/domain:
     dependencies:
       zod:

@@ -8,9 +8,13 @@ import {
   discoverySources,
   draftStatuses,
   evidenceStates,
+  evidenceReadbackStatuses,
+  evidenceVerificationStatuses,
   eventActorTypes,
   listingStatuses,
   originTypes,
+  publicationAttemptStates,
+  publicationProviders,
   runtimeStatuses,
   serviceKinds,
   serviceValidationStatuses,
@@ -68,6 +72,19 @@ export const draftStatusEnum = pgEnum("draft_status", enumValues(draftStatuses))
 export const deploymentStateEnum = pgEnum("deployment_state", enumValues(deploymentStates));
 export const commerceJobStatusEnum = pgEnum("commerce_job_status", enumValues(commerceJobStatuses));
 export const evidenceStateEnum = pgEnum("evidence_state", enumValues(evidenceStates));
+export const publicationProviderEnum = pgEnum("publication_provider", enumValues(publicationProviders));
+export const publicationAttemptStateEnum = pgEnum(
+  "publication_attempt_state",
+  enumValues(publicationAttemptStates)
+);
+export const evidenceVerificationStatusEnum = pgEnum(
+  "evidence_verification_status",
+  enumValues(evidenceVerificationStatuses)
+);
+export const evidenceReadbackStatusEnum = pgEnum(
+  "evidence_readback_status",
+  enumValues(evidenceReadbackStatuses)
+);
 export const eventActorTypeEnum = pgEnum("event_actor_type", enumValues(eventActorTypes));
 export const agentCategoryEnum = pgEnum("agent_category", enumValues(agentCategories));
 
@@ -642,6 +659,7 @@ export const evidenceObjects = pgTable(
     agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
     benchmarkId: varchar("benchmark_id", { length: 160 }),
     objectType: varchar("object_type", { length: 64 }).notNull(),
+    artifactSchemaVersion: varchar("artifact_schema_version", { length: 64 }).notNull().default("bnbera.evidence/v1"),
     resourceId: varchar("resource_id", { length: 160 }).notNull(),
     version: integer("version").notNull(),
     idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
@@ -663,6 +681,98 @@ export const evidenceObjects = pgTable(
     uniqueIndex("evidence_idempotency_unique").on(table.idempotencyKey),
     uniqueIndex("evidence_resource_version_unique").on(table.objectType, table.resourceId, table.version),
     index("evidence_state_idx").on(table.state, table.createdAt)
+  ]
+);
+
+export const evidencePublicationAttempts = pgTable(
+  "evidence_publication_attempts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    evidenceObjectId: uuid("evidence_object_id")
+      .notNull()
+      .references(() => evidenceObjects.id, { onDelete: "cascade" }),
+    provider: publicationProviderEnum("provider").notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 256 }).notNull(),
+    attemptNumber: integer("attempt_number").notNull().default(0),
+    objectName: text("object_name").notNull(),
+    state: publicationAttemptStateEnum("state").notNull().default("pending"),
+    providerReference: text("provider_reference"),
+    creationTransactionHash: varchar("creation_transaction_hash", { length: 66 }),
+    sealTransactionHash: varchar("seal_transaction_hash", { length: 66 }),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }),
+    lastErrorCode: varchar("last_error_code", { length: 64 }),
+    sanitizedError: varchar("sanitized_error", { length: 500 }),
+    retryable: boolean("retryable").notNull().default(false),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: now()
+  },
+  (table) => [
+    uniqueIndex("evidence_publication_idempotency_unique").on(table.idempotencyKey),
+    index("evidence_publication_object_provider_idx").on(table.evidenceObjectId, table.provider),
+    index("evidence_publication_state_idx").on(table.state, table.updatedAt)
+  ]
+);
+
+export const evidenceLocators = pgTable(
+  "evidence_locators",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    evidenceObjectId: uuid("evidence_object_id")
+      .notNull()
+      .references(() => evidenceObjects.id, { onDelete: "cascade" }),
+    publicationAttemptId: uuid("publication_attempt_id").references(() => evidencePublicationAttempts.id, {
+      onDelete: "set null"
+    }),
+    provider: publicationProviderEnum("provider").notNull(),
+    network: varchar("network", { length: 128 }).notNull(),
+    uri: text("uri").notNull(),
+    bucket: varchar("bucket", { length: 128 }),
+    objectName: text("object_name"),
+    providerReference: text("provider_reference"),
+    version: integer("version").notNull(),
+    sha256Digest: varchar("sha256_digest", { length: 64 }).notNull(),
+    keccak256Digest: varchar("keccak256_digest", { length: 64 }).notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    immutable: boolean("immutable").notNull().default(true),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    createdAt: now()
+  },
+  (table) => [
+    uniqueIndex("evidence_locator_uri_unique").on(table.provider, table.uri),
+    index("evidence_locator_object_provider_idx").on(table.evidenceObjectId, table.provider)
+  ]
+);
+
+export const evidenceVerificationResults = pgTable(
+  "evidence_verification_results",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    evidenceObjectId: uuid("evidence_object_id")
+      .notNull()
+      .references(() => evidenceObjects.id, { onDelete: "cascade" }),
+    publicationAttemptId: uuid("publication_attempt_id").references(() => evidencePublicationAttempts.id, {
+      onDelete: "set null"
+    }),
+    status: evidenceVerificationStatusEnum("status").notNull().default("not_verified"),
+    sealConfirmed: boolean("seal_confirmed"),
+    readbackStatus: evidenceReadbackStatusEnum("readback_status").notNull().default("not_attempted"),
+    expectedSha256Digest: varchar("expected_sha256_digest", { length: 64 }).notNull(),
+    observedSha256Digest: varchar("observed_sha256_digest", { length: 64 }),
+    expectedKeccak256Digest: varchar("expected_keccak256_digest", { length: 64 }).notNull(),
+    observedKeccak256Digest: varchar("observed_keccak256_digest", { length: 64 }),
+    expectedSizeBytes: bigint("expected_size_bytes", { mode: "number" }).notNull(),
+    observedSizeBytes: bigint("observed_size_bytes", { mode: "number" }),
+    hashesMatch: boolean("hashes_match").notNull().default(false),
+    sizeMatches: boolean("size_matches").notNull().default(false),
+    reasonCode: varchar("reason_code", { length: 64 }),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    index("evidence_verification_object_time_idx").on(table.evidenceObjectId, table.checkedAt),
+    index("evidence_verification_status_idx").on(table.status, table.checkedAt)
   ]
 );
 
@@ -726,6 +836,9 @@ export const schemaTables = {
   commerceJobs,
   agentRuns,
   evidenceObjects,
+  evidencePublicationAttempts,
+  evidenceLocators,
+  evidenceVerificationResults,
   auditEvents,
   matchEvents
 } as const;

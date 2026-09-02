@@ -5,6 +5,9 @@ import {
   agentListingEmbeddings,
   agents,
   authSessions,
+  evidenceLocators,
+  evidencePublicationAttempts,
+  evidenceVerificationResults,
   erc8004Identities,
   schemaTables
 } from "../schema.js";
@@ -51,5 +54,23 @@ describe("foundation database schema", () => {
 
   it("exports every foundation table for downstream repositories", () => {
     expect(Object.keys(schemaTables).length).toBeGreaterThanOrEqual(20);
+  });
+
+  it("keeps provider attempts, immutable locators, and readback results separate", () => {
+    expect(Object.keys(evidencePublicationAttempts)).toEqual(
+      expect.arrayContaining(["provider", "state", "idempotencyKey", "providerReference"])
+    );
+    expect(Object.keys(evidenceLocators)).toEqual(
+      expect.arrayContaining(["provider", "uri", "sha256Digest", "keccak256Digest", "immutable"])
+    );
+    expect(Object.keys(evidenceVerificationResults)).toEqual(
+      expect.arrayContaining(["status", "sealConfirmed", "readbackStatus", "hashesMatch", "sizeMatches"])
+    );
+    const migrationPath = fileURLToPath(new URL("../../migrations/0001_evidence_publication.sql", import.meta.url));
+    const migration = readFileSync(migrationPath, "utf8");
+    expect(migration).toContain('CREATE TYPE "publication_attempt_state"');
+    expect(migration).toContain('CREATE TABLE "evidence_publication_attempts"');
+    expect(migration).toContain('CREATE TABLE "evidence_locators"');
+    expect(migration).toContain('CREATE TABLE "evidence_verification_results"');
   });
 });
