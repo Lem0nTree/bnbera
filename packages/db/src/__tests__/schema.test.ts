@@ -169,12 +169,16 @@ describe("combined Wave 1 database schema", () => {
     );
   });
 
-  it("contains exactly one generated Wave 1 migration and no generated drops of the circular FK", () => {
+  it("keeps the generated baseline plus an ordered legacy repair and no drop of the circular FK", () => {
     const sqlFiles = readdirSync(migrationsPath)
       .filter((file) => /^\d+_.*\.sql$/u.test(file))
       .sort();
     const wave1Files = sqlFiles.filter((file) => file.startsWith("0001_wave1_"));
-    expect(sqlFiles).toEqual(["0000_round_wallflower.sql", "0001_wave1_combined.sql"]);
+    expect(sqlFiles).toEqual([
+      "0000_round_wallflower.sql",
+      "0001_wave1_combined.sql",
+      "0002_wave1_legacy_repair.sql"
+    ]);
     expect(wave1Files).toEqual(["0001_wave1_combined.sql"]);
 
     const wave1 = readFileSync(join(migrationsPath, "0001_wave1_combined.sql"), "utf8");

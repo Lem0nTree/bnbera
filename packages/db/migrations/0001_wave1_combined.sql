@@ -360,7 +360,6 @@ CREATE TABLE "payment_replay_reservations" (
 	"rejected_at" timestamp with time zone
 );
 --> statement-breakpoint
-DROP INDEX "commerce_erc8183_job_unique";--> statement-breakpoint
 ALTER TABLE "agents" ADD COLUMN "claim_version" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE "agents" ADD COLUMN "claimant_address" varchar(42);--> statement-breakpoint
 ALTER TABLE "agents" ADD COLUMN "claim_owner_address_at_verification" varchar(42);--> statement-breakpoint
