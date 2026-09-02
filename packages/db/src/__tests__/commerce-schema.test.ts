@@ -49,7 +49,7 @@ describe("commerce and payment database schema", () => {
   });
 
   it("keeps the generated migration additive and preserves the foundation circular FK", () => {
-    const migrationPath = fileURLToPath(new URL("../../migrations/0001_material_exiles.sql", import.meta.url));
+    const migrationPath = fileURLToPath(new URL("../../migrations/0001_wave1_combined.sql", import.meta.url));
     const migration = readFileSync(migrationPath, "utf8");
     for (const table of [
       "erc8183_jobs",
@@ -67,6 +67,9 @@ describe("commerce and payment database schema", () => {
     expect(migration).toContain('CREATE UNIQUE INDEX "erc8183_job_network_identity_unique"');
     expect(migration).toContain('CREATE UNIQUE INDEX "payment_attempt_rail_idempotency_unique"');
     expect(migration).toContain('CREATE UNIQUE INDEX "payment_replay_key_unique"');
+    expect(migration).toContain('SET "configuration_digest" = repeat(\'0\', 64)');
+    expect(migration).toContain('SET "artifact_id" = \'legacy:\' || "id"::text');
+    expect(migration).toContain('ADD COLUMN "observed_fields" jsonb DEFAULT \'[]\'::jsonb NOT NULL');
   });
 
   it("models protocol job identity and receipt ownership at their canonical boundaries", () => {

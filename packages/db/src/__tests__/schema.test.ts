@@ -88,7 +88,7 @@ describe("combined Wave 1 database schema", () => {
       expect.arrayContaining(["embedding", "provider", "model", "dimension", "sourceTextDigest"])
     );
     expect(Object.keys(agentCategoryPredictions)).toEqual(
-      expect.arrayContaining(["category", "model", "confidence", "inputDigest"])
+      expect.arrayContaining(["predictedCategory", "classifierVersion", "confidence", "reviewState"])
     );
     expect(Object.keys(schemaTables).length).toBeGreaterThanOrEqual(40);
   });
@@ -125,10 +125,10 @@ describe("combined Wave 1 database schema", () => {
 
   it("keeps the ERC-8183 and B402 rails independently pinned", () => {
     expect(Object.keys(commerceJobs)).toEqual(
-      expect.arrayContaining(["buyerAddress", "providerAddress", "network", "asset", "amountAtomic"])
+      expect.arrayContaining(["erc8183JobId", "providerAgentId", "quote", "price", "status"])
     );
     expect(Object.keys(erc8183Jobs)).toEqual(
-      expect.arrayContaining(["jobId", "contractAddress", "network", "configurationDigest"])
+      expect.arrayContaining(["chainId", "commerceContract", "erc8183JobId", "deploymentPinDigest", "state"])
     );
     expect(Object.keys(paymentAttempts)).toEqual(
       expect.arrayContaining([
