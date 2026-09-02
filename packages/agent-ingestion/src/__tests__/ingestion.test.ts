@@ -4,6 +4,7 @@ import {
   IdentityClaimService,
   InMemoryIngestionRepository,
   createEightHundredFourScanAdapter,
+  normalizeRegistryEvent,
   type ClaimVerificationProof,
   type ChainObservation,
   type DirectIdentityState,
@@ -146,6 +147,37 @@ describe("A3 identity and discovery ingestion", () => {
       code: "REORG_RECONCILIATION_REQUIRED"
     });
     expect((await repository.findIdentity(identity))?.observedBlock).toBeNull();
+  });
+
+  it("rejects missing or undefined declared event fields but accepts explicit null clears", () => {
+    const fields = ["ownerAddress", "agentWallet", "agentUri", "contentDigest"] as const;
+    const base = registryEvent({
+      transactionHash: "0x" + "13".repeat(32),
+      logIndex: 0,
+      blockNumber: 13,
+      blockHash: "0x" + "13".repeat(32)
+    });
+
+    for (const field of fields) {
+      const missing = { ...base } as Partial<RegistryEvent>;
+      delete missing[field];
+      expect(() => normalizeRegistryEvent({
+        ...missing,
+        changedFields: [field]
+      } as RegistryEvent)).toThrow("Every declared registry event field must be present");
+
+      expect(normalizeRegistryEvent({
+        ...base,
+        [field]: null,
+        changedFields: [field]
+      } as RegistryEvent)[field]).toBeNull();
+
+      expect(() => normalizeRegistryEvent({
+        ...base,
+        [field]: undefined,
+        changedFields: [field]
+      } as RegistryEvent)).toThrow("present but undefined");
+    }
   });
 
   it("deduplicates 8004scan replay while retaining normalized services and capabilities", async () => {

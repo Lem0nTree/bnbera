@@ -369,6 +369,31 @@ export function normalizeRegistryEvent(input: RegistryEvent): {
   if (new Set(observedFields).size !== observedFields.length || observedFields.some((field) => !directIdentityFields.includes(field))) {
     throw ingestionError("INGESTION_INPUT_INVALID", "The registry event changed-field list is invalid.", "fix_chain_event");
   }
+  // A declared change must have a concrete own property in the event. An
+  // omitted property means "unchanged" and must never be normalized to null;
+  // an explicitly present null remains valid for the nullable ERC-8004
+  // fields (for example, clearing a URI or content digest).
+  for (const field of directIdentityFields) {
+    if (Object.prototype.hasOwnProperty.call(input, field) && input[field] === undefined) {
+      throw ingestionError(
+        "INGESTION_INPUT_INVALID",
+        `The registry event field ${field} is present but undefined.`,
+        "fix_chain_event"
+      );
+    }
+  }
+  if (
+    input.changedFields !== undefined &&
+    observedFields.some(
+      (field) => !Object.prototype.hasOwnProperty.call(input, field) || input[field] === undefined
+    )
+  ) {
+    throw ingestionError(
+      "INGESTION_INPUT_INVALID",
+      "Every declared registry event field must be present in the event payload.",
+      "fix_chain_event"
+    );
+  }
   const observedAt = input.observedAt ?? new Date();
   if (!(observedAt instanceof Date) || !Number.isFinite(observedAt.getTime())) {
     throw ingestionError("INGESTION_INPUT_INVALID", "The registry observation timestamp is invalid.", "fix_timestamp");
