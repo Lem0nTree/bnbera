@@ -9,6 +9,7 @@ import {
   challengeUnsignedDigest,
   classifyRelayTimeout,
   paymentAuthorizationDigest,
+  paymentAttemptSchema,
   paymentPinDigest,
   paymentReplayKey,
   paymentReceiptSchema,
@@ -104,7 +105,6 @@ function attempt(): PaymentAttempt {
     pinDigest: paymentPinDigest(PIN),
     status: "challenged",
     relayRequestDigest: null,
-    receiptId: null,
     failureCode: null,
     sanitizedFailure: null,
     createdAtUnix: 1_000_000,
@@ -162,6 +162,16 @@ describe("B402/X402 boundary validation", () => {
     }, current, PIN, 1_000_040);
     expect(paymentAuthorizationDigest(authorization)).toHaveLength(64);
     expect(() => validateAuthorization({ ...authorization, challengeId: "challenge-2" }, current, PIN, 1_000_040)).toThrow(/challenge/i);
+    expect(() => validateAuthorization(authorization, current, PIN, current.expiresAtUnix)).toThrow(/expired/i);
+    expect(() => transitionPaymentAttempt({
+      attempt: attempt(),
+      sellerConfiguration: SELLER_CONFIGURATION,
+      nextStatus: "authorized",
+      nowUnix: current.expiresAtUnix,
+      idempotencyKey: "authorize-expired",
+      correlationId: "corr-expired",
+      metadata: { authorization }
+    })).toThrow(/expired/i);
     const relay = validateRelayRequest({
       attemptId: ATTEMPT_ID,
       requestId: PIN.requestId,
@@ -173,8 +183,20 @@ describe("B402/X402 boundary validation", () => {
       requestDigest: canonicalSha256Hex({ prompt: "hello" }),
       fixedEgressProfile: PIN.fixedEgressProfile,
       timeoutMs: 10_000
-    }, ATTEMPT_ID, authorization, PIN);
+    }, ATTEMPT_ID, authorization, PIN, current, 1_000_040);
     expect(relay.fixedEgressProfile).toBe(PIN.fixedEgressProfile);
+    expect(() => validateRelayRequest({
+      attemptId: ATTEMPT_ID,
+      requestId: PIN.requestId,
+      idempotencyKey: "relay-request-expired",
+      destination: PIN.destination,
+      method: PIN.method,
+      requestBody: { prompt: "hello" },
+      authorizationDigest: paymentAuthorizationDigest(authorization),
+      requestDigest: canonicalSha256Hex({ prompt: "hello" }),
+      fixedEgressProfile: PIN.fixedEgressProfile,
+      timeoutMs: 10_000
+    }, ATTEMPT_ID, authorization, PIN, current, current.expiresAtUnix)).toThrow(/expired/i);
     expect(() => validateRelayRequest({
       attemptId: ATTEMPT_ID,
       requestId: "request-other",
@@ -186,7 +208,7 @@ describe("B402/X402 boundary validation", () => {
        requestDigest: canonicalSha256Hex({ prompt: "hello" }),
       fixedEgressProfile: PIN.fixedEgressProfile,
       timeoutMs: 10_000
-    }, ATTEMPT_ID, authorization, PIN)).toThrow(/correlation/i);
+    }, ATTEMPT_ID, authorization, PIN, current, 1_000_040)).toThrow(/correlation/i);
   });
 
   it("requires a verified, recipient-matching receipt before delivery", () => {
@@ -218,6 +240,34 @@ describe("B402/X402 boundary validation", () => {
     expect(validateReceipt(base, PIN, ATTEMPT_ID, current.challengeId).status).toBe("settled");
     expect(() => validateReceipt({ ...base, actualRecipient: "0x7777777777777777777777777777777777777777" }, PIN, ATTEMPT_ID, current.challengeId)).toThrow(/recipient/i);
     expect(() => validateReceipt({ ...base, payoutVerified: false }, PIN, ATTEMPT_ID, current.challengeId)).toThrow(/payout/i);
+  });
+
+  it("keeps receipt ownership on receipt.attemptId without an attempt backlink", () => {
+    expect(() => paymentAttemptSchema.parse({ ...attempt(), receiptId: randomUUID() })).toThrow(/receiptId|unrecognized/i);
+    expect(paymentReceiptSchema.parse({
+      receiptId: randomUUID(),
+      attemptId: ATTEMPT_ID,
+      challengeId: challenge().challengeId,
+      rail: "x402_b402",
+      status: "unknown",
+      settlementNetwork: 97,
+      settlementAsset: PIN.settlementAsset,
+      settlementDecimals: PIN.settlementDecimals,
+      amountAtomic: PIN.amountAtomic,
+      expectedRecipient: PIN.recipient,
+      actualRecipient: null,
+      method: PIN.method,
+      destination: PIN.destination,
+      paymentTransactionHash: null,
+      settlementTransactionHash: null,
+      payoutAddress: null,
+      payoutVerified: false,
+      facilitatorRequestReference: null,
+      responseStatus: null,
+      responseDigest: null,
+      observedAtUnix: 1_000_060,
+      settledAtUnix: null
+    }).attemptId).toBe(ATTEMPT_ID);
   });
 
   it("makes replay reservation terminal and never silently reuses it", () => {
@@ -301,7 +351,9 @@ describe("B402/X402 boundary validation", () => {
     const pending = transitionPaymentAttempt({ attempt: authorized, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "relay_pending", nowUnix: 1_000_041, idempotencyKey: "relay-1", correlationId: "corr-1" }).attempt;
     const unknown = transitionPaymentAttempt({ attempt: pending, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "unknown", nowUnix: 1_000_050, idempotencyKey: "unknown-1", correlationId: "corr-1" }).attempt;
     expect(() => assertPaymentTransition({ attempt: unknown, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "settlement_pending", nowUnix: 1_000_060 })).toThrow(/reconciled/i);
-    const reconciled = transitionPaymentAttempt({ attempt: unknown, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "settlement_pending", nowUnix: 1_000_070, idempotencyKey: "reconcile-1", correlationId: "corr-1", metadata: { reconciliationConfirmed: true } }).attempt;
+    const reconcilerAddress = "0x9999999999999999999999999999999999999999";
+    expect(() => transitionPaymentAttempt({ attempt: unknown, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "settlement_pending", nowUnix: 1_000_070, idempotencyKey: "reconcile-unauthenticated", correlationId: "corr-1", metadata: { reconciliationConfirmed: true } })).toThrow(/authenticated|reconciler/i);
+    const reconciled = transitionPaymentAttempt({ attempt: unknown, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "settlement_pending", nowUnix: 1_000_070, idempotencyKey: "reconcile-1", correlationId: "corr-1", reconcilerAddresses: [reconcilerAddress], metadata: { reconciliationConfirmed: true, reconcilerAddress } }).attempt;
     expect(reconciled.status).toBe("settlement_pending");
   });
 
@@ -335,6 +387,14 @@ describe("B402/X402 boundary validation", () => {
       correlationId: "corr-partial-1",
       metadata: { authorization }
     }).attempt;
+    expect(() => transitionPaymentAttempt({
+      attempt: authorized,
+      sellerConfiguration: SELLER_CONFIGURATION,
+      nextStatus: "relay_pending",
+      nowUnix: initial.challenge.expiresAtUnix,
+      idempotencyKey: "relay-expired-1",
+      correlationId: "corr-expired-1"
+    })).toThrow(/expired/i);
     const pending = transitionPaymentAttempt({ attempt: authorized, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "relay_pending", nowUnix: 1_000_041, idempotencyKey: "relay-partial-1", correlationId: "corr-partial-1" }).attempt;
     const partial = transitionPaymentAttempt({
       attempt: pending,

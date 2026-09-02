@@ -19,7 +19,7 @@ import {
   type PaymentReconciliation,
   type ReconciliationState
 } from "./types.js";
-import { parseEnabledSellerConfiguration, receiptDigest, validatePaymentPinAgainstSellerConfiguration, validateReceipt } from "./validation.js";
+import { normalizeAddress, parseEnabledSellerConfiguration, receiptDigest, validateChallenge, validatePaymentPinAgainstSellerConfiguration, validateReceipt } from "./validation.js";
 
 function clone<T>(value: T): T {
   return structuredClone(value);
@@ -30,6 +30,15 @@ function assertChallengeDigest(challenge: PaymentChallenge): void {
   if (challengeUnsignedDigest(unsignedChallenge) !== challengeDigest) {
     throw new PaymentError({ code: "CHALLENGE_TAMPERED", message: "The persisted payment challenge digest does not match its terms." });
   }
+}
+
+function normalizeReconcilerAddress(value: string): string {
+  return normalizeAddress(value, "reconciler address");
+}
+
+function creationRequestDigest(attempt: PaymentAttempt): string {
+  const { createdAtUnix: _createdAtUnix, updatedAtUnix: _updatedAtUnix, ...request } = attempt;
+  return canonicalSha256Hex({ operation: "create", attempt: request });
 }
 
 export interface PaymentReceiptRepository {
@@ -76,6 +85,7 @@ export interface PaymentAttemptUnitOfWork {
     readonly event: PaymentEvent;
     readonly challenge?: PaymentChallenge;
     readonly receipt?: PaymentReceipt;
+    readonly requestDigest?: string;
   }): Promise<void>;
   saveReceipt(receipt: PaymentReceipt): Promise<{ readonly receipt: PaymentReceipt; readonly replayed: boolean }>;
 }
@@ -83,13 +93,21 @@ export interface PaymentAttemptUnitOfWork {
 export interface PaymentReconciliationRepository {
   enqueue(input: Omit<PaymentReconciliation, "reconciliationId" | "createdAtUnix" | "updatedAtUnix" | "attemptCount" | "state"> & { readonly nowUnix: number }): Promise<PaymentReconciliation>;
   listDue(nowUnix: number): Promise<readonly PaymentReconciliation[]>;
-  update(input: { readonly reconciliationId: string; readonly state: ReconciliationState; readonly nowUnix: number; readonly nextAttemptAtUnix: number | null; readonly observedPaymentTransactionHash?: `0x${string}` | null; readonly observedSettlementTransactionHash?: `0x${string}` | null; readonly detailDigest?: string | null }): Promise<PaymentReconciliation>;
+  update(input: { readonly reconciliationId: string; readonly state: ReconciliationState; readonly nowUnix: number; readonly nextAttemptAtUnix: number | null; readonly reconcilerAddress: string; readonly observedPaymentTransactionHash?: `0x${string}` | null; readonly observedSettlementTransactionHash?: `0x${string}` | null; readonly detailDigest?: string | null }): Promise<PaymentReconciliation>;
 }
 
 interface ActionRecord {
   readonly digest: string;
+  readonly requestDigest?: string;
   readonly attemptId: string;
   readonly result: { readonly attempt: PaymentAttempt; readonly event: PaymentEvent };
+}
+
+export interface PaymentRepositoryOptions {
+  /** Trusted server/chain clock. Callers cannot provide creation timestamps. */
+  readonly nowUnix?: () => number;
+  /** Authenticated system/reconciler addresses trusted by the repository. */
+  readonly reconcilerAddresses?: readonly string[];
 }
 
 const allowedReconciliationTransitions: Readonly<Record<ReconciliationState, readonly ReconciliationState[]>> = {
@@ -107,6 +125,8 @@ const allowedReconciliationTransitions: Readonly<Record<ReconciliationState, rea
  */
 export class InMemoryPaymentRepository implements PaymentAttemptRepository, PaymentReconciliationRepository {
   private readonly sellerConfiguration: ReturnType<typeof parseEnabledSellerConfiguration>;
+  private readonly nowUnix: () => number;
+  private readonly reconcilerAddresses: readonly string[];
   private readonly attempts = new Map<string, PaymentAttempt>();
   private readonly challenges = new Map<string, PaymentChallenge>();
   private readonly challengeDigests = new Map<string, string>();
@@ -118,8 +138,18 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
   private readonly reconciliations = new Map<string, PaymentReconciliation>();
   private transactionTail: Promise<void> = Promise.resolve();
 
-  constructor(sellerConfiguration: unknown) {
+  constructor(sellerConfiguration: unknown, options: PaymentRepositoryOptions = {}) {
     this.sellerConfiguration = parseEnabledSellerConfiguration(sellerConfiguration);
+    this.nowUnix = options.nowUnix ?? (() => Math.floor(Date.now() / 1_000));
+    this.reconcilerAddresses = Object.freeze((options.reconcilerAddresses ?? []).map((address) => normalizeReconcilerAddress(address)));
+  }
+
+  private trustedNowUnix(): number {
+    const nowUnix = this.nowUnix();
+    if (!Number.isSafeInteger(nowUnix) || nowUnix <= 0) {
+      throw new PaymentError({ code: "INVALID_EXPIRY", message: "The repository trusted clock returned an invalid Unix timestamp." });
+    }
+    return nowUnix;
   }
 
   async transaction<T>(work: (unit: PaymentAttemptUnitOfWork) => Promise<T>): Promise<T> {
@@ -166,7 +196,7 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
             throw new PaymentError({ code: "EVENT_CONFLICT", message: "A payment event key was reused with different contents." });
           }
           const priorAction = this.actions.get(action);
-          if (priorAction !== undefined && (priorAction.digest !== input.actionDigest || priorAction.attemptId !== input.attempt.attemptId)) {
+          if (priorAction !== undefined && (priorAction.digest !== input.actionDigest || priorAction.attemptId !== input.attempt.attemptId || (input.requestDigest !== undefined && priorAction.requestDigest !== input.requestDigest))) {
             throw new PaymentError({ code: "IDEMPOTENCY_CONFLICT", message: "The payment idempotency key was reused with different terms." });
           }
           if (previous !== undefined || priorAction !== undefined) {
@@ -189,7 +219,12 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
           }
           this.attempts.set(input.attempt.attemptId, clone(input.attempt));
           this.events.set(input.event.eventKey, clone(input.event));
-          this.actions.set(action, { digest: input.actionDigest, attemptId: input.attempt.attemptId, result: { attempt: clone(input.attempt), event: clone(input.event) } });
+          this.actions.set(action, {
+            digest: input.actionDigest,
+            ...(input.requestDigest === undefined ? {} : { requestDigest: input.requestDigest }),
+            attemptId: input.attempt.attemptId,
+            result: { attempt: clone(input.attempt), event: clone(input.event) }
+          });
         },
         saveReceipt: async (receipt) => {
           const attempt = this.attempts.get(receipt.attemptId);
@@ -235,21 +270,37 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
   async create(input: { readonly attempt: PaymentAttempt }): Promise<{ readonly attempt: PaymentAttempt; readonly replayed: boolean }> {
     const parsedAttempt = paymentAttemptSchema.parse(input.attempt);
     const trustedPin = validatePaymentPinAgainstSellerConfiguration(parsedAttempt.pin, this.sellerConfiguration).pin;
-    const attempt = paymentAttemptSchema.parse({
+    // Normalize the challenge without using the caller's attempt timestamp.
+    // This lets an idempotent replay return the original record even after
+    // the challenge expires, while a new create is checked against the
+    // repository's trusted clock below.
+    const normalizedChallenge = validateChallenge(parsedAttempt.challenge, trustedPin, parsedAttempt.challenge.issuedAtUnix);
+    const normalizedInput = paymentAttemptSchema.parse({
       ...parsedAttempt,
+      challenge: normalizedChallenge,
       pin: trustedPin,
       pinDigest: paymentPinDigest(trustedPin)
     });
-    assertChallengeDigest(attempt.challenge);
-    const idempotencyKey = idempotencyKeySchema.parse(attempt.idempotencyKey);
-    const digest = canonicalSha256Hex({ operation: "create", attempt });
+    const idempotencyKey = idempotencyKeySchema.parse(normalizedInput.idempotencyKey);
+    const requestDigest = creationRequestDigest(normalizedInput);
     const prior = this.actions.get(idempotencyKey);
     if (prior !== undefined) {
-      if (prior.digest !== digest || prior.attemptId !== attempt.attemptId) {
+      if ((prior.requestDigest ?? prior.digest) !== requestDigest || prior.attemptId !== normalizedInput.attemptId) {
         throw new PaymentError({ code: "IDEMPOTENCY_CONFLICT", message: "The payment idempotency key was reused with different terms." });
       }
       return { attempt: clone(prior.result.attempt), replayed: true };
     }
+    const createdAtUnix = this.trustedNowUnix();
+    const trustedChallenge = validateChallenge(normalizedChallenge, trustedPin, createdAtUnix);
+    const attempt = paymentAttemptSchema.parse({
+      ...normalizedInput,
+      challenge: trustedChallenge,
+      createdAtUnix,
+      updatedAtUnix: createdAtUnix
+    });
+    assertChallengeDigest(attempt.challenge);
+    // Server-generated timestamps are not part of the idempotency identity.
+    const digest = requestDigest;
     if (this.attempts.has(attempt.attemptId)) {
       throw new PaymentError({ code: "IDEMPOTENCY_CONFLICT", message: "A payment attempt already exists with this identifier." });
     }
@@ -284,6 +335,7 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
     await this.transaction(async (unit) => unit.commit({
       actionKey: idempotencyKey,
       actionDigest: digest,
+      requestDigest,
       expectedAttempt: null,
       attempt,
       event: parsedEvent,
@@ -322,7 +374,8 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
     if (attempt.status !== input.expectedStatus) {
       throw new PaymentError({ code: "STALE_ATTEMPT", message: `Expected payment status ${input.expectedStatus}, observed ${attempt.status}.`, retriable: true, nextAction: "reconcile_payment" });
     }
-    const result = transitionPaymentAttempt({ ...input, attempt, sellerConfiguration: this.sellerConfiguration });
+    const trustedNowUnix = this.trustedNowUnix();
+    const result = transitionPaymentAttempt({ ...input, attempt, nowUnix: trustedNowUnix, sellerConfiguration: this.sellerConfiguration, reconcilerAddresses: this.reconcilerAddresses });
     await this.transaction(async (unit) => unit.commit({
       actionKey: idempotencyKey,
       actionDigest: digest,
@@ -340,15 +393,22 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
     if (!this.attempts.has(parsed.attemptId)) {
       throw new PaymentError({ code: "UNKNOWN_ATTEMPT", message: "The payment event references an unknown attempt." });
     }
-    const prior = this.events.get(parsed.eventKey);
-    if (prior !== undefined) {
-      if (!sameEvent(prior, parsed)) {
-        throw new PaymentError({ code: "EVENT_CONFLICT", message: "A payment event key was reused with different contents." });
-      }
-      return { event: clone(prior), replayed: true };
+    if (!parsed.eventKey.startsWith("action:")) {
+      throw new PaymentError({ code: "EVENT_CONFLICT", message: "Event key entries can only be appended through a validated atomic action." });
     }
-    this.events.set(parsed.eventKey, clone(parsed));
-    return { event: clone(parsed), replayed: false };
+    const actionResult = idempotencyKeySchema.safeParse(parsed.eventKey.slice("action:".length));
+    if (!actionResult.success) {
+      throw new PaymentError({ code: "EVENT_CONFLICT", message: "The event key action is invalid or was not validated by this repository." });
+    }
+    const priorAction = this.actions.get(actionResult.data);
+    if (priorAction === undefined || priorAction.attemptId !== parsed.attemptId || !sameEvent(priorAction.result.event, parsed)) {
+      throw new PaymentError({ code: "EVENT_CONFLICT", message: "An event key can only be replayed after its validated state, actor, chain, and action transaction committed." });
+    }
+    const prior = this.events.get(parsed.eventKey);
+    if (prior === undefined || !sameEvent(prior, parsed)) {
+      throw new PaymentError({ code: "EVENT_CONFLICT", message: "The validated action event is missing or has conflicting contents." });
+    }
+    return { event: clone(prior), replayed: true };
   }
 
   async getChallenge(challengeId: string): Promise<PaymentChallenge | null> {
@@ -457,7 +517,8 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
       .map(clone);
   }
 
-  async update(input: { readonly reconciliationId: string; readonly state: ReconciliationState; readonly nowUnix: number; readonly nextAttemptAtUnix: number | null; readonly observedPaymentTransactionHash?: `0x${string}` | null; readonly observedSettlementTransactionHash?: `0x${string}` | null; readonly detailDigest?: string | null }): Promise<PaymentReconciliation> {
+  async update(input: { readonly reconciliationId: string; readonly state: ReconciliationState; readonly nowUnix: number; readonly nextAttemptAtUnix: number | null; readonly reconcilerAddress: string; readonly observedPaymentTransactionHash?: `0x${string}` | null; readonly observedSettlementTransactionHash?: `0x${string}` | null; readonly detailDigest?: string | null }): Promise<PaymentReconciliation> {
+    this.assertReconciler(input.reconcilerAddress);
     const prior = [...this.reconciliations.values()].find((entry) => entry.reconciliationId === input.reconciliationId);
     if (prior === undefined) throw new PaymentError({ code: "RECONCILIATION_REQUIRED", message: "The payment reconciliation record was not found." });
     if (prior.state !== input.state && !allowedReconciliationTransitions[prior.state].includes(input.state)) {
@@ -476,10 +537,18 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
     this.reconciliations.set(`${prior.attemptId}:${prior.reasonCode}`, clone(next));
     return clone(next);
   }
+
+  private assertReconciler(address: string): void {
+    const normalized = normalizeReconcilerAddress(address);
+    if (!this.reconcilerAddresses.includes(normalized)) {
+      throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "Only an authenticated configured reconciler may update payment reconciliation state." });
+    }
+  }
 }
 
 function sameEvent(left: PaymentEvent, right: PaymentEvent): boolean {
-  return left.eventKey === right.eventKey &&
+  return left.eventId === right.eventId &&
+    left.eventKey === right.eventKey &&
     left.attemptId === right.attemptId &&
     left.eventType === right.eventType &&
     left.previousStatus === right.previousStatus &&

@@ -68,6 +68,8 @@ export function assertErc8183Transition(input: {
   readonly action: Erc8183ActionType;
   readonly actorAddress: string;
   readonly nowUnix: number;
+  /** Trusted server-side allow-list of authenticated reconciliation actors. */
+  readonly reconcilerAddresses?: readonly string[];
 }): void {
   const { job, deploymentPin, nextState, action, actorAddress, nowUnix } = input;
   erc8183JobRecordSchema.parse(job);
@@ -75,11 +77,22 @@ export function assertErc8183Transition(input: {
   assertDeploymentPinSnapshot(job.deploymentPin, job.deploymentPinDigest, enabledPin);
   assertPinMatchesJob(job.terms, enabledPin);
   assertBudgetMatchesPin(job.terms.budgetAtomic, enabledPin);
+  if (!Number.isSafeInteger(nowUnix) || nowUnix <= 0) {
+    throw new CommerceError({ code: "INVALID_EXPIRY", message: "A trusted Unix timestamp is required for an ERC-8183 transition." });
+  }
   if (action === "reconcile") {
     if (nextState !== job.state) {
       throw new CommerceError({ code: "ILLEGAL_TRANSITION", message: "Reconciliation cannot change the protocol state." });
     }
+    const actor = normalizeAddress(actorAddress, "reconciler address");
+    const trustedReconcilers = input.reconcilerAddresses ?? [];
+    if (!trustedReconcilers.some((candidate) => normalizeAddress(candidate, "reconciler address") === actor)) {
+      throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "Only an authenticated system or configured reconciler may reconcile an ERC-8183 job." });
+    }
     return;
+  }
+  if ((action === "fund" || action === "submit" || action === "complete" || action === "reject" || action === "set_provider" || action === "set_budget") && nowUnix >= job.terms.expiresAtUnix) {
+    throw new CommerceError({ code: "INVALID_EXPIRY", message: `ERC-8183 action ${action} is not valid after the active job expiry.` });
   }
   const isOpenMutation = (action === "set_provider" || action === "set_budget") && job.state === "open" && nextState === "open";
   if ((!canTransition(job.state, nextState) || job.state === nextState) && !isOpenMutation) {
@@ -136,6 +149,7 @@ export function transitionErc8183Job(input: {
   readonly nowUnix: number;
   readonly metadata?: Erc8183ActionMetadata;
   readonly correlationId: string;
+  readonly reconcilerAddresses?: readonly string[];
 }): { readonly job: Erc8183JobRecord; readonly event: ReturnType<typeof createErc8183JobEvent> } {
   assertErc8183Transition(input);
   const enabledPin = parseEnabledDeploymentPin(input.deploymentPin);

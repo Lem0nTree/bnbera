@@ -17,7 +17,7 @@ import {
   type Erc8183Reconciliation,
   type ReconciliationState
 } from "./types.js";
-import { assertBudgetMatchesPin, assertDeploymentPinSnapshot, assertPinMatchesJob, normalizeJobKey, parseEnabledDeploymentPin, validateJobTerms } from "./validation.js";
+import { assertBudgetMatchesPin, assertDeploymentPinSnapshot, assertPinMatchesJob, normalizeAddress, normalizeJobKey, normalizeJobTerms, parseEnabledDeploymentPin, validateJobTerms } from "./validation.js";
 
 function keyFor(jobKey: Erc8183JobKey): string {
   return `${jobKey.chainId}:${jobKey.commerceContract.toLowerCase()}:${jobKey.jobId}`;
@@ -25,6 +25,15 @@ function keyFor(jobKey: Erc8183JobKey): string {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+function normalizeReconcilerAddress(value: string): string {
+  return normalizeAddress(value, "reconciler address");
+}
+
+function creationRequestDigest(job: Erc8183JobRecord): string {
+  const { createdAtUnix: _createdAtUnix, updatedAtUnix: _updatedAtUnix, ...request } = job;
+  return canonicalSha256Hex({ operation: "create", job: request });
 }
 
 export interface Erc8183JobRepository {
@@ -57,19 +66,28 @@ export interface Erc8183JobUnitOfWork {
     readonly expectedJob: Erc8183JobRecord | null;
     readonly job: Erc8183JobRecord;
     readonly event: Erc8183JobEvent;
+    readonly requestDigest?: string;
   }): Promise<void>;
 }
 
 export interface Erc8183ReconciliationRepository {
   enqueue(input: Omit<Erc8183Reconciliation, "reconciliationId" | "createdAtUnix" | "updatedAtUnix" | "attemptCount" | "state"> & { readonly nowUnix: number }): Promise<Erc8183Reconciliation>;
   listDue(nowUnix: number): Promise<readonly Erc8183Reconciliation[]>;
-  update(input: { readonly reconciliationId: string; readonly state: ReconciliationState; readonly nowUnix: number; readonly nextAttemptAtUnix: number | null; readonly lastObservedTransactionHash?: `0x${string}` | null; readonly lastObservedBlock?: string | null; readonly detailDigest?: string | null }): Promise<Erc8183Reconciliation>;
+  update(input: { readonly reconciliationId: string; readonly state: ReconciliationState; readonly nowUnix: number; readonly nextAttemptAtUnix: number | null; readonly reconcilerAddress: string; readonly lastObservedTransactionHash?: `0x${string}` | null; readonly lastObservedBlock?: string | null; readonly detailDigest?: string | null }): Promise<Erc8183Reconciliation>;
 }
 
 interface ActionRecord {
   readonly digest: string;
+  readonly requestDigest?: string;
   readonly jobKey: string;
   readonly result: { readonly job: Erc8183JobRecord; readonly event: Erc8183JobEvent };
+}
+
+export interface Erc8183RepositoryOptions {
+  /** Trusted server/chain clock. Callers cannot provide creation timestamps. */
+  readonly nowUnix?: () => number;
+  /** Authenticated system/reconciler addresses trusted by the repository. */
+  readonly reconcilerAddresses?: readonly string[];
 }
 
 const allowedReconciliationTransitions: Readonly<Record<ReconciliationState, readonly ReconciliationState[]>> = {
@@ -88,14 +106,26 @@ const allowedReconciliationTransitions: Readonly<Record<ReconciliationState, rea
  */
 export class InMemoryErc8183Repository implements Erc8183JobRepository, Erc8183ReconciliationRepository {
   private readonly deploymentPin: ReturnType<typeof parseEnabledDeploymentPin>;
+  private readonly nowUnix: () => number;
+  private readonly reconcilerAddresses: readonly string[];
   private readonly jobs = new Map<string, Erc8183JobRecord>();
   private readonly events = new Map<string, Erc8183JobEvent>();
   private readonly actions = new Map<string, ActionRecord>();
   private readonly reconciliations = new Map<string, Erc8183Reconciliation>();
   private transactionTail: Promise<void> = Promise.resolve();
 
-  constructor(deploymentPin: unknown) {
+  constructor(deploymentPin: unknown, options: Erc8183RepositoryOptions = {}) {
     this.deploymentPin = parseEnabledDeploymentPin(deploymentPin);
+    this.nowUnix = options.nowUnix ?? (() => Math.floor(Date.now() / 1_000));
+    this.reconcilerAddresses = Object.freeze((options.reconcilerAddresses ?? []).map((address) => normalizeReconcilerAddress(address)));
+  }
+
+  private trustedNowUnix(): number {
+    const nowUnix = this.nowUnix();
+    if (!Number.isSafeInteger(nowUnix) || nowUnix <= 0) {
+      throw new CommerceError({ code: "INVALID_EXPIRY", message: "The repository trusted clock returned an invalid Unix timestamp." });
+    }
+    return nowUnix;
   }
 
   async transaction<T>(work: (unit: Erc8183JobUnitOfWork) => Promise<T>): Promise<T> {
@@ -115,7 +145,7 @@ export class InMemoryErc8183Repository implements Erc8183JobRepository, Erc8183R
           assertDeploymentPinSnapshot(persistedJob.deploymentPin, persistedJob.deploymentPinDigest, this.deploymentPin);
           assertPinMatchesJob(persistedJob.terms, this.deploymentPin);
           assertBudgetMatchesPin(persistedJob.terms.budgetAtomic, this.deploymentPin);
-          validateJobTerms(persistedJob.terms, this.deploymentPin, persistedJob.createdAtUnix);
+          validateJobTerms(persistedJob.terms, this.deploymentPin, this.trustedNowUnix());
           erc8183JobEventSchema.parse(input.event);
           if (keyFor(input.job.jobKey) !== input.jobKey || keyFor(input.event.jobKey) !== input.jobKey || input.event.eventKey !== `action:${action}`) {
             throw new CommerceError({ code: "EVENT_CONFLICT", message: "The atomic job event is not bound to the committed job action." });
@@ -137,7 +167,7 @@ export class InMemoryErc8183Repository implements Erc8183JobRepository, Erc8183R
             throw new CommerceError({ code: "EVENT_CONFLICT", message: "An event key was reused with different event contents." });
           }
           const priorAction = this.actions.get(action);
-          if (priorAction !== undefined && (priorAction.digest !== input.actionDigest || priorAction.jobKey !== input.jobKey)) {
+          if (priorAction !== undefined && (priorAction.digest !== input.actionDigest || priorAction.jobKey !== input.jobKey || (input.requestDigest !== undefined && priorAction.requestDigest !== input.requestDigest))) {
             throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The idempotency key was already used for another commerce operation." });
           }
           if (previous !== undefined || priorAction !== undefined) {
@@ -145,7 +175,12 @@ export class InMemoryErc8183Repository implements Erc8183JobRepository, Erc8183R
           }
           this.jobs.set(input.jobKey, clone(input.job));
           this.events.set(input.event.eventKey, clone(input.event));
-          this.actions.set(action, { digest: input.actionDigest, jobKey: input.jobKey, result: { job: clone(input.job), event: clone(input.event) } });
+          this.actions.set(action, {
+            digest: input.actionDigest,
+            ...(input.requestDigest === undefined ? {} : { requestDigest: input.requestDigest }),
+            jobKey: input.jobKey,
+            result: { job: clone(input.job), event: clone(input.event) }
+          });
         }
       };
       try {
@@ -175,25 +210,34 @@ export class InMemoryErc8183Repository implements Erc8183JobRepository, Erc8183R
     const key = idempotencyKeySchema.parse(input.idempotencyKey);
     const parsedJob = erc8183JobRecordSchema.parse(input.job);
     assertDeploymentPinSnapshot(parsedJob.deploymentPin, parsedJob.deploymentPinDigest, this.deploymentPin);
-    const job = erc8183JobRecordSchema.parse({
+    const normalizedInput = erc8183JobRecordSchema.parse({
       ...parsedJob,
       jobKey: normalizeJobKey(parsedJob.jobKey),
-      terms: validateJobTerms(parsedJob.terms, this.deploymentPin, parsedJob.createdAtUnix),
+      terms: normalizeJobTerms(parsedJob.terms, this.deploymentPin),
       deploymentPin: this.deploymentPin,
       deploymentPinDigest: erc8183DeploymentPinDigest(this.deploymentPin)
     });
-    if (job.state !== "open") {
+    if (normalizedInput.state !== "open") {
       throw new CommerceError({ code: "INVALID_JOB", message: "A new ERC-8183 job must begin in the open state." });
     }
-    const jobKey = keyFor(job.jobKey);
-    const digest = canonicalSha256Hex({ operation: "create", job });
+    const jobKey = keyFor(normalizedInput.jobKey);
+    const requestDigest = creationRequestDigest(normalizedInput);
     const previous = this.actions.get(key);
     if (previous !== undefined) {
-      if (previous.digest !== digest || previous.jobKey !== jobKey) {
+      if ((previous.requestDigest ?? previous.digest) !== requestDigest || previous.jobKey !== jobKey) {
         throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The idempotency key was already used for another commerce operation." });
       }
       return { job: clone(previous.result.job), replayed: true };
     }
+    const createdAtUnix = this.trustedNowUnix();
+    const job = erc8183JobRecordSchema.parse({
+      ...normalizedInput,
+      terms: validateJobTerms(normalizedInput.terms, this.deploymentPin, createdAtUnix),
+      createdAtUnix,
+      updatedAtUnix: createdAtUnix
+    });
+    // Server-generated timestamps are not part of the idempotency identity.
+    const digest = requestDigest;
     const existing = this.jobs.get(jobKey);
     if (existing !== undefined) {
       throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "An ERC-8183 job already exists for this chain, contract, and job ID." });
@@ -219,6 +263,7 @@ export class InMemoryErc8183Repository implements Erc8183JobRepository, Erc8183R
     await this.transaction(async (unit) => unit.commit({
       actionKey: key,
       actionDigest: digest,
+      requestDigest,
       jobKey,
       expectedJob: null,
       job,
@@ -264,7 +309,8 @@ export class InMemoryErc8183Repository implements Erc8183JobRepository, Erc8183R
     if (existing.state !== input.expectedState) {
       throw new CommerceError({ code: "STALE_JOB", message: `Expected job state ${input.expectedState}, observed ${existing.state}.`, retriable: true, nextAction: "reconcile_job" });
     }
-    const result = transitionErc8183Job({ ...input, job: existing, deploymentPin: this.deploymentPin });
+    const trustedNowUnix = this.trustedNowUnix();
+    const result = transitionErc8183Job({ ...input, job: existing, deploymentPin: this.deploymentPin, nowUnix: trustedNowUnix, reconcilerAddresses: this.reconcilerAddresses });
     await this.transaction(async (unit) => unit.commit({
       actionKey: key,
       actionDigest: digest,
@@ -282,15 +328,23 @@ export class InMemoryErc8183Repository implements Erc8183JobRepository, Erc8183R
     if (!this.jobs.has(keyFor(parsed.jobKey))) {
       throw new CommerceError({ code: "UNKNOWN_JOB", message: "The ERC-8183 event references an unknown job." });
     }
-    const previous = this.events.get(parsed.eventKey);
-    if (previous !== undefined) {
-      if (!sameEvent(previous, parsed)) {
-        throw new CommerceError({ code: "EVENT_CONFLICT", message: "An event key was reused with different event contents." });
-      }
-      return { event: clone(previous), replayed: true };
+    if (!parsed.eventKey.startsWith("action:")) {
+      throw new CommerceError({ code: "EVENT_CONFLICT", message: "Event key entries can only be appended through a validated atomic action." });
     }
-    this.events.set(parsed.eventKey, clone(parsed));
-    return { event: clone(parsed), replayed: false };
+    const actionResult = idempotencyKeySchema.safeParse(parsed.eventKey.slice("action:".length));
+    if (!actionResult.success) {
+      throw new CommerceError({ code: "EVENT_CONFLICT", message: "The event key action is invalid or was not validated by this repository." });
+    }
+    const priorAction = this.actions.get(actionResult.data);
+    const jobKey = keyFor(parsed.jobKey);
+    if (priorAction === undefined || priorAction.jobKey !== jobKey || !sameEvent(priorAction.result.event, parsed)) {
+      throw new CommerceError({ code: "EVENT_CONFLICT", message: "An event key can only be replayed after its validated state, actor, chain, and action transaction committed." });
+    }
+    const previous = this.events.get(parsed.eventKey);
+    if (previous === undefined || !sameEvent(previous, parsed)) {
+      throw new CommerceError({ code: "EVENT_CONFLICT", message: "The validated action event is missing or has conflicting contents." });
+    }
+    return { event: clone(previous), replayed: true };
   }
 
   async enqueue(input: Omit<Erc8183Reconciliation, "reconciliationId" | "createdAtUnix" | "updatedAtUnix" | "attemptCount" | "state"> & { readonly nowUnix: number }): Promise<Erc8183Reconciliation> {
@@ -321,7 +375,8 @@ export class InMemoryErc8183Repository implements Erc8183JobRepository, Erc8183R
       .map(clone);
   }
 
-  async update(input: { readonly reconciliationId: string; readonly state: ReconciliationState; readonly nowUnix: number; readonly nextAttemptAtUnix: number | null; readonly lastObservedTransactionHash?: `0x${string}` | null; readonly lastObservedBlock?: string | null; readonly detailDigest?: string | null }): Promise<Erc8183Reconciliation> {
+  async update(input: { readonly reconciliationId: string; readonly state: ReconciliationState; readonly nowUnix: number; readonly nextAttemptAtUnix: number | null; readonly reconcilerAddress: string; readonly lastObservedTransactionHash?: `0x${string}` | null; readonly lastObservedBlock?: string | null; readonly detailDigest?: string | null }): Promise<Erc8183Reconciliation> {
+    this.assertReconciler(input.reconcilerAddress);
     const entry = [...this.reconciliations.values()].find((candidate) => candidate.reconciliationId === input.reconciliationId);
     if (entry === undefined) throw new CommerceError({ code: "RECONCILIATION_REQUIRED", message: "The reconciliation record was not found." });
     if (entry.state !== input.state && !allowedReconciliationTransitions[entry.state].includes(input.state)) {
@@ -342,10 +397,18 @@ export class InMemoryErc8183Repository implements Erc8183JobRepository, Erc8183R
     this.reconciliations.set(identity, clone(parsed));
     return clone(parsed);
   }
+
+  private assertReconciler(address: string): void {
+    const normalized = normalizeReconcilerAddress(address);
+    if (!this.reconcilerAddresses.includes(normalized)) {
+      throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "Only an authenticated configured reconciler may update ERC-8183 reconciliation state." });
+    }
+  }
 }
 
 function sameEvent(left: Erc8183JobEvent, right: Erc8183JobEvent): boolean {
-  return left.eventKey === right.eventKey &&
+  return left.eventId === right.eventId &&
+    left.eventKey === right.eventKey &&
     left.jobKey.chainId === right.jobKey.chainId &&
     left.jobKey.commerceContract.toLowerCase() === right.jobKey.commerceContract.toLowerCase() &&
     left.jobKey.jobId === right.jobKey.jobId &&

@@ -271,7 +271,6 @@ export const paymentAttemptSchema = z.object({
   pinDigest: contentDigestSchema,
   status: paymentAttemptStatusSchema,
   relayRequestDigest: contentDigestSchema.nullable(),
-  receiptId: z.string().uuid().nullable(),
   failureCode: safeIdentifierSchema.nullable(),
   sanitizedFailure: z.string().trim().max(500).nullable(),
   createdAtUnix: unixSecondsSchema,

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  b402SellerConfigurations,
   erc8183JobEvents,
   erc8183Jobs,
   paymentAttemptEvents,
@@ -32,11 +33,13 @@ describe("commerce and payment database schema", () => {
       "minExpiryLeadSeconds", "maxExpiryHorizonSeconds", "minBudgetAtomic",
       "maxBudgetAtomic", "deploymentPinDigest"
     ]));
+    expect(Object.keys(b402SellerConfigurations)).toEqual(expect.arrayContaining(["configurationVersion", "configurationDigest", "fixedEgressProfile", "payoutAddress", "payoutVerificationState"]));
     expect(Object.keys(erc8183JobEvents)).toEqual(expect.arrayContaining(["eventKey", "transactionHash", "confirmationState", "payloadDigest"]));
     expect(Object.keys(paymentChallenges)).toEqual(expect.arrayContaining(["challengeDigest", "settlementNetwork", "settlementAsset", "amountAtomic", "recipient", "method", "expiresAt"]));
     expect(Object.keys(paymentAttempts)).toEqual(expect.arrayContaining([
       "idempotencyKey", "challengeId", "status", "pinDigest", "configurationVersion",
-      "configurationDigest", "fixedEgressProfile", "payoutAddress", "payoutVerificationState"
+      "configurationDigest", "fixedEgressProfile", "payoutAddress", "payoutVerificationState",
+      "maxChallengeLifetimeSeconds"
     ]));
     expect(Object.keys(paymentAttempts)).not.toContain("receiptId");
     expect(Object.keys(paymentAttemptEvents)).toContain("eventKey");

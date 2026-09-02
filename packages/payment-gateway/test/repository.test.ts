@@ -93,7 +93,6 @@ const ATTEMPT: PaymentAttempt = paymentAttemptSchema.parse({
   pinDigest: paymentPinDigest(PIN),
   status: "challenged",
   relayRequestDigest: null,
-  receiptId: null,
   failureCode: null,
   sanitizedFailure: null,
   createdAtUnix: 2_000_000,
@@ -111,7 +110,7 @@ describe("payment repository idempotency and reconciliation", () => {
   });
 
   it("persists one canonical challenge and rejects digest reuse", async () => {
-    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION);
+    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION, { nowUnix: () => 2_000_010 });
     expect((await repository.saveChallenge(challenge)).replayed).toBe(false);
     expect((await repository.saveChallenge(challenge)).replayed).toBe(true);
     expect((await repository.getChallenge(challenge.challengeId))?.challengeDigest).toBe(challenge.challengeDigest);
@@ -119,17 +118,20 @@ describe("payment repository idempotency and reconciliation", () => {
   });
 
   it("replays an identical attempt and detects conflicting idempotency", async () => {
-    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION);
+    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION, { nowUnix: () => 2_000_010 });
     const first = await repository.create({ attempt: ATTEMPT });
     const replay = await repository.create({ attempt: ATTEMPT });
     expect(first.replayed).toBe(false);
+    expect(first.attempt.createdAtUnix).toBe(2_000_010);
+    expect(first.attempt.updatedAtUnix).toBe(2_000_010);
     expect(replay.replayed).toBe(true);
+    expect((await repository.create({ attempt: { ...ATTEMPT, createdAtUnix: 123, updatedAtUnix: 456 } })).replayed).toBe(true);
     await expect(repository.create({ attempt: { ...ATTEMPT, failureCode: "conflict" } })).rejects.toThrow(/idempotency/i);
     await expect(repository.create({ attempt: { ...ATTEMPT, attemptId: "00000000-0000-4000-8000-000000000012", idempotencyKey: "attempt-repo-2" } })).rejects.toThrow(/challenge/i);
   });
 
   it("does not apply a stale transition and replays the same successful action", async () => {
-    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION);
+    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION, { nowUnix: () => 2_000_010 });
     await repository.create({ attempt: ATTEMPT });
     const authorization = validateAuthorization(AUTHORIZATION, challenge, PIN, 2_000_010);
     const transition = { attemptId: ATTEMPT_ID, expectedStatus: "challenged" as const, nextStatus: "authorized" as const, idempotencyKey: "authorize-repo-1", correlationId: "corr-repo-1", nowUnix: 2_000_010, metadata: { authorization } };
@@ -140,20 +142,25 @@ describe("payment repository idempotency and reconciliation", () => {
     await expect(repository.transition({ attemptId: ATTEMPT_ID, expectedStatus: "challenged", nextStatus: "relay_pending", idempotencyKey: "relay-repo-1", correlationId: "corr-repo-1", nowUnix: 2_000_011 })).rejects.toThrow(/status/i);
   });
 
-  it("rolls back an attempt transition when the event commit conflicts", async () => {
-    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION);
+  it("does not permit an unvalidated event append and rolls back an event conflict", async () => {
+    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION, { nowUnix: () => 2_000_010 });
     await repository.create({ attempt: ATTEMPT });
     const authorization = validateAuthorization(AUTHORIZATION, challenge, PIN, 2_000_010);
-    await repository.appendEvent(createPaymentEvent({
+    await expect(repository.appendEvent({
+      eventId: randomUUID(),
       eventKey: "action:authorize-atomic",
       attemptId: ATTEMPT_ID,
       eventType: "payment_rejected",
       previousStatus: "challenged",
       nextStatus: "rejected",
+      paymentTransactionHash: null,
+      settlementTransactionHash: null,
+      payloadDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      payload: {},
       correlationId: "corr-atomic",
       observedAtUnix: 2_000_010
-    }));
-    await expect(repository.transition({
+    })).rejects.toThrow(/validated|event key/i);
+    const authorized = await repository.transition({
       attemptId: ATTEMPT_ID,
       expectedStatus: "challenged",
       nextStatus: "authorized",
@@ -161,8 +168,15 @@ describe("payment repository idempotency and reconciliation", () => {
       correlationId: "corr-atomic",
       nowUnix: 2_000_010,
        metadata: { authorization }
-    })).rejects.toThrow(/event key/i);
-    expect((await repository.get(ATTEMPT_ID))?.status).toBe("challenged");
+    });
+    await expect(repository.transaction(async (unit) => unit.commit({
+      actionKey: "authorize-atomic",
+      actionDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      expectedAttempt: authorized.attempt,
+      attempt: authorized.attempt,
+      event: { ...authorized.event, eventType: "payment_rejected", nextStatus: "rejected" }
+    }))).rejects.toThrow(/event key/i);
+    expect((await repository.get(ATTEMPT_ID))?.status).toBe("authorized");
     await expect(repository.appendEvent(createPaymentEvent({
       eventKey: "unknown-attempt-event",
       attemptId: "00000000-0000-4000-8000-000000000099",
@@ -175,7 +189,7 @@ describe("payment repository idempotency and reconciliation", () => {
   });
 
   it("deduplicates receipts and resolves an ambiguous receipt after settlement", async () => {
-    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION);
+    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION, { nowUnix: () => 2_000_010 });
     await repository.create({ attempt: ATTEMPT });
     const receipt: PaymentReceipt = paymentReceiptSchema.parse({
       receiptId: randomUUID(),
@@ -231,11 +245,13 @@ describe("payment repository idempotency and reconciliation", () => {
   });
 
   it("keeps reconciliation records due and increments attempts", async () => {
-    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION);
+    const reconcilerAddress = "0x9999999999999999999999999999999999999999";
+    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION, { nowUnix: () => 2_000_010, reconcilerAddresses: [reconcilerAddress] });
     await repository.create({ attempt: ATTEMPT });
     const record = await repository.enqueue({ attemptId: ATTEMPT_ID, reasonCode: "UNKNOWN_POST_PAYMENT_OUTCOME", nextAttemptAtUnix: null, observedPaymentTransactionHash: null, observedSettlementTransactionHash: null, detailDigest: null, nowUnix: 2_000_030 });
     expect((await repository.listDue(2_000_031)).length).toBe(1);
-    const updated = await repository.update({ reconciliationId: record.reconciliationId, state: "in_progress", nextAttemptAtUnix: 2_000_100, nowUnix: 2_000_040 });
+    await expect(repository.update({ reconciliationId: record.reconciliationId, state: "in_progress", nextAttemptAtUnix: 2_000_100, nowUnix: 2_000_040, reconcilerAddress: "0x8888888888888888888888888888888888888888" })).rejects.toThrow(/reconciler|authorized/i);
+    const updated = await repository.update({ reconciliationId: record.reconciliationId, state: "in_progress", nextAttemptAtUnix: 2_000_100, nowUnix: 2_000_040, reconcilerAddress });
     expect(updated.attemptCount).toBe(1);
     expect((await repository.listDue(2_000_041)).length).toBe(0);
   });

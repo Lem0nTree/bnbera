@@ -120,4 +120,17 @@ describe("ERC-8183 boundary validation", () => {
     expect(() => assertErc8183Transition({ job: submitted, deploymentPin: PIN, nextState: "expired", action: "claim_refund", actorAddress: TERMS.providerAddress!, nowUnix: TERMS.expiresAtUnix })).toThrow(/authorized/i);
     expect(() => assertErc8183Transition({ job: submitted, deploymentPin: PIN, nextState: "expired", action: "claim_refund", actorAddress: TERMS.clientAddress, nowUnix: TERMS.expiresAtUnix })).not.toThrow();
   });
+
+  it("rejects active protocol actions at or after the trusted job expiry", () => {
+    const atExpiry = TERMS.expiresAtUnix;
+    expect(() => assertErc8183Transition({ job: JOB, deploymentPin: PIN, nextState: "funded", action: "fund", actorAddress: TERMS.clientAddress, nowUnix: atExpiry })).toThrow(/active job expiry/i);
+    expect(() => assertErc8183Transition({ job: { ...JOB, state: "funded" }, deploymentPin: PIN, nextState: "submitted", action: "submit", actorAddress: TERMS.providerAddress!, nowUnix: atExpiry })).toThrow(/active job expiry/i);
+    expect(() => assertErc8183Transition({ job: { ...JOB, state: "submitted" }, deploymentPin: PIN, nextState: "completed", action: "complete", actorAddress: TERMS.evaluatorAddress, nowUnix: atExpiry })).toThrow(/active job expiry/i);
+    expect(() => assertErc8183Transition({ job: JOB, deploymentPin: PIN, nextState: "rejected", action: "reject", actorAddress: TERMS.clientAddress, nowUnix: atExpiry })).toThrow(/active job expiry/i);
+  });
+
+  it("requires an authenticated configured reconciler for a same-state reconcile", () => {
+    expect(() => assertErc8183Transition({ job: JOB, deploymentPin: PIN, nextState: "open", action: "reconcile", actorAddress: TERMS.evaluatorAddress, nowUnix: 1_000_100 })).toThrow(/reconciler|authorized/i);
+    expect(() => assertErc8183Transition({ job: JOB, deploymentPin: PIN, nextState: "open", action: "reconcile", actorAddress: TERMS.evaluatorAddress, nowUnix: 1_000_100, reconcilerAddresses: [TERMS.evaluatorAddress] })).not.toThrow();
+  });
 });

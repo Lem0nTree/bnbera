@@ -653,6 +653,10 @@ export const b402SellerConfigurations = pgTable(
   },
   (table) => [
     uniqueIndex("b402_seller_agent_unique").on(table.agentId),
+    check("b402_seller_network_check", sql`${table.settlementNetwork} in (56, 97)`),
+    check("b402_seller_decimals_check", sql`${table.settlementDecimals} between 0 and 255`),
+    check("b402_seller_configuration_version_check", sql`${table.configurationVersion} > 0`),
+    check("b402_seller_configuration_digest_check", sql`${table.configurationDigest} ~ '^[0-9A-Fa-f]{64}$'`),
     index("b402_seller_enabled_idx").on(table.enabled, table.settlementNetwork)
   ]
 );
@@ -738,6 +742,13 @@ export const erc8183Jobs = pgTable(
     check("erc8183_job_chain_check", sql`${table.chainId} in (56, 97)`),
     check("erc8183_job_decimals_check", sql`${table.paymentDecimals} between 0 and 255`),
     check("erc8183_job_budget_check", sql`${table.budgetAtomic} >= 0`),
+    check("erc8183_job_contract_check", sql`${table.commerceContract} ~ '^0x[0-9A-Fa-f]{40}$' AND ${table.paymentToken} ~ '^0x[0-9A-Fa-f]{40}$'`),
+    check("erc8183_job_spec_check", sql`char_length(${table.specRevision}) > 0 AND char_length(${table.evaluatorProfile}) > 0`),
+    check("erc8183_job_abi_hash_check", sql`${table.abiHash} ~ '^[0-9A-Fa-f]{64}$'`),
+    check("erc8183_job_pin_digest_check", sql`${table.deploymentPinDigest} ~ '^[0-9A-Fa-f]{64}$'`),
+    check("erc8183_job_confirmation_check", sql`${table.confirmationThreshold} > 0`),
+    check("erc8183_job_expiry_bounds_check", sql`${table.minExpiryLeadSeconds} > 0 AND ${table.maxExpiryHorizonSeconds} >= ${table.minExpiryLeadSeconds}`),
+    check("erc8183_job_pin_budget_bounds_check", sql`${table.minBudgetAtomic} >= 0 AND ${table.maxBudgetAtomic} >= ${table.minBudgetAtomic} AND ${table.budgetAtomic} between ${table.minBudgetAtomic} and ${table.maxBudgetAtomic}`),
     check("erc8183_job_id_decimal_check", sql`${table.erc8183JobId} ~ '^(0|[1-9][0-9]*)$'`),
     index("erc8183_job_state_idx").on(table.state, table.expiresAt),
     index("erc8183_job_provider_idx").on(table.providerAddress, table.state)
@@ -832,6 +843,7 @@ export const paymentAttempts = pgTable(
     destination: text("destination").notNull(),
     facilitatorEndpoint: text("facilitator_endpoint").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    maxChallengeLifetimeSeconds: integer("max_challenge_lifetime_seconds").notNull(),
     status: paymentAttemptStatusEnum("status").notNull().default("challenged"),
     relayRequestDigest: varchar("relay_request_digest", { length: 64 }),
     // Immutable request-time payment pin/config snapshot.
@@ -852,6 +864,11 @@ export const paymentAttempts = pgTable(
     check("payment_attempt_network_check", sql`${table.settlementNetwork} in (56, 97)`),
     check("payment_attempt_decimals_check", sql`${table.settlementDecimals} between 0 and 255`),
     check("payment_attempt_amount_check", sql`${table.amountAtomic} > 0`),
+    check("payment_attempt_pin_digest_check", sql`${table.pinDigest} ~ '^[0-9A-Fa-f]{64}$' AND ${table.configurationDigest} ~ '^[0-9A-Fa-f]{64}$'`),
+    check("payment_attempt_configuration_version_check", sql`${table.configurationVersion} > 0`),
+    check("payment_attempt_challenge_lifetime_check", sql`${table.maxChallengeLifetimeSeconds} > 0`),
+    check("payment_attempt_payout_verification_check", sql`${table.payoutVerificationState} = 'verified'`),
+    check("payment_attempt_address_check", sql`${table.settlementAsset} ~ '^0x[0-9A-Fa-f]{40}$' AND ${table.expectedRecipient} ~ '^0x[0-9A-Fa-f]{40}$' AND ${table.payoutAddress} ~ '^0x[0-9A-Fa-f]{40}$'`),
     index("payment_attempt_status_idx").on(table.status, table.updatedAt),
     index("payment_attempt_request_idx").on(table.requestId)
   ]

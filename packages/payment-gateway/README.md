@@ -12,7 +12,8 @@ It provides:
 
 - independently pinned network, asset, decimals, amount, recipient, payment
   method, destination, facilitator, fixed-egress profile, verified payout,
-  request correlation, and challenge lifetime checks;
+  request correlation, and challenge lifetime checks (including a re-check at
+  authorization and relay execution);
 - secret-reference-only seller configuration validation and an adapter seam
   that never accepts raw credentials in public domain values;
 - EIP-3009 and Permit2 Exact method types (Permit2 Upto is not enabled);
@@ -33,6 +34,10 @@ record together; transactions are serialized in the reference implementation
 so rollback cannot erase a later commit;
 the production repository must provide the same database transaction/CAS
 semantics. Replay keys are normalized for reserve, lookup, and terminal CAS.
+Repository creation timestamps come from a trusted server/chain clock, receipts
+are owned by `receipt.attemptId`, and `appendEvent` is replay-only after a
+validated atomic transition. Ambiguous settlement recovery requires an
+authenticated reconciler configured by the repository.
 
 The current `config/standards.lock.json` disables hosted B402 settlement until
 the facilitator, domain, payout recipient, and a complete paid canary are

@@ -281,10 +281,26 @@ export function validateAuthorization(input: unknown, challengeInput: unknown, p
   }, validatedPaymentAuthorizationBrand) as ValidatedPaymentAuthorization;
 }
 
-export function validateRelayRequest(input: unknown, attemptId: string, authorization: ValidatedPaymentAuthorization, pinInput: unknown): ValidatedRelayRequest {
+/**
+ * Validate a relay request against the original challenge again at execution
+ * time. A relay authorization is intentionally not a durable permission: the
+ * challenge must still be unexpired when the egress is about to run.
+ */
+export function validateRelayRequest(
+  input: unknown,
+  attemptId: string,
+  authorization: ValidatedPaymentAuthorization,
+  pinInput: unknown,
+  challengeInput: unknown,
+  nowUnix: number
+): ValidatedRelayRequest {
   assertValidatedPaymentAuthorization(authorization);
   const relay = safeParse(relayRequestSchema, input, "INVALID_AUTHORIZATION");
   const pin = validatePaymentPin(pinInput);
+  const challenge = validateChallenge(challengeInput, pin, nowUnix);
+  if (authorization.challengeId !== challenge.challengeId || authorization.challengeDigest !== challenge.challengeDigest) {
+    throw new PaymentError({ code: "CHALLENGE_TAMPERED", message: "Relay authorization is bound to a different challenge." });
+  }
   if (authorization.attemptId !== attemptId || relay.attemptId !== attemptId || relay.authorizationDigest !== paymentAuthorizationDigest(authorization)) {
     throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "Relay request is not bound to the validated authorization." });
   }

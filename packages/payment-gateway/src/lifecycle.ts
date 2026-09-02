@@ -64,6 +64,8 @@ export interface PaymentTransitionMetadata {
   readonly paymentTransactionHash?: `0x${string}` | null;
   readonly settlementTransactionHash?: `0x${string}` | null;
   readonly reconciliationConfirmed?: boolean;
+  /** Authenticated system/reconciler identity for ambiguous settlement recovery. */
+  readonly reconcilerAddress?: string;
   readonly payload?: unknown;
 }
 
@@ -74,9 +76,14 @@ export function assertPaymentTransition(input: {
   readonly nextStatus: PaymentAttemptStatus;
   readonly nowUnix: number;
   readonly metadata?: PaymentTransitionMetadata;
+  /** Trusted server-side allow-list of authenticated reconciliation actors. */
+  readonly reconcilerAddresses?: readonly string[];
 }): void {
   const { attempt, nextStatus, nowUnix, metadata = {} } = input;
   paymentAttemptSchema.parse(attempt);
+  if (!Number.isSafeInteger(nowUnix) || nowUnix <= 0) {
+    throw new PaymentError({ code: "INVALID_EXPIRY", message: "A trusted Unix timestamp is required for a payment transition." });
+  }
   validatePaymentPinAgainstSellerConfiguration(attempt.pin, input.sellerConfiguration);
   if (metadata.authorization !== undefined) {
     assertValidatedPaymentAuthorization(metadata.authorization);
@@ -99,8 +106,18 @@ export function assertPaymentTransition(input: {
   if (!canTransitionPayment(attempt.status, nextStatus) || attempt.status === nextStatus) {
     throw new PaymentError({ code: "ILLEGAL_TRANSITION", message: `Illegal payment transition: ${attempt.status} -> ${nextStatus}.` });
   }
-  if ((attempt.status === "unknown" || attempt.status === "partial_failure") && nextStatus === "settlement_pending" && metadata.reconciliationConfirmed !== true) {
-    throw new PaymentError({ code: "RECONCILIATION_REQUIRED", message: "An ambiguous payment outcome must be reconciled before settlement is retried.", nextAction: "reconcile_payment" });
+  if ((attempt.status === "unknown" || attempt.status === "partial_failure") && nextStatus === "settlement_pending") {
+    if (metadata.reconciliationConfirmed !== true) {
+      throw new PaymentError({ code: "RECONCILIATION_REQUIRED", message: "An ambiguous payment outcome must be reconciled before settlement is retried.", nextAction: "reconcile_payment" });
+    }
+    if (metadata.reconcilerAddress === undefined) {
+      throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "Settlement reconciliation requires an authenticated system or reconciler." });
+    }
+    const reconciler = normalizeAddress(metadata.reconcilerAddress, "reconciler address");
+    const trustedReconcilers = input.reconcilerAddresses ?? [];
+    if (!trustedReconcilers.some((candidate) => normalizeAddress(candidate, "reconciler address") === reconciler)) {
+      throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "The reconciliation actor is not trusted for settlement recovery." });
+    }
   }
   if ((nextStatus === "settled" || nextStatus === "delivered") && metadata.receipt === undefined) {
     throw new PaymentError({ code: "SETTLEMENT_UNVERIFIED", message: "A receipt is required before marking a payment settled or delivered." });
@@ -112,8 +129,14 @@ export function assertPaymentTransition(input: {
   if (nextStatus === "authorized" && metadata.authorization === undefined) {
     throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "A validated authorization is required before a payment attempt can be authorized." });
   }
+  if (nextStatus === "authorized" && nowUnix >= attempt.challenge.expiresAtUnix) {
+    throw new PaymentError({ code: "CHALLENGE_EXPIRED", message: "Authorization cannot be recorded after the payment challenge has expired." });
+  }
   if (nextStatus === "relay_pending" && (attempt.authorizationDigest === null || attempt.payerAddress === null)) {
     throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "A payment attempt must retain validated authorization before relay." });
+  }
+  if ((nextStatus === "relay_pending" || nextStatus === "relayed") && nowUnix >= attempt.challenge.expiresAtUnix) {
+    throw new PaymentError({ code: "CHALLENGE_EXPIRED", message: "Relay execution is not valid after the payment challenge has expired." });
   }
   if (nextStatus === "relayed" && metadata.relayRequest === undefined) {
     throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "A validated relay request is required before relay completion." });
@@ -145,10 +168,11 @@ export function transitionPaymentAttempt(input: {
   readonly idempotencyKey: string;
   readonly correlationId: string;
   readonly metadata?: PaymentTransitionMetadata;
+  /** Trusted server-side allow-list of authenticated reconciliation actors. */
+  readonly reconcilerAddresses?: readonly string[];
 }): { readonly attempt: PaymentAttempt; readonly event: PaymentEvent } {
   assertPaymentTransition(input);
   const metadata = input.metadata ?? {};
-  const receiptId = metadata.receipt?.receiptId ?? input.attempt.receiptId;
   const authorizationDigest = metadata.authorization === undefined
     ? input.attempt.authorizationDigest
     : paymentAuthorizationDigest(metadata.authorization);
@@ -161,7 +185,6 @@ export function transitionPaymentAttempt(input: {
   const next: PaymentAttempt = {
     ...input.attempt,
     status: input.nextStatus,
-    receiptId,
     authorizationDigest,
     payerAddress,
     relayRequestDigest,

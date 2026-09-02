@@ -24,6 +24,11 @@ deployment pin at their boundary. The repository's `transaction` unit of work
 commits the job, append-only event, and idempotency record together and
 serializes rollback-capable transactions; a
 production adapter must preserve that database transaction/CAS behavior.
+Repository creation timestamps come from its trusted server/chain clock, and
+same-state reconciliation accepts only addresses configured as authenticated
+system/reconciler actors. `appendEvent` is replay-only: new events must be
+created by a validated lifecycle transition so state, actor, chain identity,
+and event contents cannot be bypassed.
 
 The checked-in in-memory repository and tests are deterministic contract
 fixtures. A production adapter must implement the same uniqueness and

@@ -131,6 +131,22 @@ export function validateJobTerms(
   pin: Erc8183DeploymentPin,
   nowUnix: number
 ): Erc8183JobTerms {
+  const normalized = normalizeJobTerms(input, pin);
+  const enabled = parseEnabledDeploymentPin(pin);
+  if (!Number.isSafeInteger(nowUnix) || nowUnix <= 0 || normalized.expiresAtUnix <= nowUnix + enabled.minExpiryLeadSeconds) {
+    throw new CommerceError({ code: "INVALID_EXPIRY", message: "Job expiry must leave the configured execution lead time." });
+  }
+  if (normalized.expiresAtUnix > nowUnix + enabled.maxExpiryHorizonSeconds) {
+    throw new CommerceError({ code: "INVALID_EXPIRY", message: "Job expiry exceeds the pinned maximum horizon." });
+  }
+  return normalized;
+}
+
+/** Normalize all immutable ERC-8183 job terms without trusting a caller time. */
+export function normalizeJobTerms(
+  input: unknown,
+  pin: Erc8183DeploymentPin
+): Erc8183JobTerms {
   const terms = erc8183JobTermsSchema.safeParse(input);
   if (!terms.success) {
     throw new CommerceError({ code: "INVALID_JOB", message: "ERC-8183 job terms are invalid.", cause: terms.error });
@@ -138,12 +154,6 @@ export function validateJobTerms(
   const enabled = parseEnabledDeploymentPin(pin);
   assertPinMatchesJob(terms.data, enabled);
   assertBudgetMatchesPin(terms.data.budgetAtomic, enabled);
-  if (!Number.isSafeInteger(nowUnix) || nowUnix <= 0 || terms.data.expiresAtUnix <= nowUnix + enabled.minExpiryLeadSeconds) {
-    throw new CommerceError({ code: "INVALID_EXPIRY", message: "Job expiry must leave the configured execution lead time." });
-  }
-  if (terms.data.expiresAtUnix > nowUnix + enabled.maxExpiryHorizonSeconds) {
-    throw new CommerceError({ code: "INVALID_EXPIRY", message: "Job expiry exceeds the pinned maximum horizon." });
-  }
   return {
     ...terms.data,
     commerceContract: normalizeAddress(terms.data.commerceContract, "commerce contract"),

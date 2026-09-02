@@ -62,17 +62,20 @@ describe("ERC-8183 repository idempotency", () => {
   });
 
   it("replays an identical create and rejects a conflicting key", async () => {
-    const repository = new InMemoryErc8183Repository(DEPLOYMENT_PIN);
+    const repository = new InMemoryErc8183Repository(DEPLOYMENT_PIN, { nowUnix: () => 2_000_100, reconcilerAddresses: [JOB.terms.evaluatorAddress] });
     const first = await repository.create({ job: JOB, idempotencyKey: "create-job-7" });
     const replay = await repository.create({ job: JOB, idempotencyKey: "create-job-7" });
     expect(first.replayed).toBe(false);
+    expect(first.job.createdAtUnix).toBe(2_000_100);
+    expect(first.job.updatedAtUnix).toBe(2_000_100);
     expect(replay.replayed).toBe(true);
     expect(replay.job.jobKey).toEqual(first.job.jobKey);
+    expect((await repository.create({ job: { ...JOB, createdAtUnix: 123, updatedAtUnix: 456 }, idempotencyKey: "create-job-7" })).replayed).toBe(true);
     await expect(repository.create({ job: { ...JOB, jobKey: { ...JOB.jobKey, jobId: "8" } }, idempotencyKey: "create-job-7" })).rejects.toThrow(CommerceError);
   });
 
   it("rejects stale transitions and replays a successful transition", async () => {
-    const repository = new InMemoryErc8183Repository(DEPLOYMENT_PIN);
+    const repository = new InMemoryErc8183Repository(DEPLOYMENT_PIN, { nowUnix: () => 2_000_100, reconcilerAddresses: [JOB.terms.evaluatorAddress] });
     await repository.create({ job: JOB, idempotencyKey: "create-job-7" });
     const first = await repository.transition({
       jobKey: JOB.jobKey,
@@ -111,7 +114,7 @@ describe("ERC-8183 repository idempotency", () => {
   });
 
   it("keeps event keys append-only and detects conflicting duplicates", async () => {
-    const repository = new InMemoryErc8183Repository(DEPLOYMENT_PIN);
+    const repository = new InMemoryErc8183Repository(DEPLOYMENT_PIN, { nowUnix: () => 2_000_100, reconcilerAddresses: [JOB.terms.evaluatorAddress] });
     await repository.create({ job: JOB, idempotencyKey: "create-job-7" });
     const event = (await repository.transition({
       jobKey: JOB.jobKey,
@@ -128,10 +131,10 @@ describe("ERC-8183 repository idempotency", () => {
     await expect(repository.appendEvent({ ...event, eventKey: "unknown-job-event", jobKey: { ...event.jobKey, jobId: "99" } })).rejects.toThrow(/unknown job/i);
   });
 
-  it("rolls back a job transition when the event commit conflicts", async () => {
-    const repository = new InMemoryErc8183Repository(DEPLOYMENT_PIN);
+  it("does not permit an unvalidated event append and rolls back an event conflict", async () => {
+    const repository = new InMemoryErc8183Repository(DEPLOYMENT_PIN, { nowUnix: () => 2_000_100, reconcilerAddresses: [JOB.terms.evaluatorAddress] });
     await repository.create({ job: JOB, idempotencyKey: "create-job-atomic" });
-    await repository.appendEvent(createErc8183JobEvent({
+    await expect(repository.appendEvent(createErc8183JobEvent({
       eventKey: "action:fund-job-atomic",
       jobKey: JOB.jobKey,
       eventType: "job_rejected",
@@ -140,8 +143,8 @@ describe("ERC-8183 repository idempotency", () => {
       actorAddress: JOB.terms.clientAddress,
       correlationId: "corr-atomic",
       observedAtUnix: 2_000_100
-    }));
-    await expect(repository.transition({
+    }))).rejects.toThrow(/validated|event key/i);
+    const funded = await repository.transition({
       jobKey: JOB.jobKey,
       expectedState: "open",
       nextState: "funded",
@@ -150,12 +153,20 @@ describe("ERC-8183 repository idempotency", () => {
       idempotencyKey: "fund-job-atomic",
       nowUnix: 2_000_100,
       correlationId: "corr-atomic"
-    })).rejects.toThrow(/event key/i);
-    expect((await repository.get(JOB.jobKey))?.state).toBe("open");
+    });
+    await expect(repository.transaction(async (unit) => unit.commit({
+      actionKey: "fund-job-atomic",
+      actionDigest: canonicalSha256Hex({ conflicting: true }),
+      jobKey: "97:0x1111111111111111111111111111111111111111:7",
+      expectedJob: funded.job,
+      job: funded.job,
+      event: { ...funded.event, eventType: "job_rejected", nextState: "rejected" }
+    }))).rejects.toThrow(/event key/i);
+    expect((await repository.get(JOB.jobKey))?.state).toBe("funded");
   });
 
   it("serializes rollback-capable transactions so a later commit survives", async () => {
-    const repository = new InMemoryErc8183Repository(DEPLOYMENT_PIN);
+    const repository = new InMemoryErc8183Repository(DEPLOYMENT_PIN, { nowUnix: () => 2_000_100, reconcilerAddresses: [JOB.terms.evaluatorAddress] });
     const secondJob: Erc8183JobRecord = erc8183JobRecordSchema.parse({
       ...JOB,
       jobKey: { ...JOB.jobKey, jobId: "8" }
@@ -201,5 +212,48 @@ describe("ERC-8183 repository idempotency", () => {
     await second;
     expect(await repository.get(JOB.jobKey)).toBeNull();
     expect(await repository.get(secondJob.jobKey)).not.toBeNull();
+  });
+
+  it("uses the trusted repository clock for transitions and authenticates reconciliation", async () => {
+    let nowUnix = 2_000_100;
+    const repository = new InMemoryErc8183Repository(DEPLOYMENT_PIN, { nowUnix: () => nowUnix, reconcilerAddresses: [JOB.terms.evaluatorAddress] });
+    await repository.create({ job: JOB, idempotencyKey: "create-job-clock" });
+    nowUnix = JOB.terms.expiresAtUnix;
+    await expect(repository.transition({
+      jobKey: JOB.jobKey,
+      expectedState: "open",
+      nextState: "funded",
+      action: "fund",
+      actorAddress: JOB.terms.clientAddress,
+      idempotencyKey: "fund-job-clock",
+      // A stale caller timestamp cannot bypass the repository's trusted clock.
+      nowUnix: 2_000_100,
+      correlationId: "corr-clock"
+    })).rejects.toThrow(/active job expiry/i);
+
+    nowUnix = 2_000_100;
+    const fresh = erc8183JobRecordSchema.parse({ ...JOB, jobKey: { ...JOB.jobKey, jobId: "9" } });
+    await repository.create({ job: fresh, idempotencyKey: "create-job-reconcile" });
+    await expect(repository.transition({
+      jobKey: fresh.jobKey,
+      expectedState: "open",
+      nextState: "open",
+      action: "reconcile",
+      actorAddress: JOB.terms.clientAddress,
+      idempotencyKey: "reconcile-job-9",
+      nowUnix: 2_000_100,
+      correlationId: "corr-reconcile"
+    })).rejects.toThrow(/reconciler|authorized/i);
+    const reconciled = await repository.transition({
+      jobKey: fresh.jobKey,
+      expectedState: "open",
+      nextState: "open",
+      action: "reconcile",
+      actorAddress: JOB.terms.evaluatorAddress,
+      idempotencyKey: "reconcile-job-9-ok",
+      nowUnix: 2_000_100,
+      correlationId: "corr-reconcile"
+    });
+    expect(reconciled.job.state).toBe("open");
   });
 });
