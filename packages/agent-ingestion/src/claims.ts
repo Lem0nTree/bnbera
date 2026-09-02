@@ -7,6 +7,11 @@ import {
 } from "@bnbera/domain";
 import { ingestionError } from "./errors.js";
 import {
+  assertIdentityReadProvenance,
+  identityReadReference,
+  identityRecordReadReference
+} from "./identity-provenance.js";
+import {
   canonicalClaimProofDigest,
   normalizeClaimVerificationContext,
   normalizeClaimVerificationProof
@@ -89,6 +94,7 @@ export class IdentityClaimService {
       throw ingestionError("CLAIM_NOT_ACTIVE", "The identity must be discovered before it can be claimed.", "import_identity");
     }
     const current = await this.reader.readIdentity(identity);
+    assertIdentityReadProvenance(current, "claim owner read");
     const ownerAddress = current.ownerAddress === null ? null : normalizeEvmAddress(current.ownerAddress);
     if (ownerAddress === null) {
       throw ingestionError("CLAIM_OWNER_MISMATCH", "The identity has no current ERC-721 owner.", "retry_owner_read");
@@ -135,6 +141,8 @@ export class IdentityClaimService {
       // the stored owner itself; the request cannot establish ownership by
       // supplying an expected owner value.
       const canonicalRead = await this.reader.readIdentity(identity);
+      assertIdentityReadProvenance(canonicalRead, "claim canonical identity read");
+      const canonicalReadRef = identityReadReference(canonicalRead);
       const canonicalOwner = canonicalRead.ownerAddress === null
         ? null
         : normalizeEvmAddress(canonicalRead.ownerAddress);
@@ -161,6 +169,7 @@ export class IdentityClaimService {
           "reload_identity"
         );
       }
+      assertIdentityRecordMatchesRead(canonicalStored, canonicalReadRef);
       if (priorClaim?.status === "claimed" && priorClaim.claimantAddress !== ownerAddress) {
         throw ingestionError("CLAIM_NOT_ACTIVE", "Another active owner claim must be reconciled first.", "reconcile_claim");
       }
@@ -177,7 +186,10 @@ export class IdentityClaimService {
         agentWalletAtVerification: canonical.agentWallet,
         verifiedAt: now,
         staleAt: null,
-        lastReason: "claimed"
+        lastReason: "claimed",
+        verificationObservedBlock: canonicalRead.observedBlock,
+        verificationObservedBlockHash: canonicalRead.observedBlockHash.toLowerCase(),
+        verificationReadConsistency: canonicalRead.readConsistency
       };
       const actor: ClaimMutationActor = { type: "owner", walletAddress: ownerAddress, proofDigest };
       await unitOfWork.mutateClaim({
@@ -185,6 +197,7 @@ export class IdentityClaimService {
         expectedVersion: priorClaim?.version ?? null,
         expectedStatus: priorClaim?.status ?? null,
         expectedOwnerAddress: ownerAddress,
+        expectedCanonicalRead: canonicalReadRef,
         claim,
         actor,
         event: {
@@ -211,10 +224,12 @@ export class IdentityClaimService {
       throw ingestionError("CLAIM_NOT_ACTIVE", "The identity is not in the ingestion index.", "import_identity");
     }
     const current = await this.reader.readIdentity(identity);
+    assertIdentityReadProvenance(current, "claim reconciliation read");
     const currentOwner = current.ownerAddress === null ? null : normalizeEvmAddress(current.ownerAddress);
     return this.repository.withTransaction(async (unitOfWork) => {
       const claim = await unitOfWork.getClaim(erc8004IdentityKey(identity));
       const record = await unitOfWork.applyCanonicalState({ identity, ...current });
+      assertIdentityRecordMatchesRead(record, identityReadReference(current));
       if (claim?.status === "claimed" && claim.claimantAddress !== currentOwner) {
         assertStateTransition("claimStatus", claim.status, "stale");
         const staleAt = this.now();
@@ -224,6 +239,7 @@ export class IdentityClaimService {
           expectedVersion: claim.version,
           expectedStatus: claim.status,
           expectedOwnerAddress: record.ownerAddress,
+          expectedCanonicalRead: identityReadReference(current),
           claim: {
             ...claim,
             version: claim.version + 1,
@@ -301,11 +317,20 @@ export class IdentityClaimService {
       if (canonical === null) {
         throw ingestionError("CLAIM_NOT_ACTIVE", "The identity is not in the ingestion index.", "import_identity");
       }
+      const canonicalRead = identityRecordReadReference(canonical);
+      if (canonicalRead === null) {
+        throw ingestionError(
+          "REPOSITORY_FAILURE",
+          "The canonical identity is missing a block-bound read reference.",
+          "repair_repository_mapping"
+        );
+      }
       await unitOfWork.mutateClaim({
         identityKey: erc8004IdentityKey(identity),
         expectedVersion: claim.version,
         expectedStatus: claim.status,
         expectedOwnerAddress: canonical.ownerAddress,
+        expectedCanonicalRead: canonicalRead,
         claim: {
           ...claim,
           version: claim.version + 1,
@@ -417,4 +442,23 @@ function sameProofFields(a: ClaimVerificationProof, b: ClaimVerificationProof): 
     a.nonce === b.nonce &&
     a.signatureDigest === b.signatureDigest
   );
+}
+
+function assertIdentityRecordMatchesRead(
+  record: IdentityRecord,
+  expected: ReturnType<typeof identityReadReference>
+): void {
+  const actual = identityRecordReadReference(record);
+  if (
+    actual === null ||
+    actual.observedBlock !== expected.observedBlock ||
+    actual.observedBlockHash !== expected.observedBlockHash ||
+    actual.readConsistency !== expected.readConsistency
+  ) {
+    throw ingestionError(
+      "REPOSITORY_FAILURE",
+      "The persisted identity does not match the canonical read used for this mutation.",
+      "repair_repository_mapping"
+    );
+  }
 }

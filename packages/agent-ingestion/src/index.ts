@@ -3,6 +3,7 @@ export * from "./adapters/manual.js";
 export * from "./adapters/registry.js";
 export * from "./claims.js";
 export * from "./errors.js";
+export * from "./identity-provenance.js";
 export * from "./ingestion.js";
 export * from "./memory-repository.js";
 export * from "./normalize.js";

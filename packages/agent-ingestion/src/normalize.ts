@@ -2,6 +2,7 @@ import {
   advertisedServiceSchema,
   capabilityManifestSchema,
   canonicalSha256Hex,
+  discoverySources,
   erc8004IdentityKey,
   erc8004IdentitySchema,
   normalizeErc8004Identity,
@@ -270,6 +271,15 @@ export function normalizeIdentity(value: unknown) {
 
 export function normalizeCandidate(input: IdentityCandidate): IdentityCandidate {
   const identity = normalizeIdentity(input.identity);
+  const source = z.enum(discoverySources).safeParse(input.source);
+  if (!source.success) {
+    throw ingestionError(
+      "INGESTION_SOURCE_UNSUPPORTED",
+      "The discovery source is not supported by this ingestion boundary.",
+      "review_discovery_source",
+      source.error
+    );
+  }
   const sourceReference = normalizeSourceReference(input.sourceReference);
   if (!(input.observedAt instanceof Date) || !Number.isFinite(input.observedAt.getTime())) {
     throw ingestionError("INGESTION_INPUT_INVALID", "The discovery timestamp is invalid.", "fix_timestamp");
@@ -291,7 +301,7 @@ export function normalizeCandidate(input: IdentityCandidate): IdentityCandidate 
   }
   return {
     identity,
-    source: input.source,
+    source: source.data,
     sourceReference,
     observedAt: input.observedAt,
     normalizedIngestionVersion,

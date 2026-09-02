@@ -6,6 +6,7 @@ import {
   type OriginType
 } from "@bnbera/domain";
 import { ingestionError } from "./errors.js";
+import { assertIdentityReadProvenance, identityRecordReadReference } from "./identity-provenance.js";
 import {
   normalizeCandidate,
   normalizeCapabilityManifest,
@@ -34,7 +35,7 @@ import type {
   ServiceObservation
 } from "./types.js";
 
-function originForSource(source: IdentityCandidate["source"]): OriginType {
+function originForSource(source: unknown): OriginType {
   switch (source) {
     case "manual":
       return "manual_import";
@@ -43,6 +44,13 @@ function originForSource(source: IdentityCandidate["source"]): OriginType {
     case "8004scan":
     case "registry_event":
       return "discovered";
+    default:
+      throw ingestionError(
+        "INGESTION_SOURCE_UNSUPPORTED",
+        "The discovery source is not supported by this ingestion boundary.",
+        "review_discovery_source",
+        { source }
+      );
   }
 }
 
@@ -103,7 +111,9 @@ export class AgentIngestionService {
   ) {}
 
   async ingestCandidate(input: IdentityCandidate): Promise<CandidateIngestionResult> {
-    return this.ingestCandidateInTransaction(this.repository, input);
+    return this.repository.withTransaction((unitOfWork) =>
+      this.ingestCandidateInTransaction(unitOfWork, input)
+    );
   }
 
   private async ingestCandidateInTransaction(
@@ -286,13 +296,31 @@ export class AgentIngestionService {
       throughBlock: input.throughBlock,
       canonicalizedAt: input.canonicalizedAt ?? this.now()
     });
-    for (const observation of promoted) {
+    // Re-check the adapter result as well as the provisional query. The
+    // repository boundary is allowed to use a different query plan, so no
+    // returned observation is trusted merely because it was marked canonical.
+    await this.assertTrustedBlockHash(
+      trustedBlockHashReader,
+      finalizedBlockTag.blockNumber,
+      finalizedBlockTag.blockHash,
+      "The finality block hash changed during canonicalization."
+    );
+    await this.assertTrustedObservationHashes(trustedBlockHashReader, promoted);
+    // Adapters are not trusted to return a stable order. Applying identity
+    // state in chain position order makes replay deterministic even when a
+    // production repository changes its query plan.
+    const orderedPromoted = [...promoted].sort(compareObservationPosition);
+    for (const observation of orderedPromoted) {
       const previous = await repository.findIdentity(observation.identity);
       const previousState = previous ?? {
         ownerAddress: null,
         agentWallet: null,
         agentUri: null,
-        contentDigest: null
+        contentDigest: null,
+        ownerObservedBlock: null,
+        agentWalletObservedBlock: null,
+        agentUriObservedBlock: null,
+        contentDigestObservedBlock: null
       };
       const record = await repository.applyCanonicalState({
         identity: observation.identity,
@@ -308,7 +336,21 @@ export class AgentIngestionService {
         contentDigest: observation.observedFields.includes("contentDigest")
           ? observation.contentDigest
           : previousState.contentDigest,
-        observedBlock: observation.blockNumber
+        observedBlock: observation.blockNumber,
+        observedBlockHash: observation.blockHash,
+        readConsistency: "finalized",
+        ownerObservedBlock: observation.observedFields.includes("ownerAddress")
+          ? observation.blockNumber
+          : previousState.ownerObservedBlock,
+        agentWalletObservedBlock: observation.observedFields.includes("agentWallet")
+          ? observation.blockNumber
+          : previousState.agentWalletObservedBlock,
+        agentUriObservedBlock: observation.observedFields.includes("agentUri")
+          ? observation.blockNumber
+          : previousState.agentUriObservedBlock,
+        contentDigestObservedBlock: observation.observedFields.includes("contentDigest")
+          ? observation.blockNumber
+          : previousState.contentDigestObservedBlock
       });
       if (
         previous !== null &&
@@ -323,7 +365,7 @@ export class AgentIngestionService {
         );
       }
     }
-    return promoted;
+    return orderedPromoted;
   }
 
   async syncRegistry(reader: RegistryChainReader, options: RegistrySyncOptions): Promise<RegistrySyncResult> {
@@ -509,6 +551,7 @@ export class AgentIngestionService {
   ): Promise<IdentityRecord> {
     const normalizedIdentity = normalizeErc8004Identity(identity);
     const current = await reader.readIdentity(normalizedIdentity);
+    assertIdentityReadProvenance(current, "identity reconciliation read");
     return this.repository.withTransaction(async (unitOfWork) => {
       const previous = await unitOfWork.findIdentity(normalizedIdentity);
       const record = await unitOfWork.applyCanonicalState({ identity: normalizedIdentity, ...current });
@@ -598,13 +641,11 @@ export class AgentIngestionService {
         blockNumber: commonAncestor,
         blockHash: ancestorHash
       });
-      if (current.observedBlock > commonAncestor) {
-        throw ingestionError(
-          "REORG_RECONCILIATION_REQUIRED",
-          "The identity provider returned head state for an ancestor-tagged replay.",
-          "review_chain_provider"
-        );
-      }
+      assertIdentityReadProvenance(current, "reorg ancestor identity read", {
+        observedBlock: commonAncestor,
+        observedBlockHash: ancestorHash,
+        readConsistency: current.readConsistency
+      });
       const previousOwner = record.ownerAddress;
       const reconciled = await repository.applyCanonicalState({ identity: record.identity, ...current });
       if (previousOwner !== reconciled.ownerAddress && record.state.claimStatus === "claimed") {
@@ -674,6 +715,7 @@ export class AgentIngestionService {
       expectedVersion: existing.version,
       expectedStatus: existing.status,
       expectedOwnerAddress: identity.ownerAddress,
+      expectedCanonicalRead: requireIdentityReadReference(identity),
       claim: {
         ...existing,
         version: existing.version + 1,
@@ -765,6 +807,27 @@ export class AgentIngestionService {
   private now(): Date {
     return this.options.now?.() ?? new Date();
   }
+}
+
+function compareObservationPosition(a: ChainObservation, b: ChainObservation): number {
+  return (
+    a.blockNumber - b.blockNumber ||
+    a.logIndex - b.logIndex ||
+    a.transactionHash.localeCompare(b.transactionHash) ||
+    a.identityKey.localeCompare(b.identityKey)
+  );
+}
+
+function requireIdentityReadReference(identity: IdentityRecord) {
+  const reference = identityRecordReadReference(identity);
+  if (reference === null) {
+    throw ingestionError(
+      "REPOSITORY_FAILURE",
+      "The canonical identity is missing a block-bound read reference.",
+      "repair_repository_mapping"
+    );
+  }
+  return reference;
 }
 
 function normalizeIndexerVersion(value: string | undefined): string {

@@ -10,6 +10,7 @@ import {
 } from "@bnbera/domain";
 import { ingestionError } from "./errors.js";
 import { normalizeRegistryCheckpoint } from "./adapters/registry.js";
+import { assertIdentityReadProvenance, identityRecordReadReference } from "./identity-provenance.js";
 import type {
   CapabilityObservation,
   ChainCheckpoint,
@@ -147,6 +148,9 @@ export class InMemoryIngestionRepository implements IngestionRepository {
 
   async upsertIdentity(input: IdentityUpsertInput): Promise<IdentityRecord> {
     const identity = normalizeErc8004Identity(input.identity);
+    if (input.canonicalState !== undefined) {
+      assertIdentityReadProvenance(input.canonicalState, "canonical identity state");
+    }
     const key = erc8004IdentityKey(identity);
     const existing = this.identities.get(key);
     if (existing !== undefined) {
@@ -180,6 +184,12 @@ export class InMemoryIngestionRepository implements IngestionRepository {
       agentUri: input.canonicalState?.agentUri ?? null,
       contentDigest: input.canonicalState?.contentDigest ?? null,
       observedBlock: input.canonicalState?.observedBlock ?? null,
+      observedBlockHash: input.canonicalState?.observedBlockHash ?? null,
+      readConsistency: input.canonicalState?.readConsistency ?? null,
+      ownerObservedBlock: input.canonicalState?.ownerObservedBlock ?? null,
+      agentWalletObservedBlock: input.canonicalState?.agentWalletObservedBlock ?? null,
+      agentUriObservedBlock: input.canonicalState?.agentUriObservedBlock ?? null,
+      contentDigestObservedBlock: input.canonicalState?.contentDigestObservedBlock ?? null,
       state,
       ownerClaimVerifiedAt: null,
       updatedAt: now
@@ -190,6 +200,7 @@ export class InMemoryIngestionRepository implements IngestionRepository {
 
   async applyCanonicalState(input: IdentityCanonicalUpdate): Promise<IdentityRecord> {
     const identity = normalizeErc8004Identity(input.identity);
+    assertIdentityReadProvenance(input, "canonical identity state");
     const key = erc8004IdentityKey(identity);
     const existing = this.identities.get(key);
     if (existing === undefined) {
@@ -200,19 +211,29 @@ export class InMemoryIngestionRepository implements IngestionRepository {
       });
     }
 
+    const ownerAddress = normalizeNullableAddress(input.ownerAddress);
+    const agentWallet = normalizeNullableAddress(input.agentWallet);
+    const agentUri = input.agentUri;
+    const contentDigest = input.contentDigest;
     let state = existing.state;
-    const ownerChanged = existing.ownerAddress !== input.ownerAddress;
+    const ownerChanged = existing.ownerAddress !== ownerAddress;
     if (ownerChanged && state.claimStatus === "claimed") {
       assertStateTransition("claimStatus", state.claimStatus, "stale");
       state = { ...state, claimStatus: "stale" };
     }
     const record: IdentityRecord = {
       ...existing,
-      ownerAddress: normalizeNullableAddress(input.ownerAddress),
-      agentWallet: normalizeNullableAddress(input.agentWallet),
-      agentUri: input.agentUri,
-      contentDigest: input.contentDigest,
+      ownerAddress,
+      agentWallet,
+      agentUri,
+      contentDigest,
       observedBlock: input.observedBlock,
+      observedBlockHash: input.observedBlockHash.toLowerCase(),
+      readConsistency: input.readConsistency,
+      ownerObservedBlock: input.ownerObservedBlock,
+      agentWalletObservedBlock: input.agentWalletObservedBlock,
+      agentUriObservedBlock: input.agentUriObservedBlock,
+      contentDigestObservedBlock: input.contentDigestObservedBlock,
       state,
       ownerClaimVerifiedAt: ownerChanged ? null : existing.ownerClaimVerifiedAt,
       updatedAt: new Date()
@@ -504,6 +525,19 @@ export class InMemoryIngestionRepository implements IngestionRepository {
       throw ingestionError(
         "CLAIM_OWNER_MISMATCH",
         "The claim owner expectation does not match the canonical identity owner.",
+        "reload_identity"
+      );
+    }
+    const actualCanonicalRead = identityRecordReadReference(identity);
+    if (
+      actualCanonicalRead === null ||
+      actualCanonicalRead.observedBlock !== input.expectedCanonicalRead.observedBlock ||
+      actualCanonicalRead.observedBlockHash !== input.expectedCanonicalRead.observedBlockHash.toLowerCase() ||
+      actualCanonicalRead.readConsistency !== input.expectedCanonicalRead.readConsistency
+    ) {
+      throw ingestionError(
+        "CLAIM_CONFLICT",
+        "The canonical identity read changed before the claim mutation completed.",
         "reload_identity"
       );
     }

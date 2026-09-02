@@ -43,6 +43,13 @@
       "when": 1788322087293,
       "tag": "0005_claim_provenance_observation_digests",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788329419741,
+      "tag": "0006_identity_read_provenance",
+      "breakpoints": true
     }
   ]
 }

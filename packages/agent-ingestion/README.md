@@ -39,6 +39,11 @@ standards lock and secret manager, not in this package.
   persistence commit together or roll back together. Checkpoint updates use a
   cursor/hash CAS, predecessor continuity, and an immutable confirmation
   threshold per indexer configuration version.
+- Direct identity reads carry an explicit `finalized` or `provisional`
+  consistency marker plus the exact observed block hash. Owner, `agentWallet`,
+  URI, and content-digest fields retain their own observed-block provenance;
+  claim CAS mutations must still reference the exact canonical read that was
+  applied.
 - SIWE claim proofs bind the complete ERC-8004 identity to the server-issued
   domain, URI, resources, action, chain, time window, nonce, and verified
   signature digest. Claim/event writes use a versioned CAS mutation; explicit
@@ -46,8 +51,9 @@ standards lock and secret manager, not in this package.
 - `InMemoryIngestionRepository` is a deterministic contract fixture. The
   application persistence adapter should implement the same repository ports
   over the identity-scoped observation tables in `@bnbera/db`. The exported
-  repository mappings round-trip observation `contentDigest`/`payloadDigest`
-  and complete claim provenance without requiring Drizzle in this package.
+  repository mappings round-trip observation `contentDigest`/`payloadDigest`,
+  lossless identity field/read provenance, and complete claim provenance
+  without requiring Drizzle in this package.
 
 ## Adapter usage
 

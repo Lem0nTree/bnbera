@@ -36,12 +36,33 @@ export type ManualIdentityImport = {
   readonly capabilityManifest?: unknown;
 };
 
+/**
+ * Provenance attached to every direct registry read. A read may be
+ * finalized or provisional, but it must always identify the exact block hash
+ * that produced the values. This prevents claim/reconciliation callers from
+ * accidentally persisting a head read as canonical state.
+ */
+export type IdentityReadConsistency = "finalized" | "provisional";
+
+export type IdentityReadReference = {
+  readonly observedBlock: number;
+  readonly observedBlockHash: string;
+  readonly readConsistency: IdentityReadConsistency;
+};
+
 export type DirectIdentityState = {
   readonly ownerAddress: string | null;
   readonly agentWallet: string | null;
   readonly agentUri: string | null;
   readonly contentDigest: string | null;
   readonly observedBlock: number;
+  readonly observedBlockHash: string;
+  readonly readConsistency: IdentityReadConsistency;
+  /** Block at which each value was observed; null means no value was read. */
+  readonly ownerObservedBlock: number | null;
+  readonly agentWalletObservedBlock: number | null;
+  readonly agentUriObservedBlock: number | null;
+  readonly contentDigestObservedBlock: number | null;
 };
 
 export const directIdentityFields = [
@@ -132,6 +153,12 @@ export type IdentityRecord = {
   readonly agentUri: string | null;
   readonly contentDigest: string | null;
   readonly observedBlock: number | null;
+  readonly observedBlockHash: string | null;
+  readonly readConsistency: IdentityReadConsistency | null;
+  readonly ownerObservedBlock: number | null;
+  readonly agentWalletObservedBlock: number | null;
+  readonly agentUriObservedBlock: number | null;
+  readonly contentDigestObservedBlock: number | null;
   readonly state: AgentStateAxes;
   readonly ownerClaimVerifiedAt: Date | null;
   readonly updatedAt: Date;
@@ -158,6 +185,10 @@ export type ClaimRecord = {
   readonly verifiedAt: Date | null;
   readonly staleAt: Date | null;
   readonly lastReason: "claimed" | "owner_transfer" | "revoked" | "reconciliation" | null;
+  /** Exact identity read used to verify the claim, when one exists. */
+  readonly verificationObservedBlock: number | null;
+  readonly verificationObservedBlockHash: string | null;
+  readonly verificationReadConsistency: IdentityReadConsistency | null;
 };
 
 export type ClaimEvent = {
@@ -203,6 +234,8 @@ export type ClaimMutation = {
    * use this field to establish ownership.
    */
   readonly expectedOwnerAddress: string | null;
+  /** Identity read that the repository must still hold before the CAS. */
+  readonly expectedCanonicalRead: IdentityReadReference;
   readonly claim: ClaimRecord;
   readonly event: ClaimEvent;
   readonly actor: ClaimMutationActor;

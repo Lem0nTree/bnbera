@@ -5,6 +5,7 @@ import {
   InMemoryIngestionRepository,
   createEightHundredFourScanAdapter,
   type ClaimVerificationProof,
+  type ChainObservation,
   type DirectIdentityState,
   type RegistryChainReader,
   type RegistryEvent
@@ -64,17 +65,89 @@ function registryEvent(input: Partial<RegistryEvent> & Pick<RegistryEvent, "tran
   };
 }
 
-function state(ownerAddress: string | null = ownerA, agentWallet: string | null = walletA, observedBlock = 10): DirectIdentityState {
+function state(
+  ownerAddress: string | null = ownerA,
+  agentWallet: string | null = walletA,
+  observedBlock = 10,
+  observedBlockHash = "0x" + observedBlock.toString(16).padStart(2, "0").repeat(32)
+): DirectIdentityState {
   return {
     ownerAddress,
     agentWallet,
     agentUri: "https://agent.example/metadata.json",
     contentDigest: null,
-    observedBlock
+    observedBlock,
+    observedBlockHash,
+    readConsistency: "finalized",
+    ownerObservedBlock: observedBlock,
+    agentWalletObservedBlock: observedBlock,
+    agentUriObservedBlock: observedBlock,
+    contentDigestObservedBlock: observedBlock
   };
 }
 
 describe("A3 identity and discovery ingestion", () => {
+  it("runs the single-candidate path inside the repository transaction", async () => {
+    class FailingSourceRepository extends InMemoryIngestionRepository {
+      override async recordSource(
+        _input: Parameters<InMemoryIngestionRepository["recordSource"]>[0]
+      ): Promise<never> {
+        throw new Error("source write failed");
+      }
+    }
+    const repository = new FailingSourceRepository();
+    const ingestion = new AgentIngestionService(repository);
+
+    await expect(
+      ingestion.ingestCandidate({
+        identity,
+        source: "manual",
+        sourceReference: "transactional-single-candidate",
+        observedAt: new Date("2026-09-02T00:00:00.000Z"),
+        normalizedIngestionVersion: "manual-v1"
+      })
+    ).rejects.toThrow("source write failed");
+    expect(await repository.listIdentities()).toHaveLength(0);
+  });
+
+  it("rejects an unsupported discovery source at runtime", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const ingestion = new AgentIngestionService(repository);
+
+    await expect(
+      ingestion.ingestCandidate({
+        identity,
+        source: "unknown" as never,
+        sourceReference: "unsupported-source",
+        observedAt: new Date("2026-09-02T00:00:00.000Z"),
+        normalizedIngestionVersion: "manual-v1"
+      })
+    ).rejects.toMatchObject({ code: "INGESTION_SOURCE_UNSUPPORTED" });
+    expect(await repository.listIdentities()).toHaveLength(0);
+  });
+
+  it("rejects an identity read without explicit block-hash provenance", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const ingestion = new AgentIngestionService(repository);
+    await ingestion.ingestCandidate({
+      identity,
+      source: "manual",
+      sourceReference: "missing-read-provenance",
+      observedAt: new Date("2026-09-02T00:00:00.000Z"),
+      normalizedIngestionVersion: "manual-v1"
+    });
+    const reader = {
+      async readIdentity() {
+        return { ownerAddress: ownerA, agentWallet: walletA, agentUri: null, contentDigest: null, observedBlock: 10 } as DirectIdentityState;
+      }
+    };
+
+    await expect(ingestion.reconcileIdentity(reader, identity)).rejects.toMatchObject({
+      code: "REORG_RECONCILIATION_REQUIRED"
+    });
+    expect((await repository.findIdentity(identity))?.observedBlock).toBeNull();
+  });
+
   it("deduplicates 8004scan replay while retaining normalized services and capabilities", async () => {
     const page = {
       items: [
@@ -265,13 +338,21 @@ describe("A3 identity and discovery ingestion", () => {
       agentWalletAtVerification: walletA,
       verifiedAt: new Date("2026-09-02T00:01:00.000Z"),
       staleAt: null,
-      lastReason: "claimed" as const
+      lastReason: "claimed" as const,
+      verificationObservedBlock: 25,
+      verificationObservedBlockHash: "0x" + "19".repeat(32),
+      verificationReadConsistency: "finalized" as const
     };
     await repository.mutateClaim({
       identityKey,
       expectedVersion: null,
       expectedStatus: null,
       expectedOwnerAddress: ownerA,
+      expectedCanonicalRead: {
+        observedBlock: 25,
+        observedBlockHash: "0x" + "19".repeat(32),
+        readConsistency: "finalized"
+      },
       claim,
       actor,
       event: {
@@ -293,6 +374,11 @@ describe("A3 identity and discovery ingestion", () => {
         expectedVersion: null,
         expectedStatus: null,
         expectedOwnerAddress: ownerA,
+        expectedCanonicalRead: {
+          observedBlock: 25,
+          observedBlockHash: "0x" + "19".repeat(32),
+          readConsistency: "finalized"
+        },
         claim: { ...claim, version: 2 },
         actor,
         event: {
@@ -384,6 +470,52 @@ describe("A3 identity and discovery ingestion", () => {
     expect(record?.ownerAddress).toBe(ownerB);
     expect(record?.agentWallet).toBe(walletA);
     expect(record?.agentUri).toBe("https://agent.example/metadata.json");
+  });
+
+  it("orders promoted observations by chain position even when the adapter is unordered", async () => {
+    class ReversePromotionRepository extends InMemoryIngestionRepository {
+      override async markCanonical(
+        input: Parameters<InMemoryIngestionRepository["markCanonical"]>[0]
+      ): Promise<readonly ChainObservation[]> {
+        const promoted = await super.markCanonical(input);
+        return [...promoted].reverse();
+      }
+    }
+    const repository = new ReversePromotionRepository();
+    const ingestion = new AgentIngestionService(repository);
+    await ingestion.ingestRegistryEvents(
+      [
+        registryEvent({
+          transactionHash: "0x" + "07".repeat(32),
+          logIndex: 0,
+          blockNumber: 10,
+          blockHash: "0x" + "10".repeat(32),
+          ownerAddress: ownerA
+        }),
+        registryEvent({
+          transactionHash: "0x" + "08".repeat(32),
+          logIndex: 0,
+          blockNumber: 11,
+          blockHash: "0x" + "11".repeat(32),
+          ownerAddress: ownerB
+        })
+      ],
+      { chainId: 97, identityRegistry: identity.identityRegistry }
+    );
+
+    const promoted = await ingestion.canonicalizeThrough({
+      chainId: 97,
+      identityRegistry: identity.identityRegistry,
+      throughBlock: 11,
+      finalizedBlockTag: { blockNumber: 11, blockHash: "0x" + "11".repeat(32) }
+    }, {
+      async getTrustedBlockHash(blockNumber) {
+        return "0x" + blockNumber.toString(10).padStart(2, "0").repeat(32);
+      }
+    });
+
+    expect(promoted.map((observation) => observation.blockNumber)).toEqual([10, 11]);
+    expect((await repository.findIdentity(identity))?.ownerAddress).toBe(ownerB);
   });
 
   it("records explicit claim revocation as a revoked event while using the shared stale axis", async () => {
@@ -636,7 +768,9 @@ describe("reorg-aware registry synchronization", () => {
         if (phase === 2) {
           expect(blockTag).toEqual({ blockNumber: 10, blockHash: hashes[10] });
         }
-        return state(ownerB, walletA, phase === 1 ? 11 : 10);
+        return phase === 1
+          ? state(ownerB, walletA, 11)
+          : state(ownerB, walletA, 10, hashes[10]!);
       },
       async findCommonAncestor() { return 10; }
     };
