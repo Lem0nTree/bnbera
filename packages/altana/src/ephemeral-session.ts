@@ -1,5 +1,8 @@
 import { AltanaBoundaryError } from "./errors.ts";
+import { assertPolicyValidAt } from "./policy.ts";
 import type {
+  HexString,
+  PublicSessionHandoffReceipt,
   RuntimeSessionDescriptor,
   SecretReference,
   SessionHandoffReceipt,
@@ -75,6 +78,47 @@ export interface RuntimeSessionSecretSink {
   }): Promise<SessionHandoffReceipt>;
 }
 
+const APPROVED_DESTINATION_PROVIDERS = new Set<SecretReference["provider"]>([
+  "studio-delegated-secret-channel",
+  "aws-secrets-manager",
+  "local-test-only",
+]);
+const SAFE_PUBLIC_REFERENCE = /^\S.{0,511}$/s;
+const SAFE_HANDOFF_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const HASH_32 = /^0x[a-fA-F0-9]{64}$/;
+
+function assertApprovedDestination(destination: SecretReference): void {
+  if (
+    destination === null ||
+    typeof destination !== "object" ||
+    !APPROVED_DESTINATION_PROVIDERS.has(destination.provider) ||
+    typeof destination.reference !== "string" ||
+    !SAFE_PUBLIC_REFERENCE.test(destination.reference)
+  ) {
+    throw new AltanaBoundaryError(
+      "SESSION_HANDOFF_FAILED",
+      "The runtime session destination is not an approved typed destination.",
+    );
+  }
+}
+
+function normalizePolicyDigest(policyDigest: string | null, label: string): HexString | null {
+  if (policyDigest === null) return null;
+  if (!HASH_32.test(policyDigest)) {
+    throw new AltanaBoundaryError(
+      "SESSION_HANDOFF_FAILED",
+      `${label} is not a valid public policy digest.`,
+    );
+  }
+  return `0x${policyDigest.slice(2).toLowerCase()}` as HexString;
+}
+
+function assertUnixTime(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new AltanaBoundaryError("SESSION_HANDOFF_FAILED", `${label} must be a positive Unix-second integer.`);
+  }
+}
+
 export async function handoffRuntimeSession(input: {
   readonly material: EphemeralSessionMaterial;
   readonly descriptor: RuntimeSessionDescriptor;
@@ -82,13 +126,49 @@ export async function handoffRuntimeSession(input: {
   readonly sink: RuntimeSessionSecretSink;
   readonly nowUnix?: number;
 }): Promise<SessionHandoffReceipt> {
+  const nowUnix = input.nowUnix ?? Math.floor(Date.now() / 1000);
+  assertUnixTime(nowUnix, "Handoff time");
   if (input.descriptor.secretReference !== null) {
     throw new AltanaBoundaryError(
       "SESSION_HANDOFF_FAILED",
       "A descriptor cannot already contain a destination secret value or reference.",
     );
   }
+  assertPolicyValidAt(input.descriptor.policy, nowUnix);
+  assertUnixTime(input.descriptor.grantedAtUnix, "Grant time");
+  if (
+    input.descriptor.grantedAtUnix > nowUnix ||
+    input.descriptor.grantedAtUnix >= input.descriptor.policy.expiresAtUnix
+  ) {
+    throw new AltanaBoundaryError(
+      "SESSION_HANDOFF_FAILED",
+      "The runtime session grant time is outside the unexpired session window.",
+    );
+  }
+  const descriptorPolicyDigest = normalizePolicyDigest(
+    input.descriptor.policyDigest,
+    "Descriptor policy digest",
+  );
+  assertApprovedDestination(input.destination);
+  if (!SAFE_HANDOFF_ID.test(input.descriptor.sessionId)) {
+    throw new AltanaBoundaryError(
+      "SESSION_HANDOFF_FAILED",
+      "The runtime session identifier is not a safe public identifier.",
+    );
+  }
+  if (input.sink === null || typeof input.sink.putRuntimeSession !== "function") {
+    throw new AltanaBoundaryError(
+      "SESSION_HANDOFF_FAILED",
+      "A runtime session requires an approved secret sink.",
+    );
+  }
 
+  if (!(input.material instanceof EphemeralSessionMaterial)) {
+    throw new AltanaBoundaryError(
+      "SESSION_HANDOFF_FAILED",
+      "A runtime session handoff requires the one-time material wrapper.",
+    );
+  }
   const bytes = input.material.consume();
   try {
     const receipt = await input.sink.putRuntimeSession({
@@ -97,13 +177,55 @@ export async function handoffRuntimeSession(input: {
       destination: input.destination,
     });
 
-    if (receipt.consumed !== true) {
+    if (receipt === null || typeof receipt !== "object" || receipt.consumed !== true) {
       throw new AltanaBoundaryError(
         "SESSION_HANDOFF_FAILED",
         "The secret sink did not confirm one-time consumption.",
       );
     }
-    return receipt;
+    if (
+      receipt.destination === null ||
+      typeof receipt.destination !== "object" ||
+      receipt.destination.provider !== input.destination.provider ||
+      receipt.destination.reference !== input.destination.reference ||
+      receipt.sessionId !== input.descriptor.sessionId ||
+      !SAFE_HANDOFF_ID.test(receipt.handoffId) ||
+      typeof receipt.acceptedAtUnix !== "number"
+    ) {
+      throw new AltanaBoundaryError(
+        "SESSION_HANDOFF_FAILED",
+        "The secret sink receipt is not bound to the approved destination or session.",
+      );
+    }
+    assertApprovedDestination(receipt.destination);
+    const receiptPolicyDigest = normalizePolicyDigest(receipt.policyDigest, "Receipt policy digest");
+    if (receiptPolicyDigest !== descriptorPolicyDigest) {
+      throw new AltanaBoundaryError(
+        "SESSION_HANDOFF_FAILED",
+        "The secret sink receipt policy digest is not bound to the granted session.",
+      );
+    }
+    assertUnixTime(receipt.acceptedAtUnix, "Handoff acceptance time");
+    if (
+      receipt.acceptedAtUnix < input.descriptor.grantedAtUnix ||
+      receipt.acceptedAtUnix >= input.descriptor.policy.expiresAtUnix
+    ) {
+      throw new AltanaBoundaryError(
+        "SESSION_HANDOFF_FAILED",
+        "The secret sink receipt falls outside the unexpired session window.",
+      );
+    }
+    return {
+      handoffId: receipt.handoffId,
+      destination: {
+        provider: receipt.destination.provider,
+        reference: receipt.destination.reference,
+      },
+      sessionId: receipt.sessionId,
+      policyDigest: receiptPolicyDigest,
+      acceptedAtUnix: receipt.acceptedAtUnix,
+      consumed: true,
+    };
   } catch (error) {
     if (error instanceof AltanaBoundaryError) throw error;
     throw new AltanaBoundaryError(
@@ -116,3 +238,20 @@ export async function handoffRuntimeSession(input: {
   }
 }
 
+/**
+ * Remove provider-specific secret references before handoff metadata is
+ * returned from a public runner or serialized into evidence. The full
+ * receipt remains available only to the sink boundary for validation.
+ */
+export function toPublicSessionHandoffReceipt(
+  receipt: SessionHandoffReceipt,
+): PublicSessionHandoffReceipt {
+  return {
+    handoffId: receipt.handoffId,
+    destinationProvider: receipt.destination.provider,
+    sessionId: receipt.sessionId,
+    policyDigest: receipt.policyDigest,
+    acceptedAtUnix: receipt.acceptedAtUnix,
+    consumed: true,
+  };
+}

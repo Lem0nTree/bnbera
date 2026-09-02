@@ -30,6 +30,13 @@ remain explicit integration boundaries. The local tests use a simulated
 driver and are labeled `simulated`; they do not satisfy the live acceptance
 gate.
 
+Before the permitted action, the runner applies the configured policy bounds,
+performs a fresh `SessionStateObservation`, and checks that its active status,
+session ID, policy digest, source, and freshness window match the granted
+descriptor. A cached or unbound `active` flag fails closed. The action adapter
+must return the actual native value and token/native charges; the runner binds
+those values to the expected action before evidence can pass.
+
 ## Official inputs reviewed
 
 The following primary sources were checked while preparing this spike:
@@ -136,7 +143,10 @@ After the handoff, public evidence records only the logical destination kind
 and `secretHandoffAccepted: true`, never an ARN, secret name, or value. An
 internal database descriptor may contain `secretReference` only after the
 external sink returns a successful `SessionHandoffReceipt`; that reference
-must not be copied into public evidence.
+must not be copied into public evidence. The runner result exposes only a
+sanitized handoff receipt with the provider kind, session ID, policy digest,
+acceptance time, and one-time-consumption flag; it omits the destination
+reference as well.
 
 ### 5. Execute, revoke, and prove rejection
 
@@ -150,6 +160,11 @@ must not be copied into public evidence.
   authorization rejection before a state-changing transaction is accepted.
 - If the post-revocation action succeeds or has an unknown outcome, mark the
   run blocked and do not publish the agent.
+
+The handoff receipt must echo the approved destination, session ID, and policy
+digest, confirm one-time consumption, and be accepted only while the granted
+policy is unexpired. A sink response for a different destination or session is
+not evidence of a successful handoff.
 
 ## Evidence handling
 
@@ -168,6 +183,9 @@ The report must include the exact Studio CLI/runtime and Altana SDK versions,
 the selected alternative, policy summary, public transaction references,
 destination kind/acceptance boolean, and any blocked step. A URL, HTTP 200,
 health check, or submitted transaction is not proof of this complete sequence.
+The runner also rejects caller-fabricated `authorized-live-adapter` objects:
+the live path remains behind a module-private reviewed capability and refuses
+test authority sources or `local-test-only` destinations.
 
 ## Required credentials and interactions still outstanding
 

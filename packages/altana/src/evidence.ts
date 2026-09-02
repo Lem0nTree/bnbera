@@ -10,8 +10,10 @@ import type {
   ChainId,
   RevocationObservation,
   RuntimeSessionDescriptor,
+  SessionStateObservation,
   ScopedPolicy,
   SecretReference,
+  SpendCharge,
 } from "./types.ts";
 
 export type EvidenceLevel = "design_only" | "local_test" | "simulated" | "testnet";
@@ -42,8 +44,16 @@ export interface EvidenceCheckpoint {
   readonly receiptStatus: "confirmed" | "rejected" | "unknown" | null;
   readonly resultingStateDigest: `0x${string}` | null;
   readonly resultingStateStatus: "changed" | "unchanged" | "unknown" | null;
+  readonly valueWei: string | null;
+  readonly spends: readonly PublicSpendEvidence[] | null;
   readonly reasonCode: string | null;
   readonly revocationReasonCode: string | null;
+}
+
+export interface PublicSpendEvidence {
+  readonly token: `0x${string}` | "native";
+  readonly amountAtomic: string;
+  readonly period: "call" | "hour" | "day" | "week" | "lifetime";
 }
 
 export interface ExpectedActionEvidence {
@@ -51,11 +61,17 @@ export interface ExpectedActionEvidence {
   readonly target: `0x${string}`;
   readonly selector: `0x${string}`;
   readonly valueWei: string;
-  readonly spends: readonly {
-    readonly token: `0x${string}` | "native";
-    readonly amountAtomic: string;
-    readonly period: "call" | "hour" | "day" | "week" | "lifetime";
-  }[];
+  readonly spends: readonly PublicSpendEvidence[];
+}
+
+export interface SessionAuthorityEvidence {
+  readonly sessionId: string;
+  readonly policyDigest: `0x${string}` | null;
+  readonly status: SessionStateObservation["status"];
+  readonly observedAtUnix: number;
+  readonly observedBlockNumber: string | null;
+  readonly source: SessionStateObservation["source"];
+  readonly reasonCode: string | null;
 }
 
 export interface EvidenceAttestation {
@@ -73,7 +89,10 @@ export interface EvidenceAttestor {
   /**
    * The implementation is an explicit evidence boundary. It must inspect
    * the complete report and issue an attestation only at its claimed level.
-   * The runner never accepts a free-form evidence-level string.
+   * The runner never accepts a free-form evidence-level string. A live
+   * attestor also needs the module-private reviewed capability checked during
+   * finalization; a plain object with `kind: "authorized-live-adapter"` is
+   * deliberately not sufficient.
    */
   readonly kind: EvidenceAttestation["attestor"];
   readonly attest: (evidence: PhaseZeroEvidence) => EvidenceAttestation;
@@ -101,6 +120,8 @@ export interface PhaseZeroEvidence {
   readonly expectedAction: ExpectedActionEvidence | null;
   readonly session: {
     readonly sessionId: string | null;
+    readonly policyDigest: `0x${string}` | null;
+    readonly authorityObservation: SessionAuthorityEvidence | null;
     /** Boolean and logical kind only; never an ARN/name/value. */
     readonly secretHandoffAccepted: boolean;
     readonly secretDestinationKind: SecretReference["provider"] | null;
@@ -125,6 +146,19 @@ const SAFE_ATTESTATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SAFE_ATOMIC = /^\d+$/;
 const SAFE_BLOCK = /^\d+$/;
 const VALID_PERIODS = new Set(["call", "hour", "day", "week", "lifetime"]);
+const MAX_AUTHORITY_OBSERVATION_AGE_SECONDS = 60;
+/**
+ * Unexported brand for the reviewed live-attestation adapter. Keeping this
+ * capability private prevents callers from promoting a fabricated object by
+ * merely setting `kind` and returning `level: "testnet"`.
+ */
+const TRUSTED_LIVE_ATTESTOR = Symbol("bnbera.altana.trusted-live-attestor");
+const VALID_SESSION_SOURCES = new Set<SessionStateObservation["source"]>([
+  "altana-sdk",
+  "keystore-read",
+  "chain-read",
+  "test",
+]);
 const VALID_SECRET_DESTINATIONS = new Set<SecretReference["provider"]>([
   "studio-delegated-secret-channel",
   "aws-secrets-manager",
@@ -143,6 +177,8 @@ function emptyCheckpoint(): EvidenceCheckpoint {
     receiptStatus: null,
     resultingStateDigest: null,
     resultingStateStatus: null,
+    valueWei: null,
+    spends: null,
     reasonCode: null,
     revocationReasonCode: null,
   };
@@ -171,6 +207,8 @@ export function createPhaseZeroEvidenceTemplate(nowUnix = Math.floor(Date.now() 
     expectedAction: null,
     session: {
       sessionId: null,
+      policyDigest: null,
+      authorityObservation: null,
       secretHandoffAccepted: false,
       secretDestinationKind: null,
       adminKeyEnteredPlatform: false,
@@ -267,11 +305,78 @@ export function attachSessionDescriptor(
   evidence: PhaseZeroEvidence,
   descriptor: RuntimeSessionDescriptor,
 ): PhaseZeroEvidence {
+  const policyDigest = descriptor.policyDigest === null
+    ? null
+    : normalizePolicyDigest(descriptor.policyDigest, "Session policy digest");
   return {
     ...evidence,
     session: {
       ...evidence.session,
       sessionId: descriptor.sessionId,
+      policyDigest,
+    },
+  };
+}
+
+/**
+ * Attach the fresh active authority read used immediately before the first
+ * state-changing action. The read is bound to the exact session and policy
+ * digest; an unbound active flag is not sufficient evidence.
+ */
+export function recordAuthorityObservation(
+  evidence: PhaseZeroEvidence,
+  observation: SessionStateObservation,
+): PhaseZeroEvidence {
+  if (evidence.session.sessionId === null) {
+    throw new AltanaBoundaryError(
+      "INVALID_EVIDENCE_VALUE",
+      "A session descriptor must be attached before an authority observation.",
+    );
+  }
+  if (observation.sessionId !== evidence.session.sessionId) {
+    throw new AltanaBoundaryError(
+      "INVALID_EVIDENCE_VALUE",
+      "Authority observation session does not match the granted session.",
+    );
+  }
+  if (observation.status !== "active") {
+    throw new AltanaBoundaryError(
+      "INVALID_EVIDENCE_VALUE",
+      "The pre-action authority observation must be active.",
+    );
+  }
+  if (
+    evidence.session.policyDigest === null ||
+    observation.policyDigest === null ||
+    normalizePolicyDigest(observation.policyDigest, "Authority policy digest") !==
+      normalizePolicyDigest(evidence.session.policyDigest, "Session policy digest")
+  ) {
+    throw new AltanaBoundaryError(
+      "INVALID_EVIDENCE_VALUE",
+      "Authority observation policy digest does not match the granted session.",
+    );
+  }
+  if (!VALID_SESSION_SOURCES.has(observation.source)) {
+    throw new AltanaBoundaryError(
+      "INVALID_EVIDENCE_VALUE",
+      "Authority observation source is not recognized.",
+    );
+  }
+  validateObservedTime(observation.observedAtUnix);
+  return {
+    ...evidence,
+    status: "in_progress",
+    session: {
+      ...evidence.session,
+      authorityObservation: {
+        sessionId: observation.sessionId,
+        policyDigest: normalizePolicyDigest(observation.policyDigest, "Authority policy digest"),
+        status: observation.status,
+        observedAtUnix: observation.observedAtUnix,
+        observedBlockNumber: stringifyBlock(observation.observedBlockNumber),
+        source: observation.source,
+        reasonCode: validateReasonCode(observation.reasonCode),
+      },
     },
   };
 }
@@ -323,6 +428,17 @@ export function recordActionObservation(
   if (observation.chainId !== expected.chainId) {
     throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Action evidence chain does not match the expected chain.");
   }
+  const expectedSpend = validateExpectedActionEvidence(expected);
+  const observedSpend = normalizeObservedSpends(observation.valueWei, observation.spends);
+  if (
+    observedSpend.valueWei !== expectedSpend.valueWei ||
+    !sameSpendTotals(observedSpend.totals, expectedSpend.totals)
+  ) {
+    throw new AltanaBoundaryError(
+      "INVALID_EVIDENCE_VALUE",
+      "Action value or token/native spend evidence does not match the expected action.",
+    );
+  }
   if (normalizeAddress(observation.target) !== expected.target) {
     throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Action evidence target does not match the expected target.");
   }
@@ -364,6 +480,8 @@ export function recordActionObservation(
           ? null
           : validateHash(observation.resultingStateDigest, "resulting state"),
         resultingStateStatus: observation.resultingStateStatus,
+        valueWei: observedSpend.valueWei.toString(10),
+        spends: observedSpend.spends,
         reasonCode: validateReasonCode(observation.reasonCode),
         revocationReasonCode: null,
       },
@@ -383,6 +501,17 @@ export function recordRevocationObservation(
     );
   }
   validateObservedTime(observation.observedAtUnix);
+  if (observation.sessionId !== evidence.session.sessionId) {
+    throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Revocation evidence session does not match the granted session.");
+  }
+  if (
+    observation.policyDigest === null ||
+    evidence.session.policyDigest === null ||
+    normalizePolicyDigest(observation.policyDigest, "Revocation policy digest") !==
+      normalizePolicyDigest(evidence.session.policyDigest, "Session policy digest")
+  ) {
+    throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Revocation evidence policy digest does not match the granted session.");
+  }
   if (observation.chainId !== expected.chainId) {
     throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Revocation evidence chain does not match the expected chain.");
   }
@@ -411,6 +540,8 @@ export function recordRevocationObservation(
           ? null
           : validateHash(observation.transactionHash, "revocation transaction"),
         receiptStatus: observation.receiptStatus,
+        valueWei: null,
+        spends: null,
         reasonCode: validateReasonCode(observation.reasonCode),
         revocationReasonCode,
       },
@@ -438,6 +569,12 @@ export function finalizePhaseZeroEvidence(
       "Evidence must be finalized by a recognized attestor boundary.",
     );
   }
+  if (attestor.kind === "authorized-live-adapter" && !isTrustedLiveAttestor(attestor)) {
+    throw new AltanaBoundaryError(
+      "INVALID_EVIDENCE_VALUE",
+      "Live evidence requires the module-private reviewed attestor capability.",
+    );
+  }
   validateCompleteEvidence(evidence, attestor.kind);
   const attestation = attestor.attest(evidence);
   if (attestation === null || typeof attestation !== "object") {
@@ -460,6 +597,15 @@ export function finalizePhaseZeroEvidence(
   };
   assertEvidenceSafe(finalized);
   return finalized;
+}
+
+function isTrustedLiveAttestor(attestor: EvidenceAttestor): boolean {
+  return (
+    attestor.kind === "authorized-live-adapter" &&
+    (attestor as EvidenceAttestor & { readonly [TRUSTED_LIVE_ATTESTOR]?: true })[
+      TRUSTED_LIVE_ATTESTOR
+    ] === true
+  );
 }
 
 export function createSimulationAttestor(nowUnix = Math.floor(Date.now() / 1000)): EvidenceAttestor {
@@ -492,6 +638,21 @@ function validateCompleteEvidence(
     !VALID_SECRET_DESTINATIONS.has(evidence.session.secretDestinationKind)
   ) {
     throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Phase-zero session handoff evidence is incomplete.");
+  }
+  const authority = evidence.session.authorityObservation;
+  if (authority === null) {
+    throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Phase-zero evidence is missing a fresh authority observation.");
+  }
+  validateAuthorityEvidence(authority);
+  if (
+    authority.status !== "active" ||
+    authority.sessionId !== evidence.session.sessionId ||
+    authority.policyDigest === null ||
+    evidence.session.policyDigest === null ||
+    normalizePolicyDigest(authority.policyDigest, "Authority policy digest") !==
+      normalizePolicyDigest(evidence.session.policyDigest, "Session policy digest")
+  ) {
+    throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Fresh authority evidence is not bound to the granted session policy.");
   }
   if (evidence.policy.chainId !== evidence.expectedAction.chainId) {
     throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Policy and expected action chains do not match.");
@@ -527,6 +688,7 @@ function validateCompleteEvidence(
   const action = checkpoints.permitted_action_confirmed;
   const post = checkpoints.post_revocation_action_rejected;
   const revoke = checkpoints.revocation_confirmed;
+  assertChronologicalEvidence(action, revoke, post);
   if (
     action.state !== "observed" ||
     action.chainId !== evidence.expectedAction.chainId ||
@@ -534,7 +696,11 @@ function validateCompleteEvidence(
     !sameSelector(action.selector, evidence.expectedAction.selector) ||
     action.receiptStatus !== "confirmed" ||
     action.resultingStateStatus !== "changed" ||
-    action.resultingStateDigest === null
+    action.resultingStateDigest === null ||
+    action.observedAtUnix === null ||
+    authority.observedAtUnix > action.observedAtUnix ||
+    action.observedAtUnix - authority.observedAtUnix > MAX_AUTHORITY_OBSERVATION_AGE_SECONDS ||
+    !checkpointSpendMatches(action, expectedSpend)
   ) {
     throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Permitted-action evidence is incomplete or mismatched.");
   }
@@ -547,7 +713,8 @@ function validateCompleteEvidence(
     post.reasonCode === null ||
     post.resultingStateStatus !== "unchanged" ||
     post.resultingStateDigest === null ||
-    post.transactionHash !== null
+    post.transactionHash !== null ||
+    !checkpointSpendMatches(post, expectedSpend)
   ) {
     throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Post-revocation rejection evidence is incomplete or mismatched.");
   }
@@ -561,6 +728,15 @@ function validateCompleteEvidence(
   }
 
   if (attestorKind === "authorized-live-adapter") {
+    if (
+      authority.source === "test" ||
+      evidence.session.secretDestinationKind === "local-test-only"
+    ) {
+      throw new AltanaBoundaryError(
+        "INVALID_EVIDENCE_VALUE",
+        "Live phase-zero evidence cannot use test authority or a local-only secret destination.",
+      );
+    }
     if (evidence.environment.network !== "bsc-testnet" || evidence.environment.chainId !== evidence.expectedAction.chainId) {
       throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Live phase-zero evidence must target the locked BSC testnet.");
     }
@@ -573,29 +749,74 @@ function validateCompleteEvidence(
   }
 }
 
+function assertChronologicalEvidence(
+  action: EvidenceCheckpoint,
+  revoke: EvidenceCheckpoint,
+  post: EvidenceCheckpoint,
+): void {
+  if (
+    action.observedAtUnix === null ||
+    revoke.observedAtUnix === null ||
+    post.observedAtUnix === null ||
+    action.observedAtUnix > revoke.observedAtUnix ||
+    revoke.observedAtUnix > post.observedAtUnix
+  ) {
+    throw new AltanaBoundaryError(
+      "INVALID_EVIDENCE_VALUE",
+      "Permitted action, revocation, and post-revocation rejection must be chronological.",
+    );
+  }
+
+  let previousBlock: bigint | null = null;
+  for (const block of [action.observedBlockNumber, revoke.observedBlockNumber, post.observedBlockNumber]) {
+    if (block === null) continue;
+    const currentBlock = BigInt(block);
+    if (previousBlock !== null && currentBlock < previousBlock) {
+      throw new AltanaBoundaryError(
+        "INVALID_EVIDENCE_VALUE",
+        "Observed action, revocation, and rejection blocks must be chronological.",
+      );
+    }
+    previousBlock = currentBlock;
+  }
+}
+
 interface ExpectedSpendTotals {
   readonly valueWei: bigint;
-  readonly totals: readonly {
-    readonly token: `0x${string}` | "native";
-    readonly period: "call" | "hour" | "day" | "week" | "lifetime";
-    readonly amountAtomic: bigint;
-  }[];
+  readonly totals: readonly SpendTotal[];
 }
 
 function validateExpectedActionEvidence(expected: ExpectedActionEvidence): ExpectedSpendTotals {
-  const valueWei = parseAtomic(expected.valueWei, "expected native value");
-  if (!Array.isArray(expected.spends)) {
-    throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Expected action spends are missing.");
-  }
+  return normalizePublicSpends(expected.valueWei, expected.spends, "expected action");
+}
 
-  const totals = new Map<string, { token: `0x${string}` | "native"; period: ExpectedActionEvidence["spends"][number]["period"]; amountAtomic: bigint }>();
+interface SpendTotal {
+  readonly token: `0x${string}` | "native";
+  readonly period: "call" | "hour" | "day" | "week" | "lifetime";
+  readonly amountAtomic: bigint;
+}
+
+interface ObservedSpendTotals extends ExpectedSpendTotals {
+  readonly spends: readonly PublicSpendEvidence[];
+}
+
+function normalizePublicSpends(
+  valueWeiRaw: string,
+  spends: readonly PublicSpendEvidence[],
+  label: string,
+): ExpectedSpendTotals {
+  const valueWei = parseAtomic(valueWeiRaw, `${label} native value`);
+  if (!Array.isArray(spends)) {
+    throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", `${label} spends are missing.`);
+  }
+  const totals = new Map<string, SpendTotal>();
   let nativeTotal = 0n;
-  for (const spend of expected.spends) {
+  for (const spend of spends) {
     if (spend === null || typeof spend !== "object" || typeof spend.period !== "string" || !VALID_PERIODS.has(spend.period)) {
-      throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Expected action spend period is invalid.");
+      throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", `${label} spend period is invalid.`);
     }
     const token = spend.token === "native" ? "native" : normalizeAddress(spend.token);
-    const amountAtomic = parseAtomic(spend.amountAtomic, "expected spend amount");
+    const amountAtomic = parseAtomic(spend.amountAtomic, `${label} spend amount`);
     if (token === "native") nativeTotal += amountAtomic;
     const key = `${token}:${spend.period}`;
     const previous = totals.get(key);
@@ -606,14 +827,88 @@ function validateExpectedActionEvidence(expected: ExpectedActionEvidence): Expec
     });
   }
   if (nativeTotal !== valueWei) {
-    throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Expected action native value does not match its spend evidence.");
+    throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", `${label} native value does not match its spend evidence.`);
   }
   return { valueWei, totals: [...totals.values()] };
 }
 
+function normalizeObservedSpends(
+  valueWei: bigint,
+  spends: readonly SpendCharge[],
+): ObservedSpendTotals {
+  if (typeof valueWei !== "bigint" || valueWei < 0n || !Array.isArray(spends)) {
+    throw new AltanaBoundaryError(
+      "INVALID_EVIDENCE_VALUE",
+      "Observed action value and spend charges must be explicit non-negative values.",
+    );
+  }
+  const publicSpends: PublicSpendEvidence[] = [];
+  let nativeTotal = 0n;
+  const totals = new Map<string, SpendTotal>();
+  for (const spend of spends) {
+    if (
+      spend === null ||
+      typeof spend !== "object" ||
+      typeof spend.amountAtomic !== "bigint" ||
+      spend.amountAtomic < 0n ||
+      typeof spend.period !== "string" ||
+      !VALID_PERIODS.has(spend.period)
+    ) {
+      throw new AltanaBoundaryError(
+        "INVALID_EVIDENCE_VALUE",
+        "Observed action spend charges must use non-negative bigint amounts and bounded periods.",
+      );
+    }
+    const token = spend.token === "native" ? "native" : normalizeAddress(spend.token);
+    if (token === "native") nativeTotal += spend.amountAtomic;
+    publicSpends.push({
+      token,
+      amountAtomic: spend.amountAtomic.toString(10),
+      period: spend.period,
+    });
+    const key = `${token}:${spend.period}`;
+    const previous = totals.get(key);
+    totals.set(key, {
+      token,
+      period: spend.period,
+      amountAtomic: (previous?.amountAtomic ?? 0n) + spend.amountAtomic,
+    });
+  }
+  if (nativeTotal !== valueWei) {
+    throw new AltanaBoundaryError(
+      "INVALID_EVIDENCE_VALUE",
+      "Observed action native value does not match its spend charges.",
+    );
+  }
+  return { valueWei, spends: publicSpends, totals: [...totals.values()] };
+}
+
+function sameSpendTotals(left: readonly SpendTotal[], right: readonly SpendTotal[]): boolean {
+  if (left.length !== right.length) return false;
+  const rightByKey = new Map(right.map((entry) => [`${entry.token}:${entry.period}`, entry.amountAtomic]));
+  return left.every((entry) => rightByKey.get(`${entry.token}:${entry.period}`) === entry.amountAtomic);
+}
+
+function checkpointSpendMatches(
+  checkpoint: EvidenceCheckpoint,
+  expected: ExpectedSpendTotals,
+): boolean {
+  if (checkpoint.valueWei === null || checkpoint.spends === null) return false;
+  try {
+    const actual = normalizePublicSpends(
+      checkpoint.valueWei,
+      checkpoint.spends,
+      "observed action",
+    );
+    return actual.valueWei === expected.valueWei && sameSpendTotals(actual.totals, expected.totals);
+  } catch {
+    return false;
+  }
+}
+
 function validateExpectedSpendCoverage(
   permissions: readonly { token: `0x${string}` | "native"; limitAtomic: string; period: ExpectedActionEvidence["spends"][number]["period"] }[],
-  totals: readonly { token: `0x${string}` | "native"; period: ExpectedActionEvidence["spends"][number]["period"]; amountAtomic: bigint }[],
+  totals: readonly SpendTotal[],
 ): void {
   for (const total of totals) {
     const permission = permissions.find((candidate) =>
@@ -676,8 +971,34 @@ function validateCheckpoint(checkpoint: EvidenceCheckpoint): void {
   if (checkpoint.selector !== null) normalizeSelector(checkpoint.selector);
   if (checkpoint.transactionHash !== null) validateHash(checkpoint.transactionHash, "transaction");
   if (checkpoint.resultingStateDigest !== null) validateHash(checkpoint.resultingStateDigest, "resulting state");
+  if ((checkpoint.valueWei === null) !== (checkpoint.spends === null)) {
+    throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Observed action value and spends must be supplied together.");
+  }
+  if (checkpoint.valueWei !== null && checkpoint.spends !== null) {
+    normalizePublicSpends(checkpoint.valueWei, checkpoint.spends, "observed action");
+  }
   if (checkpoint.reasonCode !== null) validateReasonCode(checkpoint.reasonCode);
   if (checkpoint.revocationReasonCode !== null) validateReasonCode(checkpoint.revocationReasonCode);
+}
+
+function validateAuthorityEvidence(authority: SessionAuthorityEvidence): void {
+  if (
+    authority === null ||
+    typeof authority !== "object" ||
+    typeof authority.sessionId !== "string" ||
+    !SAFE_ATTESTATION_ID.test(authority.sessionId) ||
+    authority.status !== "active" ||
+    authority.policyDigest === null ||
+    !VALID_SESSION_SOURCES.has(authority.source)
+  ) {
+    throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Fresh active authority evidence is malformed.");
+  }
+  normalizePolicyDigest(authority.policyDigest, "Authority policy digest");
+  validateObservedTime(authority.observedAtUnix);
+  if (authority.observedBlockNumber !== null && !SAFE_BLOCK.test(authority.observedBlockNumber)) {
+    throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Authority observation block is invalid.");
+  }
+  validateReasonCode(authority.reasonCode);
 }
 
 function validateAttestation(
@@ -722,6 +1043,13 @@ function validateReasonCode(value: string | null): string | null {
 function validateHash(value: string, label: string): `0x${string}` {
   if (!HASH_32.test(value)) {
     throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", `${label} references must be 32-byte hexadecimal hashes.`);
+  }
+  return `0x${value.slice(2).toLowerCase()}` as `0x${string}`;
+}
+
+function normalizePolicyDigest(value: string, label: string): `0x${string}` {
+  if (!HASH_32.test(value)) {
+    throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", `${label} must be a 32-byte hexadecimal digest.`);
   }
   return `0x${value.slice(2).toLowerCase()}` as `0x${string}`;
 }

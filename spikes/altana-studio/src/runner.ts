@@ -1,6 +1,8 @@
 import {
   AltanaBoundaryError,
   assertActionWithinPolicy,
+  assertExecutionAllowed,
+  assertPolicyWithinBounds,
   attachExpectedAction,
   attachPolicyToEvidence,
   attachSessionDescriptor,
@@ -9,18 +11,23 @@ import {
   finalizePhaseZeroEvidence,
   handoffRuntimeSession,
   recordActionObservation,
+  recordAuthorityObservation,
   recordCheckpoint,
   recordRevocationObservation,
   safeErrorCode,
   serializePolicy,
+  toPublicSessionHandoffReceipt,
   type ActionObservation,
   type ActionRequest,
   type CumulativeSpend,
   type EvidenceAttestor,
   type PhaseZeroEvidence,
+  type PolicyBounds,
   type RuntimeSessionDescriptor,
   type RuntimeSessionSecretSink,
+  type PublicSessionHandoffReceipt,
   type RevocationObservation,
+  type SessionStateObservation,
   type ScopedPolicy,
   type SecretReference,
   type SessionHandoffReceipt,
@@ -38,6 +45,8 @@ export interface PhaseZeroDriver {
   reviewPolicy(policy: ScopedPolicy): Promise<void>;
   /** Calls the pinned Altana SDK/Studio adapter and returns public metadata plus opaque material. */
   grantSession(policy: ScopedPolicy): Promise<GrantedRuntimeSession>;
+  /** Fresh typed authority read immediately before a state-changing action. */
+  readSessionState(descriptor: RuntimeSessionDescriptor): Promise<SessionStateObservation>;
   readonly secretSink: RuntimeSessionSecretSink;
   readonly secretDestination: SecretReference;
   /** Invoke one fixed, policy-checked state-changing action through AgentCore. */
@@ -58,6 +67,7 @@ export interface PhaseZeroRunInput {
   readonly policy: ScopedPolicy;
   readonly action: ActionRequest;
   readonly cumulativeSpend: readonly CumulativeSpend[];
+  readonly policyBounds: PolicyBounds;
   readonly driver: PhaseZeroDriver;
   readonly runId: string;
   /** Explicit attestation boundary; no caller-supplied evidence level is accepted. */
@@ -68,7 +78,8 @@ export interface PhaseZeroRunInput {
 export interface PhaseZeroRunResult {
   readonly outcome: "passed" | "blocked";
   readonly evidence: PhaseZeroEvidence;
-  readonly handoff: SessionHandoffReceipt | null;
+  /** Public handoff metadata; provider-specific secret references are omitted. */
+  readonly handoff: PublicSessionHandoffReceipt | null;
 }
 
 function withRunId(evidence: PhaseZeroEvidence, runId: string): PhaseZeroEvidence {
@@ -118,20 +129,21 @@ export async function runPhaseZeroSpike(input: PhaseZeroRunInput): Promise<Phase
       );
     }
 
-    evidence = attachExpectedAction(evidence, input.action, input.policy.chainId);
-    assertActionWithinPolicy(input.policy, input.action, nowUnix, input.cumulativeSpend);
-    evidence = attachPolicyToEvidence(evidence, input.policy);
+    const boundedPolicy = assertPolicyWithinBounds(input.policy, input.policyBounds, nowUnix);
+    evidence = attachExpectedAction(evidence, input.action, boundedPolicy.chainId);
+    assertActionWithinPolicy(boundedPolicy, input.action, nowUnix, input.cumulativeSpend);
+    evidence = attachPolicyToEvidence(evidence, boundedPolicy);
 
     currentStep = "policy_reviewed";
-    await input.driver.reviewPolicy(input.policy);
+    await input.driver.reviewPolicy(boundedPolicy);
     evidence = recordCheckpoint(evidence, currentStep, {
       state: "observed",
       observedAtUnix: nowUnix,
     });
 
     currentStep = "session_granted";
-    const granted = await input.driver.grantSession(input.policy);
-    if (serializePolicy(granted.descriptor.policy) !== serializePolicy(input.policy)) {
+    const granted = await input.driver.grantSession(boundedPolicy);
+    if (serializePolicy(granted.descriptor.policy) !== serializePolicy(boundedPolicy)) {
       throw new AltanaBoundaryError(
         "SESSION_HANDOFF_FAILED",
         "The granted session policy differs from the reviewed policy.",
@@ -149,7 +161,7 @@ export async function runPhaseZeroSpike(input: PhaseZeroRunInput): Promise<Phase
       descriptor: granted.descriptor,
       destination: input.driver.secretDestination,
       sink: input.driver.secretSink,
-      nowUnix,
+      nowUnix: Math.max(nowUnix, granted.descriptor.grantedAtUnix),
     });
     // A public report may carry only a logical provider kind and acceptance
     // boolean. The actual secret destination/reference stays inside the sink.
@@ -167,6 +179,15 @@ export async function runPhaseZeroSpike(input: PhaseZeroRunInput): Promise<Phase
     });
 
     currentStep = "permitted_action_confirmed";
+    const authority = await input.driver.readSessionState(granted.descriptor);
+    evidence = recordAuthorityObservation(evidence, authority);
+    assertExecutionAllowed({
+      descriptor: granted.descriptor,
+      observation: authority,
+      request: input.action,
+      cumulativeSpend: input.cumulativeSpend,
+      nowUnix,
+    });
     const action = await input.driver.executePermittedAction({
       descriptor: granted.descriptor,
       request: input.action,
@@ -209,7 +230,7 @@ export async function runPhaseZeroSpike(input: PhaseZeroRunInput): Promise<Phase
     return {
       outcome: "passed",
       evidence: finalEvidence,
-      handoff,
+      handoff: handoff === null ? null : toPublicSessionHandoffReceipt(handoff),
     };
   } catch (error) {
     try {
@@ -226,7 +247,7 @@ export async function runPhaseZeroSpike(input: PhaseZeroRunInput): Promise<Phase
     return {
       outcome: "blocked",
       evidence,
-      handoff,
+      handoff: handoff === null ? null : toPublicSessionHandoffReceipt(handoff),
     };
   }
 }
