@@ -27,6 +27,10 @@ describe("Wave 1 legacy upgrade path", () => {
     expect(repair).toContain('DROP COLUMN IF EXISTS "receipt_id"');
     expect(repair).toContain("legacy receipt ownership is inconsistent");
     expect(repair).toContain("canonical ERC-8183 identity indexes exist");
+    expect(repair).toContain("DECLARE\n  has_inconsistent_receipt_owner boolean;");
+    expect(repair).toContain("EXECUTE $receipt_ownership_check$");
+    expect(repair).toContain("$receipt_ownership_check$ INTO has_inconsistent_receipt_owner;");
+    expect(repair).not.toContain(") AND EXISTS (\n    SELECT 1\n    FROM \"payment_attempts\" attempt");
   });
 
   it("repairs all three legacy surfaces before normalized constraints are enforced", () => {

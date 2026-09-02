@@ -148,18 +148,29 @@ END $$;--> statement-breakpoint
 -- with the canonical receipt owner. A mismatch is a data-integrity failure,
 -- not a migration conflict to be silently repaired.
 DO $$
+DECLARE
+  has_inconsistent_receipt_owner boolean;
 BEGIN
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'payment_attempts' AND column_name = 'receipt_id'
-  ) AND EXISTS (
-    SELECT 1
-    FROM "payment_attempts" attempt
-    LEFT JOIN "payment_receipts" receipt ON receipt.id = attempt.receipt_id
-    WHERE attempt.receipt_id IS NOT NULL
-      AND (receipt.id IS NULL OR receipt.attempt_id <> attempt.id)
   ) THEN
-    RAISE EXCEPTION 'Cannot remove payment_attempts.receipt_id: legacy receipt ownership is inconsistent';
+    -- Keep the receipt_id reference dynamic. PostgreSQL resolves static SQL in
+    -- a DO block before evaluating IF conditions, so a fresh target without
+    -- this legacy column would otherwise fail during parsing.
+    EXECUTE $receipt_ownership_check$
+      SELECT EXISTS (
+        SELECT 1
+        FROM "payment_attempts" attempt
+        LEFT JOIN "payment_receipts" receipt ON receipt.id = attempt.receipt_id
+        WHERE attempt.receipt_id IS NOT NULL
+          AND (receipt.id IS NULL OR receipt.attempt_id <> attempt.id)
+      )
+    $receipt_ownership_check$ INTO has_inconsistent_receipt_owner;
+
+    IF has_inconsistent_receipt_owner THEN
+      RAISE EXCEPTION 'Cannot remove payment_attempts.receipt_id: legacy receipt ownership is inconsistent';
+    END IF;
   END IF;
 END $$;--> statement-breakpoint
 ALTER TABLE "payment_attempts" DROP COLUMN IF EXISTS "receipt_id";--> statement-breakpoint
