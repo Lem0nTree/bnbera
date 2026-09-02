@@ -16,6 +16,7 @@ function uriForProvider(provider: LocatorProvider, value: string): boolean {
 export const evidenceLocatorSchema = z
   .object({
     provider: z.enum(locatorProviders),
+    providerLabel: z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/),
     network: z.string().trim().min(1).max(128),
     uri: z.string().trim().min(1).max(2_000),
     bucket: z.string().trim().min(1).max(128).nullable(),
@@ -119,6 +120,7 @@ export function createVerificationResult(input: {
 
 export function createEvidenceLocator(input: {
   readonly provider: LocatorProvider;
+  readonly providerLabel: string;
   readonly network: string;
   readonly uri: string;
   readonly bucket?: string | null;

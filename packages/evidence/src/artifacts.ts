@@ -8,6 +8,7 @@ import {
   sha256Hex,
   transactionHashSchema
 } from "@bnbera/domain";
+import { evidenceLocatorSchema, readbackStatuses } from "./locators.js";
 
 export const ARTIFACT_SCHEMA_VERSION = "bnbera.evidence/v1" as const;
 
@@ -50,14 +51,7 @@ const timestampSchema = z.string().datetime({ offset: true });
 const protocolSchema = z.enum(["a2a", "mcp", "x402", "mpp", "readiness", "adapter"]);
 const publicStringArraySchema = z.array(z.string().trim().min(1).max(256)).max(128);
 
-const forbiddenFieldPattern = /^(?:private_?key|seed(?:_?phrase)?|password|passphrase|passkey(?:_?export)?|serialized_?session|raw_?session|secret(?:_?(?:value|material|credential|session|destination_?(?:reference|arn))|_?reference)?|session_?(?:material|serialization|credential)|(?:api|auth|access|refresh)_?token|cookie|credential_?value|admin_?signer|(?:secret_?)?arn)$/i;
 const forbiddenStringValuePattern = /-----BEGIN [^-]+-----|\bAKIA[0-9A-Z]{16}\b|\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b|\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{16,}\b/i;
-
-function assertSafePublicKey(key: string, path: string): void {
-  if (forbiddenFieldPattern.test(key)) {
-    throw new ArtifactSecurityError(`Forbidden public evidence field at ${path}.${key}`);
-  }
-}
 
 function assertSafePublicValue(value: unknown, path = "artifact"): asserts value is PublicJsonValue {
   if (typeof value === "string") {
@@ -85,7 +79,6 @@ function assertSafePublicValue(value: unknown, path = "artifact"): asserts value
       throw new ArtifactSecurityError(`Non-plain public evidence object at ${path}`);
     }
     for (const [key, child] of Object.entries(value)) {
-      assertSafePublicKey(key, path);
       assertSafePublicValue(child, `${path}.${key}`);
     }
     return;
@@ -103,16 +96,115 @@ export class ArtifactSecurityError extends Error {
   }
 }
 
-export const publicJsonValueSchema: z.ZodType<PublicJsonValue> = z.lazy(() =>
-  z.union([
-    z.null(),
-    z.string().max(200_000),
-    z.boolean(),
-    z.number().finite(),
-    z.array(publicJsonValueSchema).max(10_000),
-    z.record(z.string(), publicJsonValueSchema)
-  ])
-);
+const publicScalarSchema = z.union([
+  z.null(),
+  z.string().trim().max(200_000),
+  z.boolean(),
+  z.number().finite()
+]);
+
+const safeCodeSchema = z.string().regex(/^[A-Z][A-Z0-9_]{1,63}$/);
+
+/**
+ * Public evidence is intentionally modelled as a small set of strict records.
+ * This keeps the artifact contract extensible through named fields while
+ * preventing a caller from smuggling arbitrary credential-shaped keys into a
+ * supposedly public object.
+ */
+const publicSummarySchema = z
+  .object({
+    status: z.string().trim().min(1).max(64).optional(),
+    summary: z.string().trim().max(10_000).optional(),
+    reasonCode: safeCodeSchema.optional(),
+    value: publicScalarSchema.optional(),
+    unit: z.string().trim().max(64).optional(),
+    amount: nonNegativeDecimalSchema.optional(),
+    amountAtomic: nonNegativeDecimalSchema.optional(),
+    currency: z.string().trim().max(32).optional(),
+    asset: z.string().trim().max(128).optional(),
+    network: z.string().trim().max(128).optional(),
+    quoteType: z.string().trim().max(64).optional(),
+    expiresAt: timestampSchema.optional(),
+    stateDigest: digestSchema.optional(),
+    changed: z.boolean().optional(),
+    valid: z.boolean().optional(),
+    gasEstimateAtomic: nonNegativeDecimalSchema.optional(),
+    slippageBps: nonNegativeDecimalSchema.optional(),
+    checks: z.array(z.string().trim().min(1).max(256)).max(128).optional(),
+    warnings: z.array(z.string().trim().min(1).max(256)).max(128).optional(),
+    violations: z.array(z.string().trim().min(1).max(256)).max(128).optional(),
+    metricName: safeIdSchema.optional()
+  })
+  .strict();
+
+const publicPricingSchema = z
+  .object({
+    currency: z.string().trim().min(1).max(32).optional(),
+    amount: nonNegativeDecimalSchema.optional(),
+    amountAtomic: nonNegativeDecimalSchema.optional(),
+    unit: z.string().trim().max(64).optional(),
+    asset: z.string().trim().max(128).optional(),
+    network: z.string().trim().max(128).optional(),
+    quoteType: z.string().trim().max(64).optional(),
+    expiresAt: timestampSchema.optional()
+  })
+  .strict();
+
+const publicAuthoritySummarySchema = z
+  .object({
+    walletAddress: evmAddressSchema.optional(),
+    sessionPublicAddress: evmAddressSchema.nullable().optional(),
+    expiresAt: timestampSchema.optional(),
+    status: z.enum(["none", "active", "expired", "revoked"]).optional(),
+    spendLimitSummary: z.string().trim().max(2_000).optional(),
+    callsAllowlistSummary: z.string().trim().max(2_000).optional(),
+    grantTransactionHash: transactionHashSchema.nullable().optional()
+  })
+  .strict();
+
+const publicBoundsSchema = z
+  .object({
+    maxAmountAtomic: nonNegativeDecimalSchema.optional(),
+    maxDurationSeconds: nonNegativeDecimalSchema.optional(),
+    maxItems: z.number().int().nonnegative().optional(),
+    maxNotionalAtomic: nonNegativeDecimalSchema.optional(),
+    maxSlippageBps: nonNegativeDecimalSchema.optional()
+  })
+  .strict();
+
+const publicActionSchema = z
+  .object({
+    actionClass: safeIdSchema.optional(),
+    target: evmAddressSchema.optional(),
+    selector: z.string().regex(/^0x[0-9a-fA-F]{8}$/).optional(),
+    valueWei: nonNegativeDecimalSchema.optional(),
+    amountAtomic: nonNegativeDecimalSchema.optional(),
+    asset: z.string().trim().max(128).optional(),
+    protocol: protocolSchema.optional(),
+    reasonCode: safeCodeSchema.optional(),
+    summary: z.string().trim().max(2_000).optional()
+  })
+  .strict();
+
+const publicSnapshotSchema = z
+  .object({
+    stateDigest: digestSchema.optional(),
+    blockNumber: nonNegativeDecimalSchema.optional(),
+    status: z.string().trim().max(64).optional(),
+    value: publicScalarSchema.optional(),
+    changed: z.boolean().optional(),
+    summary: z.string().trim().max(2_000).optional()
+  })
+  .strict();
+
+const publicResultSchema = z.union([publicSummarySchema, publicScalarSchema]);
+
+/** Compatibility export for adapters; artifact payloads use named strict
+ * schemas below rather than an open recursive record. */
+export const publicJsonValueSchema: z.ZodType<PublicJsonValue> = z.union([
+  publicResultSchema,
+  z.array(z.union([publicSummarySchema, publicScalarSchema, publicActionSchema])).max(10_000)
+]) as z.ZodType<PublicJsonValue>;
 
 const publicServiceSchema = z
   .object({
@@ -137,6 +229,91 @@ export const evidenceReferenceSchema = z
   })
   .strict();
 export type EvidenceReference = z.infer<typeof evidenceReferenceSchema>;
+
+const submissionReferenceKinds = ["bsc", "altana", "erc8183", "x402"] as const;
+const submissionReferenceSchema = z
+  .object({
+    kind: z.enum(submissionReferenceKinds),
+    network: z.string().trim().min(1).max(128),
+    reference: z.string().trim().min(1).max(2_000),
+    transactionHash: transactionHashSchema.nullable(),
+    state: z.enum(["observed", "confirmed", "pending", "reverted"])
+  })
+  .strict();
+
+const submissionStorageEvidenceBaseSchema = z
+  .object({
+    provider: z.enum(["ipfs", "greenfield"]),
+    network: z.string().trim().min(1).max(128),
+    locator: evidenceLocatorSchema,
+    storageState: z.enum(["not_attempted", "submitted", "uploaded", "sealed", "failed"]),
+    creationTransactionHash: transactionHashSchema.nullable(),
+    sealTransactionHash: transactionHashSchema.nullable(),
+    readbackState: z.enum(readbackStatuses),
+    providerReference: z.string().trim().min(1).max(512).nullable()
+  })
+  .strict();
+
+function submissionStorageEdgeSchema(provider: "ipfs" | "greenfield") {
+  return submissionStorageEvidenceBaseSchema
+    .extend({ provider: z.literal(provider) })
+    .superRefine((value, context) => {
+      if (value.locator.provider !== value.provider) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["locator", "provider"],
+          message: "Storage locator provider must match its graph edge"
+        });
+      }
+      if (value.locator.network !== value.network) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["locator", "network"],
+          message: "Storage locator network must match its graph edge"
+        });
+      }
+    });
+}
+
+const submissionStorageGraphSchema = z
+  .object({
+    ipfs: submissionStorageEdgeSchema("ipfs").nullable(),
+    greenfield: submissionStorageEdgeSchema("greenfield").nullable()
+  })
+  .strict()
+  .refine((value) => value.ipfs !== null || value.greenfield !== null, {
+    message: "A submission claim must have at least one storage edge"
+  });
+
+const submissionCorrelationSchema = z
+  .object({
+    runId: safeIdSchema.nullable(),
+    jobId: safeIdSchema.nullable(),
+    deploymentId: safeIdSchema.nullable(),
+    requestId: safeIdSchema.nullable()
+  })
+  .strict();
+
+export const submissionIndexEntrySchema = z
+  .object({
+    claimId: safeIdSchema,
+    claim: z.string().trim().min(1).max(2_000),
+    proofType: z.enum(["code", "test", "transaction", "object", "benchmark"]),
+    evidence: evidenceReferenceSchema,
+    status: z.enum(["verified", "partial", "blocked"]),
+    correlation: submissionCorrelationSchema,
+    storage: submissionStorageGraphSchema,
+    references: z
+      .object({
+        bsc: z.array(submissionReferenceSchema.extend({ kind: z.literal("bsc") })).max(128),
+        altana: z.array(submissionReferenceSchema.extend({ kind: z.literal("altana") })).max(128),
+        erc8183: z.array(submissionReferenceSchema.extend({ kind: z.literal("erc8183") })).max(128),
+        x402: z.array(submissionReferenceSchema.extend({ kind: z.literal("x402") })).max(128)
+      })
+      .strict()
+  })
+  .strict();
+export type SubmissionIndexEntry = z.infer<typeof submissionIndexEntrySchema>;
 
 const baseArtifactFields = {
   schemaVersion: z.literal(ARTIFACT_SCHEMA_VERSION),
@@ -163,8 +340,8 @@ const profilePayloadSchema = z
       })
       .strict()
       .nullable(),
-    pricing: publicJsonValueSchema,
-    authoritySummary: publicJsonValueSchema.nullable(),
+    pricing: publicPricingSchema,
+    authoritySummary: publicAuthoritySummarySchema.nullable(),
     evidenceReferences: z.array(evidenceReferenceSchema).max(256)
   })
   .strict();
@@ -183,7 +360,7 @@ const capabilityPayloadSchema = z
             outputSchemaHash: digestSchema,
             requiredProtocols: publicStringArraySchema,
             allowedActionClasses: publicStringArraySchema,
-            maxTaskBounds: publicJsonValueSchema,
+            maxTaskBounds: publicBoundsSchema,
             evidenceProduced: publicStringArraySchema
           })
           .strict()
@@ -242,17 +419,17 @@ const runBundlePayloadSchema = z
     observedAt: timestampSchema,
     observedBlock: nonNegativeDecimalSchema.nullable(),
     dataSources: z.array(publicDataSourceSchema).max(128),
-    candidateActions: z.array(publicJsonValueSchema).max(512),
-    rejectedActions: z.array(publicJsonValueSchema).max(512),
-    selectedAction: publicJsonValueSchema.nullable(),
-    simulationOutput: publicJsonValueSchema,
-    riskValidations: publicJsonValueSchema,
-    policyValidation: publicJsonValueSchema,
-    quote: publicJsonValueSchema,
+    candidateActions: z.array(publicActionSchema).max(512),
+    rejectedActions: z.array(publicActionSchema).max(512),
+    selectedAction: publicActionSchema.nullable(),
+    simulationOutput: publicResultSchema,
+    riskValidations: publicResultSchema,
+    policyValidation: publicResultSchema,
+    quote: publicResultSchema,
     transactionHash: transactionHashSchema.nullable(),
-    receiptSummary: publicJsonValueSchema,
-    beforeState: publicJsonValueSchema,
-    afterState: publicJsonValueSchema,
+    receiptSummary: publicResultSchema,
+    beforeState: publicSnapshotSchema,
+    afterState: publicSnapshotSchema,
     ipfsDeliverable: evidenceReferenceSchema.nullable(),
     contentSha256: digestSchema.nullable(),
     contentKeccak256: digestSchema.nullable(),
@@ -269,7 +446,7 @@ const deliverablePayloadSchema = z
     contentSha256: digestSchema,
     contentKeccak256: digestSchema,
     ipfsUri: z.string().regex(/^ipfs:\/\/[^\s]+$/),
-    outputSummary: publicJsonValueSchema
+    outputSummary: publicResultSchema
   })
   .strict();
 
@@ -283,21 +460,21 @@ const benchmarkPayloadSchema = z
         sampleSize: z.number().int().positive()
       })
       .strict(),
-    manualOutput: publicJsonValueSchema,
-    agentOutput: publicJsonValueSchema,
+    manualOutput: publicResultSchema,
+    agentOutput: publicResultSchema,
     manualTimeSeconds: z.number().nonnegative(),
     agentTimeSeconds: z.number().nonnegative(),
     directCostAtomic: nonNegativeDecimalSchema,
     gasAtomic: nonNegativeDecimalSchema,
     marketplacePaymentAtomic: nonNegativeDecimalSchema,
-    winsLosses: publicJsonValueSchema,
-    realizedBenefit: publicJsonValueSchema,
-    capitalAtRisk: publicJsonValueSchema,
-    maximumDrawdown: publicJsonValueSchema,
+    winsLosses: publicResultSchema,
+    realizedBenefit: publicResultSchema,
+    capitalAtRisk: publicResultSchema,
+    maximumDrawdown: publicResultSchema,
     failureCount: z.number().int().nonnegative(),
     retryTreatment: z.string().trim().min(1).max(2_000),
-    qualityRubric: z.array(publicJsonValueSchema).max(256),
-    riskViolations: z.array(publicJsonValueSchema).max(256),
+    qualityRubric: z.array(publicSummarySchema).max(256),
+    riskViolations: z.array(publicSummarySchema).max(256),
     methodology: z.string().trim().min(1).max(10_000),
     transactionReferences: z.array(transactionHashSchema).max(256),
     evidenceReferences: z.array(evidenceReferenceSchema).max(256),
@@ -308,20 +485,7 @@ const benchmarkPayloadSchema = z
 const submissionIndexPayloadSchema = z
   .object({
     generatedAt: timestampSchema,
-    entries: z
-      .array(
-        z
-          .object({
-            claimId: safeIdSchema,
-            claim: z.string().trim().min(1).max(2_000),
-            proofType: z.enum(["code", "test", "transaction", "object", "benchmark"]),
-            evidence: evidenceReferenceSchema,
-            status: z.enum(["verified", "partial", "blocked"])
-          })
-          .strict()
-      )
-      .min(1)
-      .max(512)
+    entries: z.array(submissionIndexEntrySchema).min(1).max(512)
   })
   .strict();
 

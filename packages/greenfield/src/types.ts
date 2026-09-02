@@ -1,5 +1,5 @@
 import type { CanonicalArtifact, ArtifactDigest } from "@bnbera/evidence";
-import { evidenceLocatorSchema, verificationResultSchema } from "@bnbera/evidence";
+import { evidenceEnvironments, evidenceLocatorSchema, verificationResultSchema } from "@bnbera/evidence";
 import { publicationAttemptStates, publicationProviders } from "@bnbera/domain";
 import { z } from "zod";
 
@@ -16,9 +16,12 @@ export const publicationAttemptStateSchema = z.enum(publicationAttemptStates);
 export const publicationFailureCodes = [
   "INVALID_ARTIFACT",
   "FORBIDDEN_PUBLIC_FIELD",
+  "ARTIFACT_TOO_LARGE",
+  "OBJECT_TOO_LARGE",
   "CREATE_FAILED",
   "UPLOAD_FAILED",
   "PROVIDER_FAILED",
+  "MALFORMED_TRANSACTION",
   "TIMEOUT",
   "MISSING_OBJECT",
   "HASH_MISMATCH",
@@ -27,6 +30,53 @@ export const publicationFailureCodes = [
   "UNSUPPORTED_PROVIDER"
 ] as const;
 export type PublicationFailureCode = (typeof publicationFailureCodes)[number];
+
+const boundedNonNegativeInteger = z.number().int().nonnegative();
+const safeLabel = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
+const safeBucket = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
+
+/** Trusted runtime boundary. Provider/network/object-name choices are loaded
+ * from standards-locked configuration, never from a publication request. */
+export const publicationConfigurationSchema = z
+  .object({
+    environment: z.enum(evidenceEnvironments),
+    enabledProviders: z.array(z.enum(publicationProviders)).min(1).max(publicationProviders.length),
+    ipfs: z.object({ network: safeLabel, providerLabel: safeLabel }).strict(),
+    greenfield: z
+      .object({ network: safeLabel, providerLabel: safeLabel, bucket: safeBucket })
+      .strict(),
+    maxArtifactBytes: boundedNonNegativeInteger.refine((value) => value > 0),
+    maxObjectBytes: boundedNonNegativeInteger.refine((value) => value > 0),
+    maxSealPolls: z.number().int().positive().max(1_000),
+    sealBackoffMs: z.array(z.number().int().nonnegative().max(60_000)).max(32),
+    leaseDurationMs: z.number().int().positive().max(86_400_000)
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.enabledProviders).size !== value.enabledProviders.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["enabledProviders"], message: "Providers must be unique" });
+    }
+  });
+
+export type PublicationConfiguration = z.infer<typeof publicationConfigurationSchema>;
+
+/** Deterministic local configuration for adapter contract tests. Production
+ * callers should construct this from the standards-locked runtime config. */
+export const defaultPublicationConfiguration: PublicationConfiguration = publicationConfigurationSchema.parse({
+  environment: "hackathon",
+  enabledProviders: ["ipfs", "greenfield"],
+  ipfs: { network: "ipfs-test", providerLabel: "deterministic-ipfs" },
+  greenfield: {
+    network: "greenfield_5600-1",
+    providerLabel: "deterministic-greenfield",
+    bucket: "greenfield-test"
+  },
+  maxArtifactBytes: 10_000_000,
+  maxObjectBytes: 10_000_000,
+  maxSealPolls: 5,
+  sealBackoffMs: [],
+  leaseDurationMs: 60_000
+});
 
 const timestampSchema = z.string().datetime({ offset: true });
 const digestSchema = z.string().regex(/^[0-9a-fA-F]{64}$/);
@@ -94,6 +144,7 @@ export interface GreenfieldCreateReceipt {
 export interface GreenfieldUploadReceipt {
   readonly uri: string;
   readonly network: string;
+  readonly bucket: string;
   readonly providerReference: string;
 }
 
@@ -116,19 +167,37 @@ export interface GreenfieldPublisher {
   readonly readObject: (input: { readonly objectReference: string }) => Promise<Uint8Array>;
 }
 
+export interface PublicationAuditEvent {
+  readonly attemptId: string;
+  readonly idempotencyKey: string;
+  readonly action: "validation_failed";
+  readonly reasonCode: PublicationFailureCode;
+  readonly message: string;
+  readonly createdAt: string;
+}
+
 export interface PublicationStore {
   readonly findByIdempotencyKey: (idempotencyKey: string) => Promise<PublicationAttemptRecord | null>;
   readonly findByAttemptId: (attemptId: string) => Promise<PublicationAttemptRecord | null>;
+  /** Must be backed by INSERT ... ON CONFLICT DO NOTHING (or equivalent). */
+  readonly createOrGet: (
+    record: PublicationAttemptRecord
+  ) => Promise<{ readonly record: PublicationAttemptRecord; readonly created: boolean }>;
   readonly save: (record: PublicationAttemptRecord) => Promise<void>;
+  /** Compare-and-set lease used to ensure one worker resumes an attempt. */
+  readonly acquireLease: (
+    attemptId: string,
+    leaseToken: string,
+    now: string,
+    durationMs: number
+  ) => Promise<boolean>;
+  readonly releaseLease: (attemptId: string, leaseToken: string) => Promise<void>;
+  readonly appendAudit: (event: PublicationAuditEvent) => Promise<void>;
 }
 
 export interface PublishEvidenceInput {
   readonly artifact: unknown;
   readonly idempotencyKey: string;
-  readonly providers: readonly PublicationProvider[];
-  readonly objectName?: string;
-  readonly ipfsNetwork?: string;
-  readonly greenfieldNetwork?: string;
 }
 
 export interface PublicationResult {

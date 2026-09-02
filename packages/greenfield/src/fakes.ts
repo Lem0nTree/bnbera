@@ -12,6 +12,7 @@ export interface FakeStorageOptions {
   readonly missingOnSeal?: boolean;
   readonly corruptReadback?: boolean;
   readonly sealAfterPolls?: number;
+  readonly malformedTransactionHash?: boolean;
 }
 
 function fakeHash(input: string): string {
@@ -65,6 +66,8 @@ export class DeterministicIpfsPublisher implements IpfsPublisher {
 export class DeterministicGreenfieldPublisher implements GreenfieldPublisher {
   private readonly objects = new Map<string, Uint8Array>();
   private polls = 0;
+  private creates = 0;
+  private uploads = 0;
 
   constructor(private readonly options: FakeStorageOptions = {}) {}
 
@@ -73,19 +76,24 @@ export class DeterministicGreenfieldPublisher implements GreenfieldPublisher {
     readonly creationTransactionHash: string;
     readonly status: "submitted" | "confirmed";
   }> {
+    this.creates += 1;
     if (this.options.failCreate) {
       throw new PublicationProviderError("CREATE_FAILED", "deterministic Greenfield create failure");
     }
     if (this.options.submittedWithoutReference) {
       return {
         objectReference: null,
-        creationTransactionHash: fakeHash(`create:${input.objectName}`),
+        creationTransactionHash: this.options.malformedTransactionHash
+          ? "not-a-transaction-hash"
+          : fakeHash(`create:${input.objectName}`),
         status: "submitted"
       };
     }
     return {
       objectReference: input.objectName,
-      creationTransactionHash: fakeHash(`create:${input.objectName}`),
+      creationTransactionHash: this.options.malformedTransactionHash
+        ? "not-a-transaction-hash"
+        : fakeHash(`create:${input.objectName}`),
       status: "confirmed"
     };
   }
@@ -93,8 +101,10 @@ export class DeterministicGreenfieldPublisher implements GreenfieldPublisher {
   async uploadObject(input: { readonly bytes: Uint8Array; readonly objectReference: string }): Promise<{
     readonly uri: string;
     readonly network: string;
+    readonly bucket: string;
     readonly providerReference: string;
   }> {
+    this.uploads += 1;
     if (this.options.failUpload) {
       throw new PublicationProviderError("UPLOAD_FAILED", "deterministic Greenfield upload failure");
     }
@@ -102,6 +112,7 @@ export class DeterministicGreenfieldPublisher implements GreenfieldPublisher {
     return {
       uri: `greenfield://greenfield-test/${input.objectReference}`,
       network: "greenfield_5600-1",
+      bucket: "greenfield-test",
       providerReference: input.objectReference
     };
   }
@@ -117,7 +128,12 @@ export class DeterministicGreenfieldPublisher implements GreenfieldPublisher {
     if (this.options.timeoutOnSeal || this.polls < (this.options.sealAfterPolls ?? 1)) {
       return { status: "pending", sealTransactionHash: null };
     }
-    return { status: "sealed", sealTransactionHash: fakeHash(`seal:${this.polls}`) };
+    return {
+      status: "sealed",
+      sealTransactionHash: this.options.malformedTransactionHash
+        ? "not-a-transaction-hash"
+        : fakeHash(`seal:${this.polls}`)
+    };
   }
 
   async readObject(input: { readonly objectReference: string }): Promise<Uint8Array> {
@@ -141,6 +157,14 @@ export class DeterministicGreenfieldPublisher implements GreenfieldPublisher {
 
   getPollCount(): number {
     return this.polls;
+  }
+
+  getCreateCount(): number {
+    return this.creates;
+  }
+
+  getUploadCount(): number {
+    return this.uploads;
   }
 }
 
