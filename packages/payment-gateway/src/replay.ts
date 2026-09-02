@@ -1,12 +1,14 @@
 import { canonicalSha256Hex, contentDigestSchema } from "@bnbera/domain";
 import { PaymentError } from "./errors.js";
 import {
+  paymentAttemptSchema,
   paymentAuthorizationSchema,
+  paymentAuthorizationDigest,
   paymentChallengeNonceSchema,
-  type B402PaymentPin,
-  type PaymentAuthorization
+  type PaymentAttempt,
+  type ValidatedPaymentAuthorization
 } from "./types.js";
-import { normalizeUrl, validatePaymentPin } from "./validation.js";
+import { assertValidatedPaymentAuthorization, normalizeUrl, validatePaymentPin } from "./validation.js";
 
 export const replayStates = ["inflight", "consumed", "rejected"] as const;
 export type ReplayState = (typeof replayStates)[number];
@@ -22,10 +24,10 @@ export interface PaymentReplayReservation {
 }
 
 export interface PaymentReplayStore {
-  reserve(input: { readonly replayKey: string; readonly attemptId: string; readonly expiresAtUnix: number; readonly nowUnix: number }): PaymentReplayReservation;
-  markConsumed(input: { readonly replayKey: string; readonly attemptId: string; readonly responseDigest: string; readonly nowUnix: number }): PaymentReplayReservation;
-  markRejected(input: { readonly replayKey: string; readonly attemptId: string; readonly responseDigest: string | null; readonly nowUnix: number }): PaymentReplayReservation;
-  get(replayKey: string): PaymentReplayReservation | null;
+  reserve(input: { readonly attempt: PaymentAttempt; readonly authorization: ValidatedPaymentAuthorization; readonly expiresAtUnix: number; readonly nowUnix: number }): PaymentReplayReservation;
+  markConsumed(input: { readonly attempt: PaymentAttempt; readonly authorization: ValidatedPaymentAuthorization; readonly responseDigest: string; readonly nowUnix: number }): PaymentReplayReservation;
+  markRejected(input: { readonly attempt: PaymentAttempt; readonly authorization: ValidatedPaymentAuthorization; readonly responseDigest: string | null; readonly nowUnix: number }): PaymentReplayReservation;
+  get(input: { readonly attempt: PaymentAttempt; readonly authorization: ValidatedPaymentAuthorization }): PaymentReplayReservation | null;
 }
 
 function normalizeReplayKey(value: string): string {
@@ -34,10 +36,15 @@ function normalizeReplayKey(value: string): string {
   return replayKey;
 }
 
-export function paymentReplayKey(pin: B402PaymentPin, challengeNonce: string, authorization: PaymentAuthorization): string {
-  const trustedPin = validatePaymentPin(pin);
+export function paymentReplayKey(attempt: PaymentAttempt, authorization: ValidatedPaymentAuthorization): string {
+  const trustedAttempt = paymentAttemptSchema.parse(attempt);
+  assertValidatedPaymentAuthorization(authorization);
+  const trustedPin = validatePaymentPin(trustedAttempt.pin);
   const trustedAuthorization = paymentAuthorizationSchema.parse(authorization);
-  const trustedNonce = paymentChallengeNonceSchema.parse(challengeNonce);
+  const trustedNonce = paymentChallengeNonceSchema.parse(trustedAttempt.challenge.nonce);
+  if (trustedAuthorization.attemptId !== trustedAttempt.attemptId || trustedAuthorization.challengeId !== trustedAttempt.challenge.challengeId || trustedAuthorization.challengeDigest !== trustedAttempt.challengeDigest) {
+    throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "Replay authorization is not bound to the payment attempt." });
+  }
   return canonicalSha256Hex({
     rail: trustedPin.rail,
     settlementNetwork: trustedPin.settlementNetwork,
@@ -48,6 +55,10 @@ export function paymentReplayKey(pin: B402PaymentPin, challengeNonce: string, au
     method: trustedPin.method,
     destination: normalizeUrl(trustedPin.destination, "payment destination"),
     facilitatorEndpoint: normalizeUrl(trustedPin.facilitatorEndpoint, "facilitator endpoint"),
+    fixedEgressProfile: trustedPin.fixedEgressProfile,
+    paymentPinDigest: trustedAttempt.pinDigest,
+    configurationDigest: trustedPin.configurationDigest,
+    authorizationDigest: paymentAuthorizationDigest(trustedAuthorization),
     nonce: trustedNonce,
     credentialDigest: trustedAuthorization.credentialDigest.toLowerCase()
   });
@@ -56,22 +67,25 @@ export function paymentReplayKey(pin: B402PaymentPin, challengeNonce: string, au
 export class InMemoryPaymentReplayStore implements PaymentReplayStore {
   private readonly entries = new Map<string, PaymentReplayReservation>();
 
-  reserve(input: { readonly replayKey: string; readonly attemptId: string; readonly expiresAtUnix: number; readonly nowUnix: number }): PaymentReplayReservation {
-    const replayKey = normalizeReplayKey(input.replayKey);
-    paymentAuthorizationSchema.shape.attemptId.parse(input.attemptId);
+  reserve(input: { readonly attempt: PaymentAttempt; readonly authorization: ValidatedPaymentAuthorization; readonly expiresAtUnix: number; readonly nowUnix: number }): PaymentReplayReservation {
+    const replayKey = normalizeReplayKey(paymentReplayKey(input.attempt, input.authorization));
+    const attempt = paymentAttemptSchema.parse(input.attempt);
+    if (input.expiresAtUnix !== attempt.challenge.expiresAtUnix) {
+      throw new PaymentError({ code: "INVALID_EXPIRY", message: "Replay reservation expiry must match the validated challenge expiry." });
+    }
     if (!Number.isSafeInteger(input.nowUnix) || input.nowUnix <= 0 || !Number.isSafeInteger(input.expiresAtUnix) || input.expiresAtUnix <= input.nowUnix) {
       throw new PaymentError({ code: "CHALLENGE_EXPIRED", message: "A replay reservation must be created before its challenge expires." });
     }
     const existing = this.entries.get(replayKey);
     if (existing !== undefined) {
-      if (existing.attemptId !== input.attemptId || existing.state !== "inflight" || existing.expiresAtUnix <= input.nowUnix) {
+      if (existing.attemptId !== attempt.attemptId || existing.state !== "inflight" || existing.expiresAtUnix <= input.nowUnix) {
         throw new PaymentError({ code: "REPLAY_DETECTED", message: "Replay protection: this payment authorization has already been consumed or reserved." });
       }
       return structuredClone(existing);
     }
     const entry: PaymentReplayReservation = {
       replayKey,
-      attemptId: input.attemptId,
+      attemptId: attempt.attemptId,
       state: "inflight",
       expiresAtUnix: input.expiresAtUnix,
       responseDigest: null,
@@ -82,11 +96,12 @@ export class InMemoryPaymentReplayStore implements PaymentReplayStore {
     return structuredClone(entry);
   }
 
-  markConsumed(input: { readonly replayKey: string; readonly attemptId: string; readonly responseDigest: string; readonly nowUnix: number }): PaymentReplayReservation {
+  markConsumed(input: { readonly attempt: PaymentAttempt; readonly authorization: ValidatedPaymentAuthorization; readonly responseDigest: string; readonly nowUnix: number }): PaymentReplayReservation {
     const responseDigest = input.responseDigest.toLowerCase();
     contentDigestSchema.parse(responseDigest);
-    const replayKey = normalizeReplayKey(input.replayKey);
-    const existing = this.requireOwner(replayKey, input.attemptId);
+    const attempt = paymentAttemptSchema.parse(input.attempt);
+    const replayKey = normalizeReplayKey(paymentReplayKey(attempt, input.authorization));
+    const existing = this.requireOwner(replayKey, attempt.attemptId);
     if (existing.state === "consumed") {
       if (existing.responseDigest !== responseDigest) throw new PaymentError({ code: "REPLAY_DETECTED", message: "Replay protection: the consumed response digest does not match." });
       return structuredClone(existing);
@@ -97,11 +112,12 @@ export class InMemoryPaymentReplayStore implements PaymentReplayStore {
     return structuredClone(next);
   }
 
-  markRejected(input: { readonly replayKey: string; readonly attemptId: string; readonly responseDigest: string | null; readonly nowUnix: number }): PaymentReplayReservation {
+  markRejected(input: { readonly attempt: PaymentAttempt; readonly authorization: ValidatedPaymentAuthorization; readonly responseDigest: string | null; readonly nowUnix: number }): PaymentReplayReservation {
     const responseDigest = input.responseDigest === null ? null : input.responseDigest.toLowerCase();
     if (responseDigest !== null) contentDigestSchema.parse(responseDigest);
-    const replayKey = normalizeReplayKey(input.replayKey);
-    const existing = this.requireOwner(replayKey, input.attemptId);
+    const attempt = paymentAttemptSchema.parse(input.attempt);
+    const replayKey = normalizeReplayKey(paymentReplayKey(attempt, input.authorization));
+    const existing = this.requireOwner(replayKey, attempt.attemptId);
     if (existing.state === "rejected") {
       if (existing.responseDigest !== responseDigest) throw new PaymentError({ code: "REPLAY_DETECTED", message: "Replay protection: the rejected response digest does not match." });
       return structuredClone(existing);
@@ -112,8 +128,9 @@ export class InMemoryPaymentReplayStore implements PaymentReplayStore {
     return structuredClone(next);
   }
 
-  get(replayKey: string): PaymentReplayReservation | null {
-    const entry = this.entries.get(normalizeReplayKey(replayKey));
+  get(input: { readonly attempt: PaymentAttempt; readonly authorization: ValidatedPaymentAuthorization }): PaymentReplayReservation | null {
+    const replayKey = normalizeReplayKey(paymentReplayKey(input.attempt, input.authorization));
+    const entry = this.entries.get(replayKey);
     return entry === undefined ? null : structuredClone(entry);
   }
 

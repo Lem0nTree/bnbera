@@ -3,16 +3,17 @@ import {
   CommerceError,
   assertErc8183Transition,
   createErc8183JobEvent,
+  erc8183DeploymentPinDigest,
   erc8183JobRecordSchema,
   parseEnabledDeploymentPin,
   quoteDigest,
   validateJobTerms,
   validateQuote,
-  type Erc8183DeploymentPin,
+  type EnabledErc8183DeploymentPin,
   type Erc8183JobRecord
 } from "../src/index.js";
 
-const PIN: Erc8183DeploymentPin = {
+const PIN: EnabledErc8183DeploymentPin = {
   enabled: true,
   chainId: 97,
   specRevision: "erc-8183-test-revision",
@@ -45,6 +46,8 @@ const TERMS = {
 const JOB: Erc8183JobRecord = erc8183JobRecordSchema.parse({
   jobKey: { chainId: 97, commerceContract: PIN.commerceContract, jobId: "7" },
   terms: TERMS,
+  deploymentPin: PIN,
+  deploymentPinDigest: erc8183DeploymentPinDigest(PIN),
   state: "open",
   createdAtUnix: 1_000_000,
   updatedAtUnix: 1_000_000,

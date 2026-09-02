@@ -3,6 +3,7 @@ import { canonicalSha256Hex } from "@bnbera/domain";
 import { CommerceError } from "./errors.js";
 import { transitionErc8183Job } from "./lifecycle.js";
 import {
+  erc8183DeploymentPinDigest,
   erc8183JobRecordSchema,
   erc8183JobEventSchema,
   erc8183ReconciliationSchema,
@@ -16,7 +17,7 @@ import {
   type Erc8183Reconciliation,
   type ReconciliationState
 } from "./types.js";
-import { normalizeJobKey, parseEnabledDeploymentPin, validateJobTerms } from "./validation.js";
+import { assertBudgetMatchesPin, assertDeploymentPinSnapshot, assertPinMatchesJob, normalizeJobKey, parseEnabledDeploymentPin, validateJobTerms } from "./validation.js";
 
 function keyFor(jobKey: Erc8183JobKey): string {
   return `${jobKey.chainId}:${jobKey.commerceContract.toLowerCase()}:${jobKey.jobId}`;
@@ -91,64 +92,77 @@ export class InMemoryErc8183Repository implements Erc8183JobRepository, Erc8183R
   private readonly events = new Map<string, Erc8183JobEvent>();
   private readonly actions = new Map<string, ActionRecord>();
   private readonly reconciliations = new Map<string, Erc8183Reconciliation>();
+  private transactionTail: Promise<void> = Promise.resolve();
 
   constructor(deploymentPin: unknown) {
     this.deploymentPin = parseEnabledDeploymentPin(deploymentPin);
   }
 
   async transaction<T>(work: (unit: Erc8183JobUnitOfWork) => Promise<T>): Promise<T> {
-    const jobs = new Map([...this.jobs.entries()].map(([key, value]) => [key, clone(value)] as const));
-    const events = new Map([...this.events.entries()].map(([key, value]) => [key, clone(value)] as const));
-    const actions = new Map([...this.actions.entries()].map(([key, value]) => [key, clone(value)] as const));
-    const reconciliations = new Map([...this.reconciliations.entries()].map(([key, value]) => [key, clone(value)] as const));
-    const unit: Erc8183JobUnitOfWork = {
-      commit: async (input) => {
-        const action = idempotencyKeySchema.parse(input.actionKey);
-        erc8183JobRecordSchema.parse(input.job);
-        erc8183JobEventSchema.parse(input.event);
-        if (keyFor(input.job.jobKey) !== input.jobKey || keyFor(input.event.jobKey) !== input.jobKey || input.event.eventKey !== `action:${action}`) {
-          throw new CommerceError({ code: "EVENT_CONFLICT", message: "The atomic job event is not bound to the committed job action." });
-        }
-        const expectedKey = input.expectedJob === null ? null : keyFor(input.expectedJob.jobKey);
-        if (expectedKey !== null && expectedKey !== input.jobKey) {
-          throw new CommerceError({ code: "STALE_JOB", message: "The atomic job transition expected a different job identity.", retriable: true, nextAction: "reconcile_job" });
-        }
-        const current = this.jobs.get(input.jobKey);
-        if (input.expectedJob === null) {
-          if (current !== undefined) {
-            throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "An ERC-8183 job already exists for this chain, contract, and job ID." });
-          }
-        } else if (current === undefined || canonicalSha256Hex(current) !== canonicalSha256Hex(input.expectedJob)) {
-          throw new CommerceError({ code: "STALE_JOB", message: "The ERC-8183 job changed before the atomic transition committed.", retriable: true, nextAction: "reconcile_job" });
-        }
-        const previous = this.events.get(input.event.eventKey);
-        if (previous !== undefined && !sameEvent(previous, input.event)) {
-          throw new CommerceError({ code: "EVENT_CONFLICT", message: "An event key was reused with different event contents." });
-        }
-        const priorAction = this.actions.get(action);
-        if (priorAction !== undefined && (priorAction.digest !== input.actionDigest || priorAction.jobKey !== input.jobKey)) {
-          throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The idempotency key was already used for another commerce operation." });
-        }
-        if (previous !== undefined || priorAction !== undefined) {
-          throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The atomic commerce action was concurrently committed." });
-        }
-        this.jobs.set(input.jobKey, clone(input.job));
-        this.events.set(input.event.eventKey, clone(input.event));
-        this.actions.set(action, { digest: input.actionDigest, jobKey: input.jobKey, result: { job: clone(input.job), event: clone(input.event) } });
-      }
-    };
+    let release!: () => void;
+    const predecessor = this.transactionTail;
+    this.transactionTail = new Promise<void>((resolve) => { release = resolve; });
+    await predecessor;
     try {
-      return await work(unit);
-    } catch (cause) {
-      this.jobs.clear();
-      for (const [key, value] of jobs) this.jobs.set(key, value);
-      this.events.clear();
-      for (const [key, value] of events) this.events.set(key, value);
-      this.actions.clear();
-      for (const [key, value] of actions) this.actions.set(key, value);
-      this.reconciliations.clear();
-      for (const [key, value] of reconciliations) this.reconciliations.set(key, value);
-      throw cause;
+      const jobs = new Map([...this.jobs.entries()].map(([key, value]) => [key, clone(value)] as const));
+      const events = new Map([...this.events.entries()].map(([key, value]) => [key, clone(value)] as const));
+      const actions = new Map([...this.actions.entries()].map(([key, value]) => [key, clone(value)] as const));
+      const reconciliations = new Map([...this.reconciliations.entries()].map(([key, value]) => [key, clone(value)] as const));
+      const unit: Erc8183JobUnitOfWork = {
+        commit: async (input) => {
+          const action = idempotencyKeySchema.parse(input.actionKey);
+          const persistedJob = erc8183JobRecordSchema.parse(input.job);
+          assertDeploymentPinSnapshot(persistedJob.deploymentPin, persistedJob.deploymentPinDigest, this.deploymentPin);
+          assertPinMatchesJob(persistedJob.terms, this.deploymentPin);
+          assertBudgetMatchesPin(persistedJob.terms.budgetAtomic, this.deploymentPin);
+          validateJobTerms(persistedJob.terms, this.deploymentPin, persistedJob.createdAtUnix);
+          erc8183JobEventSchema.parse(input.event);
+          if (keyFor(input.job.jobKey) !== input.jobKey || keyFor(input.event.jobKey) !== input.jobKey || input.event.eventKey !== `action:${action}`) {
+            throw new CommerceError({ code: "EVENT_CONFLICT", message: "The atomic job event is not bound to the committed job action." });
+          }
+          const expectedKey = input.expectedJob === null ? null : keyFor(input.expectedJob.jobKey);
+          if (expectedKey !== null && expectedKey !== input.jobKey) {
+            throw new CommerceError({ code: "STALE_JOB", message: "The atomic job transition expected a different job identity.", retriable: true, nextAction: "reconcile_job" });
+          }
+          const current = this.jobs.get(input.jobKey);
+          if (input.expectedJob === null) {
+            if (current !== undefined) {
+              throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "An ERC-8183 job already exists for this chain, contract, and job ID." });
+            }
+          } else if (current === undefined || canonicalSha256Hex(current) !== canonicalSha256Hex(input.expectedJob)) {
+            throw new CommerceError({ code: "STALE_JOB", message: "The ERC-8183 job changed before the atomic transition committed.", retriable: true, nextAction: "reconcile_job" });
+          }
+          const previous = this.events.get(input.event.eventKey);
+          if (previous !== undefined && !sameEvent(previous, input.event)) {
+            throw new CommerceError({ code: "EVENT_CONFLICT", message: "An event key was reused with different event contents." });
+          }
+          const priorAction = this.actions.get(action);
+          if (priorAction !== undefined && (priorAction.digest !== input.actionDigest || priorAction.jobKey !== input.jobKey)) {
+            throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The idempotency key was already used for another commerce operation." });
+          }
+          if (previous !== undefined || priorAction !== undefined) {
+            throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The atomic commerce action was concurrently committed." });
+          }
+          this.jobs.set(input.jobKey, clone(input.job));
+          this.events.set(input.event.eventKey, clone(input.event));
+          this.actions.set(action, { digest: input.actionDigest, jobKey: input.jobKey, result: { job: clone(input.job), event: clone(input.event) } });
+        }
+      };
+      try {
+        return await work(unit);
+      } catch (cause) {
+        this.jobs.clear();
+        for (const [key, value] of jobs) this.jobs.set(key, value);
+        this.events.clear();
+        for (const [key, value] of events) this.events.set(key, value);
+        this.actions.clear();
+        for (const [key, value] of actions) this.actions.set(key, value);
+        this.reconciliations.clear();
+        for (const [key, value] of reconciliations) this.reconciliations.set(key, value);
+        throw cause;
+      }
+    } finally {
+      release();
     }
   }
 
@@ -160,10 +174,13 @@ export class InMemoryErc8183Repository implements Erc8183JobRepository, Erc8183R
   async create(input: { readonly job: Erc8183JobRecord; readonly idempotencyKey: string }): Promise<{ readonly job: Erc8183JobRecord; readonly replayed: boolean }> {
     const key = idempotencyKeySchema.parse(input.idempotencyKey);
     const parsedJob = erc8183JobRecordSchema.parse(input.job);
+    assertDeploymentPinSnapshot(parsedJob.deploymentPin, parsedJob.deploymentPinDigest, this.deploymentPin);
     const job = erc8183JobRecordSchema.parse({
       ...parsedJob,
       jobKey: normalizeJobKey(parsedJob.jobKey),
-      terms: validateJobTerms(parsedJob.terms, this.deploymentPin, parsedJob.createdAtUnix)
+      terms: validateJobTerms(parsedJob.terms, this.deploymentPin, parsedJob.createdAtUnix),
+      deploymentPin: this.deploymentPin,
+      deploymentPinDigest: erc8183DeploymentPinDigest(this.deploymentPin)
     });
     if (job.state !== "open") {
       throw new CommerceError({ code: "INVALID_JOB", message: "A new ERC-8183 job must begin in the open state." });
@@ -262,6 +279,9 @@ export class InMemoryErc8183Repository implements Erc8183JobRepository, Erc8183R
 
   async appendEvent(event: Erc8183JobEvent): Promise<{ readonly event: Erc8183JobEvent; readonly replayed: boolean }> {
     const parsed = erc8183JobEventSchema.parse(event);
+    if (!this.jobs.has(keyFor(parsed.jobKey))) {
+      throw new CommerceError({ code: "UNKNOWN_JOB", message: "The ERC-8183 event references an unknown job." });
+    }
     const previous = this.events.get(parsed.eventKey);
     if (previous !== undefined) {
       if (!sameEvent(previous, parsed)) {
@@ -325,12 +345,21 @@ export class InMemoryErc8183Repository implements Erc8183JobRepository, Erc8183R
 }
 
 function sameEvent(left: Erc8183JobEvent, right: Erc8183JobEvent): boolean {
-  return left.jobKey.chainId === right.jobKey.chainId &&
+  return left.eventKey === right.eventKey &&
+    left.jobKey.chainId === right.jobKey.chainId &&
     left.jobKey.commerceContract.toLowerCase() === right.jobKey.commerceContract.toLowerCase() &&
     left.jobKey.jobId === right.jobKey.jobId &&
     left.eventType === right.eventType &&
     left.previousState === right.previousState &&
     left.payloadDigest === right.payloadDigest &&
     left.nextState === right.nextState &&
-    left.transactionHash === right.transactionHash;
+    left.actorAddress?.toLowerCase() === right.actorAddress?.toLowerCase() &&
+    left.transactionHash === right.transactionHash &&
+    left.blockNumber === right.blockNumber &&
+    left.blockHash === right.blockHash &&
+    left.logIndex === right.logIndex &&
+    left.confirmationState === right.confirmationState &&
+    left.correlationId === right.correlationId &&
+    left.observedAtUnix === right.observedAtUnix &&
+    canonicalSha256Hex(left.payload) === canonicalSha256Hex(right.payload);
 }

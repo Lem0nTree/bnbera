@@ -3,6 +3,7 @@ import {
   canonicalSha256Hex,
   contentDigestSchema,
   evmAddressSchema,
+  normalizeEvmAddress,
   transactionHashSchema
 } from "@bnbera/domain";
 
@@ -89,6 +90,23 @@ export const b402SellerConfigurationSchema = z.object({
 }).strict();
 export type B402SellerConfiguration = z.infer<typeof b402SellerConfigurationSchema>;
 
+/** Digest of the normalized, secret-reference-only seller configuration. */
+export function b402SellerConfigurationDigest(configuration: B402SellerConfiguration): string {
+  return canonicalSha256Hex({
+    ...configuration,
+    settlementAsset: normalizeEvmAddress(configuration.settlementAsset),
+    payoutAddress: normalizeEvmAddress(configuration.payoutAddress),
+    facilitatorEndpoint: normalizeHttpUrl(configuration.facilitatorEndpoint),
+    publicX402Url: normalizeHttpUrl(configuration.publicX402Url)
+  });
+}
+
+function normalizeHttpUrl(value: string): string {
+  const parsed = new URL(value);
+  parsed.hash = "";
+  return parsed.toString();
+}
+
 /**
  * Trusted terms assembled from BNBEra configuration and the selected route.
  * These values are intentionally independent of an incoming 402 challenge.
@@ -98,6 +116,8 @@ export const b402PaymentPinSchema = z.object({
   enabled: z.literal(true),
   /** Correlates the trusted pin/config boundary with exactly one request. */
   requestId: safeIdentifierSchema,
+  configurationVersion: z.number().int().positive(),
+  configurationDigest: contentDigestSchema,
   rail: paymentRailSchema,
   settlementNetwork: bscChainIdSchema,
   settlementAsset: nonZeroAddressSchema,
@@ -114,6 +134,18 @@ export const b402PaymentPinSchema = z.object({
   maxChallengeLifetimeSeconds: z.number().int().positive().max(15 * 60)
 }).strict();
 export type B402PaymentPin = z.infer<typeof b402PaymentPinSchema>;
+
+/** Digest of the complete immutable per-request payment pin snapshot. */
+export function paymentPinDigest(pin: B402PaymentPin): string {
+  return canonicalSha256Hex({
+    ...pin,
+    settlementAsset: normalizeEvmAddress(pin.settlementAsset),
+    recipient: normalizeEvmAddress(pin.recipient),
+    payoutAddress: normalizeEvmAddress(pin.payoutAddress),
+    destination: normalizeHttpUrl(pin.destination),
+    facilitatorEndpoint: normalizeHttpUrl(pin.facilitatorEndpoint)
+  });
+}
 
 export const paymentChallengeNonceSchema = z
   .string()
@@ -155,18 +187,29 @@ export const paymentAuthorizationSchema = z.object({
 }).strict();
 export type PaymentAuthorization = z.infer<typeof paymentAuthorizationSchema>;
 
+export const validatedPaymentAuthorizationBrand: unique symbol = Symbol("validated-payment-authorization");
+export type ValidatedPaymentAuthorization = PaymentAuthorization & {
+  readonly [validatedPaymentAuthorizationBrand]: true;
+};
+
 export const relayRequestSchema = z.object({
   attemptId: z.string().uuid(),
   requestId: safeIdentifierSchema,
   idempotencyKey: idempotencyKeySchema,
   destination: httpUrlSchema,
   method: paymentMethodSchema,
+  requestBody: z.unknown(),
   authorizationDigest: contentDigestSchema,
   requestDigest: contentDigestSchema,
   fixedEgressProfile: safeIdentifierSchema,
   timeoutMs: z.number().int().min(1_000).max(120_000)
 }).strict();
 export type RelayRequest = z.infer<typeof relayRequestSchema>;
+
+export const validatedRelayRequestBrand: unique symbol = Symbol("validated-relay-request");
+export type ValidatedRelayRequest = RelayRequest & {
+  readonly [validatedRelayRequestBrand]: true;
+};
 
 export const paymentReceiptStatuses = ["settled", "rejected", "unknown", "partial_failure"] as const;
 export const paymentReceiptStatusSchema = z.enum(paymentReceiptStatuses);
@@ -225,6 +268,7 @@ export const paymentAttemptSchema = z.object({
   authorizationDigest: contentDigestSchema.nullable(),
   payerAddress: nonZeroAddressSchema.nullable(),
   pin: b402PaymentPinSchema,
+  pinDigest: contentDigestSchema,
   status: paymentAttemptStatusSchema,
   relayRequestDigest: contentDigestSchema.nullable(),
   receiptId: z.string().uuid().nullable(),
@@ -265,6 +309,9 @@ export const paymentAttemptSchema = z.object({
   }
   if (value.requestId !== value.pin.requestId) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["requestId"], message: "Attempt request correlation must match the trusted payment pin." });
+  }
+  if (value.pinDigest !== paymentPinDigest(value.pin)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["pinDigest"], message: "The persisted payment pin snapshot digest does not match its terms." });
   }
 });
 export type PaymentAttempt = z.infer<typeof paymentAttemptSchema>;

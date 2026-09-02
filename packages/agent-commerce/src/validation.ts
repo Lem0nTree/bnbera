@@ -6,6 +6,7 @@ import { CommerceError } from "./errors.js";
 import {
   decimalUintSchema,
   erc8183DeploymentPinSchema,
+  erc8183DeploymentPinDigest,
   erc8183JobKeySchema,
   erc8183JobTermsSchema,
   erc8183QuoteSchema,
@@ -78,7 +79,22 @@ export function parseEnabledDeploymentPin(input: unknown): EnabledErc8183Deploym
   if (!parsed.data.enabled) {
     throw new CommerceError({ code: "COMMERCE_DISABLED", message: `ERC-8183 is disabled: ${parsed.data.disabledReason}.`, nextAction: "verify_standards_lock" });
   }
-  return parsed.data;
+  return {
+    ...parsed.data,
+    commerceContract: normalizeAddress(parsed.data.commerceContract, "commerce contract"),
+    paymentToken: normalizeAddress(parsed.data.paymentToken, "payment token")
+  };
+}
+
+export function assertDeploymentPinSnapshot(
+  snapshot: Erc8183DeploymentPin,
+  snapshotDigest: string,
+  trustedPin: EnabledErc8183DeploymentPin
+): void {
+  const persisted = parseEnabledDeploymentPin(snapshot);
+  if (erc8183DeploymentPinDigest(persisted) !== snapshotDigest || erc8183DeploymentPinDigest(trustedPin) !== snapshotDigest) {
+    throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted ERC-8183 deployment pin snapshot does not match the enabled standards pin." });
+  }
 }
 
 export function assertPinMatchesJob(

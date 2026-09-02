@@ -646,6 +646,7 @@ export const b402SellerConfigurations = pgTable(
     agentCoreRelayAuthenticationReference: text("agent_core_relay_authentication_reference"),
     priceUsd: numeric("price_usd", { precision: 20, scale: 8 }).notNull(),
     configurationVersion: integer("configuration_version").notNull().default(1),
+    configurationDigest: varchar("configuration_digest", { length: 64 }).notNull(),
     lastPaidCanaryResult: jsonb("last_paid_canary_result").$type<Record<string, unknown>>(),
     createdAt: now(),
     updatedAt: now()
@@ -699,6 +700,16 @@ export const erc8183Jobs = pgTable(
     chainId: integer("chain_id").notNull(),
     commerceContract: varchar("commerce_contract", { length: 42 }).notNull(),
     erc8183JobId: text("erc8183_job_id").notNull(),
+    // Immutable standards-lock snapshot required to reconstruct validation.
+    specRevision: varchar("spec_revision", { length: 160 }).notNull(),
+    abiHash: varchar("abi_hash", { length: 64 }).notNull(),
+    evaluatorProfile: varchar("evaluator_profile", { length: 160 }).notNull(),
+    confirmationThreshold: integer("confirmation_threshold").notNull(),
+    minExpiryLeadSeconds: integer("min_expiry_lead_seconds").notNull(),
+    maxExpiryHorizonSeconds: integer("max_expiry_horizon_seconds").notNull(),
+    minBudgetAtomic: numeric("min_budget_atomic", { precision: 78, scale: 0 }).notNull(),
+    maxBudgetAtomic: numeric("max_budget_atomic", { precision: 78, scale: 0 }).notNull(),
+    deploymentPinDigest: varchar("deployment_pin_digest", { length: 64 }).notNull(),
     paymentToken: varchar("payment_token", { length: 42 }).notNull(),
     paymentDecimals: integer("payment_decimals").notNull(),
     clientAddress: varchar("client_address", { length: 42 }).notNull(),
@@ -823,6 +834,13 @@ export const paymentAttempts = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     status: paymentAttemptStatusEnum("status").notNull().default("challenged"),
     relayRequestDigest: varchar("relay_request_digest", { length: 64 }),
+    // Immutable request-time payment pin/config snapshot.
+    pinDigest: varchar("pin_digest", { length: 64 }).notNull(),
+    configurationVersion: integer("configuration_version").notNull(),
+    configurationDigest: varchar("configuration_digest", { length: 64 }).notNull(),
+    fixedEgressProfile: varchar("fixed_egress_profile", { length: 160 }).notNull(),
+    payoutAddress: varchar("payout_address", { length: 42 }).notNull(),
+    payoutVerificationState: varchar("payout_verification_state", { length: 64 }).notNull(),
     failureCode: varchar("failure_code", { length: 240 }),
     sanitizedFailure: varchar("sanitized_failure", { length: 500 }),
     createdAt: now(),
@@ -898,7 +916,7 @@ export const paymentReceipts = pgTable(
   },
   (table) => [
     // Receipt ownership is a single-direction relationship. The attempt
-    // record intentionally has no receipt_id backlink; unknown/partial
+    // record intentionally has no receipt backlink; unknown/partial
     // receipts are replaced by the canonical attempt row here.
     uniqueIndex("payment_receipt_attempt_unique").on(table.attemptId),
     uniqueIndex("payment_receipt_digest_unique").on(table.receiptDigest),

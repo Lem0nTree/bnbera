@@ -8,7 +8,7 @@ import {
   type Erc8183JobRecord,
   type Erc8183JobState
 } from "./types.js";
-import { assertBudgetMatchesPin, assertPinMatchesJob, normalizeAddress, parseAtomic, parseEnabledDeploymentPin } from "./validation.js";
+import { assertBudgetMatchesPin, assertDeploymentPinSnapshot, assertPinMatchesJob, normalizeAddress, parseAtomic, parseEnabledDeploymentPin } from "./validation.js";
 
 const allowedTransitions: Readonly<Record<Erc8183JobState, readonly Erc8183JobState[]>> = {
   open: ["funded", "rejected"],
@@ -72,6 +72,7 @@ export function assertErc8183Transition(input: {
   const { job, deploymentPin, nextState, action, actorAddress, nowUnix } = input;
   erc8183JobRecordSchema.parse(job);
   const enabledPin = parseEnabledDeploymentPin(deploymentPin);
+  assertDeploymentPinSnapshot(job.deploymentPin, job.deploymentPinDigest, enabledPin);
   assertPinMatchesJob(job.terms, enabledPin);
   assertBudgetMatchesPin(job.terms.budgetAtomic, enabledPin);
   if (action === "reconcile") {

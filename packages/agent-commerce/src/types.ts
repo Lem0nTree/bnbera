@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  canonicalSha256Hex,
   contentDigestSchema,
   evmAddressSchema,
   transactionHashSchema
@@ -113,6 +114,15 @@ export const erc8183DeploymentPinSchema = z.discriminatedUnion("enabled", [
 export type Erc8183DeploymentPin = z.infer<typeof erc8183DeploymentPinSchema>;
 export type EnabledErc8183DeploymentPin = Extract<Erc8183DeploymentPin, { enabled: true }>;
 
+/** Digest of the complete enabled ERC-8183 deployment pin snapshot. */
+export function erc8183DeploymentPinDigest(pin: EnabledErc8183DeploymentPin): string {
+  return canonicalSha256Hex({
+    ...pin,
+    commerceContract: pin.commerceContract.toLowerCase(),
+    paymentToken: pin.paymentToken.toLowerCase()
+  });
+}
+
 export const erc8183JobTermsSchema = z.object({
   chainId: bscChainIdSchema,
   commerceContract: nonZeroAddressSchema,
@@ -131,6 +141,9 @@ export type Erc8183JobTerms = z.infer<typeof erc8183JobTermsSchema>;
 export const erc8183JobRecordSchema = z.object({
   jobKey: erc8183JobKeySchema,
   terms: erc8183JobTermsSchema,
+  /** Immutable standards-lock snapshot used to validate every later action. */
+  deploymentPin: enabledErc8183DeploymentPinSchema,
+  deploymentPinDigest: contentDigestSchema,
   state: erc8183JobStateSchema,
   createdAtUnix: unixSecondsSchema,
   updatedAtUnix: unixSecondsSchema,
@@ -149,6 +162,9 @@ export const erc8183JobRecordSchema = z.object({
   }
   if (value.jobKey.commerceContract.toLowerCase() !== value.terms.commerceContract.toLowerCase()) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["jobKey", "commerceContract"], message: "Job key commerce contract must match the job terms." });
+  }
+  if (erc8183DeploymentPinDigest(value.deploymentPin) !== value.deploymentPinDigest) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["deploymentPinDigest"], message: "The persisted ERC-8183 deployment pin digest does not match its terms." });
   }
 });
 export type Erc8183JobRecord = z.infer<typeof erc8183JobRecordSchema>;

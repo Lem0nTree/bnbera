@@ -9,6 +9,8 @@ commerce status. It provides:
 
 - independently pinned BSC chain, commerce contract, payment token, token
   decimals, budget, and expiry validation;
+- immutable per-job deployment snapshots (spec revision, ABI, evaluator,
+  confirmation, expiry, and budget bounds) required for later validation;
 - actor-aware create, provider assignment, funding, submission, evaluator
   completion, rejection, and post-expiry refund transitions;
 - append-only event payloads with canonical digests and transaction context;
@@ -19,7 +21,8 @@ commerce status. It provides:
 
 `InMemoryErc8183Repository` and `assertErc8183Transition` require an enabled
 deployment pin at their boundary. The repository's `transaction` unit of work
-commits the job, append-only event, and idempotency record together; a
+commits the job, append-only event, and idempotency record together and
+serializes rollback-capable transactions; a
 production adapter must preserve that database transaction/CAS behavior.
 
 The checked-in in-memory repository and tests are deterministic contract

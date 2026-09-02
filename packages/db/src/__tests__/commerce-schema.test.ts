@@ -26,10 +26,18 @@ describe("commerce and payment database schema", () => {
       "paymentReplayReservations",
       "paymentReconciliations"
     ]));
-    expect(Object.keys(erc8183Jobs)).toEqual(expect.arrayContaining(["chainId", "commerceContract", "paymentToken", "budgetAtomic", "state"]));
+    expect(Object.keys(erc8183Jobs)).toEqual(expect.arrayContaining([
+      "chainId", "commerceContract", "paymentToken", "budgetAtomic", "state",
+      "specRevision", "abiHash", "evaluatorProfile", "confirmationThreshold",
+      "minExpiryLeadSeconds", "maxExpiryHorizonSeconds", "minBudgetAtomic",
+      "maxBudgetAtomic", "deploymentPinDigest"
+    ]));
     expect(Object.keys(erc8183JobEvents)).toEqual(expect.arrayContaining(["eventKey", "transactionHash", "confirmationState", "payloadDigest"]));
     expect(Object.keys(paymentChallenges)).toEqual(expect.arrayContaining(["challengeDigest", "settlementNetwork", "settlementAsset", "amountAtomic", "recipient", "method", "expiresAt"]));
-    expect(Object.keys(paymentAttempts)).toEqual(expect.arrayContaining(["idempotencyKey", "challengeId", "status"]));
+    expect(Object.keys(paymentAttempts)).toEqual(expect.arrayContaining([
+      "idempotencyKey", "challengeId", "status", "pinDigest", "configurationVersion",
+      "configurationDigest", "fixedEgressProfile", "payoutAddress", "payoutVerificationState"
+    ]));
     expect(Object.keys(paymentAttempts)).not.toContain("receiptId");
     expect(Object.keys(paymentAttemptEvents)).toContain("eventKey");
     expect(Object.keys(paymentReceipts)).toEqual(expect.arrayContaining(["attemptId", "settlementTransactionHash", "payoutAddress", "receiptDigest"]));

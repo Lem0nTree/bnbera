@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { canonicalSha256Hex } from "@bnbera/domain";
 import {
   CommerceError,
   InMemoryErc8183Repository,
   createErc8183JobEvent,
+  erc8183DeploymentPinDigest,
   erc8183JobRecordSchema,
   type Erc8183JobRecord
 } from "../src/index.js";
@@ -38,6 +40,8 @@ const JOB: Erc8183JobRecord = erc8183JobRecordSchema.parse({
     descriptionDigest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     expiresAtUnix: 2_000_600
   },
+  deploymentPin: DEPLOYMENT_PIN,
+  deploymentPinDigest: erc8183DeploymentPinDigest(DEPLOYMENT_PIN),
   state: "open",
   createdAtUnix: 2_000_000,
   updatedAtUnix: 2_000_000,
@@ -121,6 +125,7 @@ describe("ERC-8183 repository idempotency", () => {
     })).event;
     expect((await repository.appendEvent(event)).replayed).toBe(true);
     await expect(repository.appendEvent({ ...event, payloadDigest: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" })).rejects.toThrow(/event key/i);
+    await expect(repository.appendEvent({ ...event, eventKey: "unknown-job-event", jobKey: { ...event.jobKey, jobId: "99" } })).rejects.toThrow(/unknown job/i);
   });
 
   it("rolls back a job transition when the event commit conflicts", async () => {
@@ -147,5 +152,54 @@ describe("ERC-8183 repository idempotency", () => {
       correlationId: "corr-atomic"
     })).rejects.toThrow(/event key/i);
     expect((await repository.get(JOB.jobKey))?.state).toBe("open");
+  });
+
+  it("serializes rollback-capable transactions so a later commit survives", async () => {
+    const repository = new InMemoryErc8183Repository(DEPLOYMENT_PIN);
+    const secondJob: Erc8183JobRecord = erc8183JobRecordSchema.parse({
+      ...JOB,
+      jobKey: { ...JOB.jobKey, jobId: "8" }
+    });
+    const first = repository.transaction(async (unit) => {
+      await unit.commit({
+        actionKey: "transaction-first",
+        actionDigest: canonicalSha256Hex({ action: "first" }),
+        jobKey: "97:0x1111111111111111111111111111111111111111:7",
+        expectedJob: null,
+        job: JOB,
+        event: createErc8183JobEvent({
+          eventKey: "action:transaction-first",
+          jobKey: JOB.jobKey,
+          eventType: "job_created",
+          previousState: null,
+          nextState: "open",
+          actorAddress: JOB.terms.clientAddress,
+          correlationId: "transaction-first",
+          observedAtUnix: 2_000_000
+        })
+      });
+      throw new Error("rollback-first");
+    });
+    const second = repository.transaction(async (unit) => unit.commit({
+      actionKey: "transaction-second",
+      actionDigest: canonicalSha256Hex({ action: "second" }),
+      jobKey: "97:0x1111111111111111111111111111111111111111:8",
+      expectedJob: null,
+      job: secondJob,
+      event: createErc8183JobEvent({
+        eventKey: "action:transaction-second",
+        jobKey: secondJob.jobKey,
+        eventType: "job_created",
+        previousState: null,
+        nextState: "open",
+        actorAddress: secondJob.terms.clientAddress,
+        correlationId: "transaction-second",
+        observedAtUnix: 2_000_001
+      })
+    }));
+    await expect(first).rejects.toThrow("rollback-first");
+    await second;
+    expect(await repository.get(JOB.jobKey)).toBeNull();
+    expect(await repository.get(secondJob.jobKey)).not.toBeNull();
   });
 });

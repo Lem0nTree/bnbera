@@ -10,6 +10,7 @@ import {
   paymentEventSchema,
   paymentReceiptSchema,
   paymentReconciliationSchema,
+  paymentPinDigest,
   type PaymentAttempt,
   type PaymentAttemptStatus,
   type PaymentChallenge,
@@ -74,7 +75,9 @@ export interface PaymentAttemptUnitOfWork {
     readonly attempt: PaymentAttempt;
     readonly event: PaymentEvent;
     readonly challenge?: PaymentChallenge;
+    readonly receipt?: PaymentReceipt;
   }): Promise<void>;
+  saveReceipt(receipt: PaymentReceipt): Promise<{ readonly receipt: PaymentReceipt; readonly replayed: boolean }>;
 }
 
 export interface PaymentReconciliationRepository {
@@ -113,90 +116,114 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
   private readonly receiptIds = new Map<string, string>();
   private readonly receiptDigests = new Map<string, string>();
   private readonly reconciliations = new Map<string, PaymentReconciliation>();
+  private transactionTail: Promise<void> = Promise.resolve();
 
   constructor(sellerConfiguration: unknown) {
     this.sellerConfiguration = parseEnabledSellerConfiguration(sellerConfiguration);
   }
 
   async transaction<T>(work: (unit: PaymentAttemptUnitOfWork) => Promise<T>): Promise<T> {
-    const attempts = new Map([...this.attempts.entries()].map(([key, value]) => [key, clone(value)] as const));
-    const challenges = new Map([...this.challenges.entries()].map(([key, value]) => [key, clone(value)] as const));
-    const challengeDigests = new Map(this.challengeDigests);
-    const events = new Map([...this.events.entries()].map(([key, value]) => [key, clone(value)] as const));
-    const actions = new Map([...this.actions.entries()].map(([key, value]) => [key, clone(value)] as const));
-    const receipts = new Map([...this.receipts.entries()].map(([key, value]) => [key, clone(value)] as const));
-    const receiptIds = new Map(this.receiptIds);
-    const receiptDigests = new Map(this.receiptDigests);
-    const reconciliations = new Map([...this.reconciliations.entries()].map(([key, value]) => [key, clone(value)] as const));
-    const unit: PaymentAttemptUnitOfWork = {
-      commit: async (input) => {
-        const action = idempotencyKeySchema.parse(input.actionKey);
-        paymentAttemptSchema.parse(input.attempt);
-        paymentEventSchema.parse(input.event);
-        if (input.event.attemptId !== input.attempt.attemptId || input.event.eventKey !== `action:${action}`) {
-          throw new PaymentError({ code: "EVENT_CONFLICT", message: "The atomic payment event is not bound to the committed attempt action." });
-        }
-        if (input.challenge !== undefined && input.challenge.challengeId !== input.attempt.challenge.challengeId) {
-          throw new PaymentError({ code: "EVENT_CONFLICT", message: "The atomic payment challenge is not bound to the committed attempt." });
-        }
-        const current = this.attempts.get(input.attempt.attemptId);
-        if (input.expectedAttempt === null) {
-          if (current !== undefined) {
-            throw new PaymentError({ code: "IDEMPOTENCY_CONFLICT", message: "A payment attempt already exists with this identifier." });
-          }
-        } else if (current === undefined || canonicalSha256Hex(current) !== canonicalSha256Hex(input.expectedAttempt)) {
-          throw new PaymentError({ code: "STALE_ATTEMPT", message: "The payment attempt changed before the atomic transition committed.", retriable: true, nextAction: "reconcile_payment" });
-        }
-        const previous = this.events.get(input.event.eventKey);
-        if (previous !== undefined && !sameEvent(previous, input.event)) {
-          throw new PaymentError({ code: "EVENT_CONFLICT", message: "A payment event key was reused with different contents." });
-        }
-        const priorAction = this.actions.get(action);
-        if (priorAction !== undefined && (priorAction.digest !== input.actionDigest || priorAction.attemptId !== input.attempt.attemptId)) {
-          throw new PaymentError({ code: "IDEMPOTENCY_CONFLICT", message: "The payment idempotency key was reused with different terms." });
-        }
-        if (previous !== undefined || priorAction !== undefined) {
-          throw new PaymentError({ code: "IDEMPOTENCY_CONFLICT", message: "The atomic payment action was concurrently committed." });
-        }
-        if (input.challenge !== undefined) {
-          const challenge = this.challenges.get(input.challenge.challengeId);
-          if (challenge !== undefined && challenge.challengeDigest !== input.challenge.challengeDigest) {
-            throw new PaymentError({ code: "IDEMPOTENCY_CONFLICT", message: "A challenge identifier was reused with different terms." });
-          }
-          const digestOwner = this.challengeDigests.get(input.challenge.challengeDigest);
-          if (digestOwner !== undefined && digestOwner !== input.challenge.challengeId) {
-            throw new PaymentError({ code: "IDEMPOTENCY_CONFLICT", message: "A challenge digest was already recorded under another identifier." });
-          }
-          this.challenges.set(input.challenge.challengeId, clone(input.challenge));
-          this.challengeDigests.set(input.challenge.challengeDigest, input.challenge.challengeId);
-        }
-        this.attempts.set(input.attempt.attemptId, clone(input.attempt));
-        this.events.set(input.event.eventKey, clone(input.event));
-        this.actions.set(action, { digest: input.actionDigest, attemptId: input.attempt.attemptId, result: { attempt: clone(input.attempt), event: clone(input.event) } });
-      }
-    };
+    let release!: () => void;
+    const predecessor = this.transactionTail;
+    this.transactionTail = new Promise<void>((resolve) => { release = resolve; });
+    await predecessor;
     try {
-      return await work(unit);
-    } catch (cause) {
-      this.attempts.clear();
-      for (const [key, value] of attempts) this.attempts.set(key, value);
-      this.challenges.clear();
-      for (const [key, value] of challenges) this.challenges.set(key, value);
-      this.challengeDigests.clear();
-      for (const [key, value] of challengeDigests) this.challengeDigests.set(key, value);
-      this.events.clear();
-      for (const [key, value] of events) this.events.set(key, value);
-      this.actions.clear();
-      for (const [key, value] of actions) this.actions.set(key, value);
-      this.receipts.clear();
-      for (const [key, value] of receipts) this.receipts.set(key, value);
-      this.receiptIds.clear();
-      for (const [key, value] of receiptIds) this.receiptIds.set(key, value);
-      this.receiptDigests.clear();
-      for (const [key, value] of receiptDigests) this.receiptDigests.set(key, value);
-      this.reconciliations.clear();
-      for (const [key, value] of reconciliations) this.reconciliations.set(key, value);
-      throw cause;
+      const attempts = new Map([...this.attempts.entries()].map(([key, value]) => [key, clone(value)] as const));
+      const challenges = new Map([...this.challenges.entries()].map(([key, value]) => [key, clone(value)] as const));
+      const challengeDigests = new Map(this.challengeDigests);
+      const events = new Map([...this.events.entries()].map(([key, value]) => [key, clone(value)] as const));
+      const actions = new Map([...this.actions.entries()].map(([key, value]) => [key, clone(value)] as const));
+      const receipts = new Map([...this.receipts.entries()].map(([key, value]) => [key, clone(value)] as const));
+      const receiptIds = new Map(this.receiptIds);
+      const receiptDigests = new Map(this.receiptDigests);
+      const reconciliations = new Map([...this.reconciliations.entries()].map(([key, value]) => [key, clone(value)] as const));
+      const unit: PaymentAttemptUnitOfWork = {
+        commit: async (input) => {
+          const action = idempotencyKeySchema.parse(input.actionKey);
+          const persistedAttempt = paymentAttemptSchema.parse(input.attempt);
+          validatePaymentPinAgainstSellerConfiguration(persistedAttempt.pin, this.sellerConfiguration);
+          assertChallengeDigest(persistedAttempt.challenge);
+          paymentEventSchema.parse(input.event);
+          if (input.event.attemptId !== input.attempt.attemptId || input.event.eventKey !== `action:${action}`) {
+            throw new PaymentError({ code: "EVENT_CONFLICT", message: "The atomic payment event is not bound to the committed attempt action." });
+          }
+          if (input.challenge !== undefined && input.challenge.challengeId !== input.attempt.challenge.challengeId) {
+            throw new PaymentError({ code: "EVENT_CONFLICT", message: "The atomic payment challenge is not bound to the committed attempt." });
+          }
+          if (input.challenge !== undefined) {
+            assertChallengeDigest(input.challenge);
+          }
+          const current = this.attempts.get(input.attempt.attemptId);
+          if (input.expectedAttempt === null) {
+            if (current !== undefined) {
+              throw new PaymentError({ code: "IDEMPOTENCY_CONFLICT", message: "A payment attempt already exists with this identifier." });
+            }
+          } else if (current === undefined || canonicalSha256Hex(current) !== canonicalSha256Hex(input.expectedAttempt)) {
+            throw new PaymentError({ code: "STALE_ATTEMPT", message: "The payment attempt changed before the atomic transition committed.", retriable: true, nextAction: "reconcile_payment" });
+          }
+          const previous = this.events.get(input.event.eventKey);
+          if (previous !== undefined && !sameEvent(previous, input.event)) {
+            throw new PaymentError({ code: "EVENT_CONFLICT", message: "A payment event key was reused with different contents." });
+          }
+          const priorAction = this.actions.get(action);
+          if (priorAction !== undefined && (priorAction.digest !== input.actionDigest || priorAction.attemptId !== input.attempt.attemptId)) {
+            throw new PaymentError({ code: "IDEMPOTENCY_CONFLICT", message: "The payment idempotency key was reused with different terms." });
+          }
+          if (previous !== undefined || priorAction !== undefined) {
+            throw new PaymentError({ code: "IDEMPOTENCY_CONFLICT", message: "The atomic payment action was concurrently committed." });
+          }
+          if (input.challenge !== undefined) {
+            const challenge = this.challenges.get(input.challenge.challengeId);
+            if (challenge !== undefined && challenge.challengeDigest !== input.challenge.challengeDigest) {
+              throw new PaymentError({ code: "IDEMPOTENCY_CONFLICT", message: "A challenge identifier was reused with different terms." });
+            }
+            const digestOwner = this.challengeDigests.get(input.challenge.challengeDigest);
+            if (digestOwner !== undefined && digestOwner !== input.challenge.challengeId) {
+              throw new PaymentError({ code: "IDEMPOTENCY_CONFLICT", message: "A challenge digest was already recorded under another identifier." });
+            }
+            this.challenges.set(input.challenge.challengeId, clone(input.challenge));
+            this.challengeDigests.set(input.challenge.challengeDigest, input.challenge.challengeId);
+          }
+          if (input.receipt !== undefined) {
+            this.applyReceiptToMaps(input.receipt, input.attempt);
+          }
+          this.attempts.set(input.attempt.attemptId, clone(input.attempt));
+          this.events.set(input.event.eventKey, clone(input.event));
+          this.actions.set(action, { digest: input.actionDigest, attemptId: input.attempt.attemptId, result: { attempt: clone(input.attempt), event: clone(input.event) } });
+        },
+        saveReceipt: async (receipt) => {
+          const attempt = this.attempts.get(receipt.attemptId);
+          if (attempt === undefined) {
+            throw new PaymentError({ code: "UNKNOWN_ATTEMPT", message: "The payment receipt references an unknown attempt." });
+          }
+          return this.applyReceiptToMaps(receipt, attempt);
+        }
+      };
+      try {
+        return await work(unit);
+      } catch (cause) {
+        this.attempts.clear();
+        for (const [key, value] of attempts) this.attempts.set(key, value);
+        this.challenges.clear();
+        for (const [key, value] of challenges) this.challenges.set(key, value);
+        this.challengeDigests.clear();
+        for (const [key, value] of challengeDigests) this.challengeDigests.set(key, value);
+        this.events.clear();
+        for (const [key, value] of events) this.events.set(key, value);
+        this.actions.clear();
+        for (const [key, value] of actions) this.actions.set(key, value);
+        this.receipts.clear();
+        for (const [key, value] of receipts) this.receipts.set(key, value);
+        this.receiptIds.clear();
+        for (const [key, value] of receiptIds) this.receiptIds.set(key, value);
+        this.receiptDigests.clear();
+        for (const [key, value] of receiptDigests) this.receiptDigests.set(key, value);
+        this.reconciliations.clear();
+        for (const [key, value] of reconciliations) this.reconciliations.set(key, value);
+        throw cause;
+      }
+    } finally {
+      release();
     }
   }
 
@@ -207,9 +234,11 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
 
   async create(input: { readonly attempt: PaymentAttempt }): Promise<{ readonly attempt: PaymentAttempt; readonly replayed: boolean }> {
     const parsedAttempt = paymentAttemptSchema.parse(input.attempt);
+    const trustedPin = validatePaymentPinAgainstSellerConfiguration(parsedAttempt.pin, this.sellerConfiguration).pin;
     const attempt = paymentAttemptSchema.parse({
       ...parsedAttempt,
-      pin: validatePaymentPinAgainstSellerConfiguration(parsedAttempt.pin, this.sellerConfiguration).pin
+      pin: trustedPin,
+      pinDigest: paymentPinDigest(trustedPin)
     });
     assertChallengeDigest(attempt.challenge);
     const idempotencyKey = idempotencyKeySchema.parse(attempt.idempotencyKey);
@@ -299,7 +328,8 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
       actionDigest: digest,
       expectedAttempt: attempt,
       attempt: result.attempt,
-      event: result.event
+      event: result.event,
+      ...(input.metadata?.receipt === undefined ? {} : { receipt: input.metadata.receipt })
     }));
     const saved = { attempt: clone(result.attempt), event: clone(result.event) };
     return { ...saved, replayed: false };
@@ -307,6 +337,9 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
 
   async appendEvent(event: PaymentEvent): Promise<{ readonly event: PaymentEvent; readonly replayed: boolean }> {
     const parsed = paymentEventSchema.parse(event);
+    if (!this.attempts.has(parsed.attemptId)) {
+      throw new PaymentError({ code: "UNKNOWN_ATTEMPT", message: "The payment event references an unknown attempt." });
+    }
     const prior = this.events.get(parsed.eventKey);
     if (prior !== undefined) {
       if (!sameEvent(prior, parsed)) {
@@ -353,10 +386,15 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
 
   async saveReceipt(receipt: PaymentReceipt): Promise<{ readonly receipt: PaymentReceipt; readonly replayed: boolean }> {
     const parsed = paymentReceiptSchema.parse(receipt);
-    const attempt = this.attempts.get(parsed.attemptId);
-    if (attempt === undefined) {
-      throw new PaymentError({ code: "UNKNOWN_ATTEMPT", message: "The payment receipt references an unknown attempt." });
-    }
+    return this.transaction(async (unit) => unit.saveReceipt(parsed));
+  }
+
+  async recordSettlement(receipt: PaymentReceipt): Promise<{ readonly receipt: PaymentReceipt; readonly replayed: boolean }> {
+    return this.saveReceipt(receipt);
+  }
+
+  private applyReceiptToMaps(receipt: PaymentReceipt, attempt: PaymentAttempt): { readonly receipt: PaymentReceipt; readonly replayed: boolean } {
+    const parsed = paymentReceiptSchema.parse(receipt);
     if (attempt.challenge.challengeId !== parsed.challengeId) {
       throw new PaymentError({ code: "SETTLEMENT_UNVERIFIED", message: "The payment receipt references a different challenge." });
     }
@@ -364,8 +402,11 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
     const digest = receiptDigest(trusted);
     const prior = this.receipts.get(trusted.attemptId);
     if (prior !== undefined) {
-      if (receiptDigest(prior) !== digest) {
+      const priorDigest = receiptDigest(prior);
+      if (priorDigest !== digest) {
         if ((prior.status === "unknown" || prior.status === "partial_failure") && trusted.status === "settled") {
+          this.receiptIds.delete(prior.receiptId);
+          this.receiptDigests.delete(priorDigest);
           this.receipts.set(trusted.attemptId, clone(trusted));
           this.receiptIds.set(trusted.receiptId, trusted.attemptId);
           this.receiptDigests.set(digest, trusted.attemptId);
@@ -387,10 +428,6 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
     this.receiptIds.set(trusted.receiptId, trusted.attemptId);
     this.receiptDigests.set(digest, trusted.attemptId);
     return { receipt: clone(trusted), replayed: false };
-  }
-
-  async recordSettlement(receipt: PaymentReceipt): Promise<{ readonly receipt: PaymentReceipt; readonly replayed: boolean }> {
-    return this.saveReceipt(receipt);
   }
 
   async enqueue(input: Omit<PaymentReconciliation, "reconciliationId" | "createdAtUnix" | "updatedAtUnix" | "attemptCount" | "state"> & { readonly nowUnix: number }): Promise<PaymentReconciliation> {
@@ -442,11 +479,15 @@ export class InMemoryPaymentRepository implements PaymentAttemptRepository, Paym
 }
 
 function sameEvent(left: PaymentEvent, right: PaymentEvent): boolean {
-  return left.attemptId === right.attemptId &&
+  return left.eventKey === right.eventKey &&
+    left.attemptId === right.attemptId &&
     left.eventType === right.eventType &&
     left.previousStatus === right.previousStatus &&
     left.payloadDigest === right.payloadDigest &&
     left.nextStatus === right.nextStatus &&
     left.paymentTransactionHash === right.paymentTransactionHash &&
-    left.settlementTransactionHash === right.settlementTransactionHash;
+    left.settlementTransactionHash === right.settlementTransactionHash &&
+    left.correlationId === right.correlationId &&
+    left.observedAtUnix === right.observedAtUnix &&
+    canonicalSha256Hex(left.payload) === canonicalSha256Hex(right.payload);
 }

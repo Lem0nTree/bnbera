@@ -1,15 +1,25 @@
-import { contentDigestSchema } from "@bnbera/domain";
 import { PaymentError } from "./errors.js";
 import { createPaymentEvent } from "./events.js";
 import {
   paymentAttemptSchema,
+  paymentAuthorizationDigest,
   paymentReceiptSchema,
   type PaymentAttempt,
   type PaymentAttemptStatus,
   type PaymentEvent,
-  type PaymentReceipt
+  type PaymentReceipt,
+  type ValidatedPaymentAuthorization,
+  type ValidatedRelayRequest
 } from "./types.js";
-import { normalizeAddress, receiptDigest, validatePaymentPinAgainstSellerConfiguration, validateReceipt } from "./validation.js";
+import {
+  assertValidatedPaymentAuthorization,
+  assertValidatedRelayRequest,
+  normalizeAddress,
+  normalizeUrl,
+  receiptDigest,
+  validatePaymentPinAgainstSellerConfiguration,
+  validateReceipt
+} from "./validation.js";
 
 const allowedTransitions: Readonly<Record<PaymentAttemptStatus, readonly PaymentAttemptStatus[]>> = {
   challenged: ["authorized", "rejected", "expired"],
@@ -45,10 +55,9 @@ function eventTypeFor(nextStatus: PaymentAttemptStatus): "challenge_issued" | "p
 }
 
 export interface PaymentTransitionMetadata {
-  /** Digest of the already validated authorization; raw signatures never enter this object. */
-  readonly authorizationDigest?: string | null;
-  readonly payerAddress?: string | null;
-  readonly relayRequestDigest?: string | null;
+  /** Only branded results from validateAuthorization/validateRelayRequest may advance state. */
+  readonly authorization?: ValidatedPaymentAuthorization;
+  readonly relayRequest?: ValidatedRelayRequest;
   readonly receipt?: PaymentReceipt;
   readonly failureCode?: string;
   readonly sanitizedFailure?: string;
@@ -69,6 +78,24 @@ export function assertPaymentTransition(input: {
   const { attempt, nextStatus, nowUnix, metadata = {} } = input;
   paymentAttemptSchema.parse(attempt);
   validatePaymentPinAgainstSellerConfiguration(attempt.pin, input.sellerConfiguration);
+  if (metadata.authorization !== undefined) {
+    assertValidatedPaymentAuthorization(metadata.authorization);
+    if (metadata.authorization.attemptId !== attempt.attemptId || metadata.authorization.challengeId !== attempt.challenge.challengeId || metadata.authorization.challengeDigest !== attempt.challengeDigest) {
+      throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "Authorization is bound to a different payment attempt or challenge." });
+    }
+  }
+  if (metadata.relayRequest !== undefined) {
+    assertValidatedRelayRequest(metadata.relayRequest);
+    if (metadata.relayRequest.attemptId !== attempt.attemptId || metadata.relayRequest.requestId !== attempt.requestId || metadata.relayRequest.fixedEgressProfile !== attempt.pin.fixedEgressProfile) {
+      throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "Relay request is not bound to the payment attempt's trusted request context." });
+    }
+    if (attempt.authorizationDigest === null || metadata.relayRequest.authorizationDigest !== attempt.authorizationDigest) {
+      throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "Relay request is not bound to the persisted authorization." });
+    }
+    if (metadata.relayRequest.method !== attempt.pin.method || normalizeUrl(metadata.relayRequest.destination) !== normalizeUrl(attempt.pin.destination)) {
+      throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "Relay request terms do not match the persisted payment pin." });
+    }
+  }
   if (!canTransitionPayment(attempt.status, nextStatus) || attempt.status === nextStatus) {
     throw new PaymentError({ code: "ILLEGAL_TRANSITION", message: `Illegal payment transition: ${attempt.status} -> ${nextStatus}.` });
   }
@@ -82,23 +109,14 @@ export function assertPaymentTransition(input: {
     paymentReceiptSchema.parse(metadata.receipt);
     validateReceipt(metadata.receipt, attempt.pin, attempt.attemptId, attempt.challenge.challengeId);
   }
-  if (metadata.authorizationDigest !== undefined && metadata.authorizationDigest !== null) {
-    contentDigestSchema.parse(metadata.authorizationDigest);
-  }
-  if (metadata.payerAddress !== undefined && metadata.payerAddress !== null) {
-    normalizeAddress(metadata.payerAddress, "payer address");
-  }
-  if (metadata.relayRequestDigest !== undefined && metadata.relayRequestDigest !== null) {
-    contentDigestSchema.parse(metadata.relayRequestDigest);
-  }
-  if (nextStatus === "authorized" && (metadata.authorizationDigest === undefined || metadata.authorizationDigest === null || metadata.payerAddress === undefined || metadata.payerAddress === null)) {
-    throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "Authorization digest and payer are required before a payment attempt can be authorized." });
+  if (nextStatus === "authorized" && metadata.authorization === undefined) {
+    throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "A validated authorization is required before a payment attempt can be authorized." });
   }
   if (nextStatus === "relay_pending" && (attempt.authorizationDigest === null || attempt.payerAddress === null)) {
     throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "A payment attempt must retain validated authorization before relay." });
   }
-  if (nextStatus === "relayed" && attempt.relayRequestDigest === null && (metadata.relayRequestDigest === undefined || metadata.relayRequestDigest === null)) {
-    throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "Relay completion must retain the authenticated relay request digest." });
+  if (nextStatus === "relayed" && metadata.relayRequest === undefined) {
+    throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "A validated relay request is required before relay completion." });
   }
   if (nextStatus === "settled") {
     if (metadata.receipt?.status !== "settled") {
@@ -131,17 +149,22 @@ export function transitionPaymentAttempt(input: {
   assertPaymentTransition(input);
   const metadata = input.metadata ?? {};
   const receiptId = metadata.receipt?.receiptId ?? input.attempt.receiptId;
+  const authorizationDigest = metadata.authorization === undefined
+    ? input.attempt.authorizationDigest
+    : paymentAuthorizationDigest(metadata.authorization);
+  const payerAddress = metadata.authorization === undefined
+    ? input.attempt.payerAddress
+    : normalizeAddress(metadata.authorization.payerAddress, "payer address");
+  const relayRequestDigest = metadata.relayRequest === undefined
+    ? input.attempt.relayRequestDigest
+    : metadata.relayRequest.requestDigest;
   const next: PaymentAttempt = {
     ...input.attempt,
     status: input.nextStatus,
     receiptId,
-    authorizationDigest: metadata.authorizationDigest === undefined ? input.attempt.authorizationDigest : metadata.authorizationDigest,
-    payerAddress: metadata.payerAddress === undefined
-      ? input.attempt.payerAddress
-      : metadata.payerAddress === null
-        ? null
-        : normalizeAddress(metadata.payerAddress, "payer address"),
-    relayRequestDigest: metadata.relayRequestDigest === undefined ? input.attempt.relayRequestDigest : metadata.relayRequestDigest,
+    authorizationDigest,
+    payerAddress,
+    relayRequestDigest,
     failureCode: metadata.failureCode ?? input.attempt.failureCode,
     sanitizedFailure: metadata.sanitizedFailure ?? input.attempt.sanitizedFailure,
     updatedAtUnix: input.nowUnix

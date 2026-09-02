@@ -2,21 +2,24 @@ import { canonicalSha256Hex, normalizeEvmAddress } from "@bnbera/domain";
 import { PaymentError } from "./errors.js";
 import {
   b402PaymentPinSchema,
+  b402SellerConfigurationDigest,
   b402SellerConfigurationSchema,
   challengeUnsignedDigest,
   decimalUintSchema,
   paymentAuthorizationDigest,
   paymentAuthorizationSchema,
   paymentChallengeSchema,
+  validatedPaymentAuthorizationBrand,
+  validatedRelayRequestBrand,
+  type ValidatedPaymentAuthorization,
+  type ValidatedRelayRequest,
   paymentReceiptSchema,
   relayRequestSchema,
   secretReferenceSchema,
   type B402PaymentPin,
   type B402SellerConfiguration,
-  type PaymentAuthorization,
   type PaymentChallenge,
-  type PaymentReceipt,
-  type RelayRequest
+  type PaymentReceipt
 } from "./types.js";
 
 const FORBIDDEN_FIELD = /(?:private.?key|seed|mnemonic|password|secret|credential|raw.?signature|access.?token|session.?token|wallet.?key)/i;
@@ -27,6 +30,31 @@ function safeParse<T>(schema: { safeParse: (value: unknown) => { success: true; 
     throw new PaymentError({ code, message: "The payment boundary input is invalid.", cause: result.error });
   }
   return result.data;
+}
+
+function brand<T extends object>(value: T, marker: symbol): T {
+  Object.defineProperty(value, marker, { configurable: false, enumerable: false, value: true, writable: false });
+  return Object.freeze(value);
+}
+
+export function isValidatedPaymentAuthorization(value: unknown): value is ValidatedPaymentAuthorization {
+  return typeof value === "object" && value !== null && (value as Record<PropertyKey, unknown>)[validatedPaymentAuthorizationBrand] === true;
+}
+
+export function assertValidatedPaymentAuthorization(value: unknown): asserts value is ValidatedPaymentAuthorization {
+  if (!isValidatedPaymentAuthorization(value)) {
+    throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "Only an authorization returned by validateAuthorization may advance payment state." });
+  }
+}
+
+export function isValidatedRelayRequest(value: unknown): value is ValidatedRelayRequest {
+  return typeof value === "object" && value !== null && (value as Record<PropertyKey, unknown>)[validatedRelayRequestBrand] === true;
+}
+
+export function assertValidatedRelayRequest(value: unknown): asserts value is ValidatedRelayRequest {
+  if (!isValidatedRelayRequest(value)) {
+    throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "Only a relay request returned by validateRelayRequest may advance payment state." });
+  }
 }
 
 export function parseAtomic(value: string, label = "atomic amount"): bigint {
@@ -133,6 +161,7 @@ export function validatePaymentPin(input: unknown): B402PaymentPin {
     ...pin,
     settlementAsset: normalizeAddress(pin.settlementAsset, "settlement asset"),
     recipient: normalizeAddress(pin.recipient, "payment recipient"),
+    payoutAddress: normalizeAddress(pin.payoutAddress, "payout address"),
     destination: normalizeUrl(pin.destination, "payment destination"),
     facilitatorEndpoint: normalizeUrl(pin.facilitatorEndpoint, "facilitator endpoint")
   };
@@ -157,6 +186,9 @@ export function validatePaymentPinAgainstSellerConfiguration(
   }
   if (pin.settlementDecimals !== configuration.settlementDecimals) {
     throw new PaymentError({ code: "DECIMALS_MISMATCH", message: "Payment pin decimals do not match the enabled seller configuration." });
+  }
+  if (pin.configurationVersion !== configuration.configurationVersion || pin.configurationDigest !== b402SellerConfigurationDigest(configuration)) {
+    throw new PaymentError({ code: "INVALID_PAYMENT_CONFIG", message: "Payment pin configuration snapshot is stale or tampered." });
   }
   if (pin.fixedEgressProfile !== configuration.fixedEgressProfile) {
     throw new PaymentError({ code: "EGRESS_PROFILE_MISMATCH", message: "Payment pin egress profile does not match the trusted seller configuration." });
@@ -233,7 +265,7 @@ export function validateChallenge(input: unknown, pinInput: unknown, nowUnix: nu
   };
 }
 
-export function validateAuthorization(input: unknown, challengeInput: unknown, pinInput: unknown, nowUnix: number): PaymentAuthorization {
+export function validateAuthorization(input: unknown, challengeInput: unknown, pinInput: unknown, nowUnix: number): ValidatedPaymentAuthorization {
   const authorization = safeParse(paymentAuthorizationSchema, input, "INVALID_AUTHORIZATION");
   const challenge = validateChallenge(challengeInput, pinInput, nowUnix);
   if (authorization.challengeId !== challenge.challengeId || authorization.challengeDigest !== challenge.challengeDigest) {
@@ -242,16 +274,18 @@ export function validateAuthorization(input: unknown, challengeInput: unknown, p
   if (authorization.authorizedAtUnix < challenge.issuedAtUnix || authorization.authorizedAtUnix > challenge.expiresAtUnix || authorization.authorizedAtUnix <= 0) {
     throw new PaymentError({ code: "INVALID_EXPIRY", message: "Payment authorization falls outside the challenge lifetime." });
   }
-  return {
+  return brand({
     ...authorization,
-    payerAddress: normalizeAddress(authorization.payerAddress, "payer address")
-  };
+    payerAddress: normalizeAddress(authorization.payerAddress, "payer address"),
+    credentialDigest: authorization.credentialDigest.toLowerCase()
+  }, validatedPaymentAuthorizationBrand) as ValidatedPaymentAuthorization;
 }
 
-export function validateRelayRequest(input: unknown, attemptId: string, authorization: PaymentAuthorization, pinInput: unknown): RelayRequest {
+export function validateRelayRequest(input: unknown, attemptId: string, authorization: ValidatedPaymentAuthorization, pinInput: unknown): ValidatedRelayRequest {
+  assertValidatedPaymentAuthorization(authorization);
   const relay = safeParse(relayRequestSchema, input, "INVALID_AUTHORIZATION");
   const pin = validatePaymentPin(pinInput);
-  if (relay.attemptId !== attemptId || relay.authorizationDigest !== paymentAuthorizationDigest(authorization)) {
+  if (authorization.attemptId !== attemptId || relay.attemptId !== attemptId || relay.authorizationDigest !== paymentAuthorizationDigest(authorization)) {
     throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "Relay request is not bound to the validated authorization." });
   }
   if (relay.requestId !== pin.requestId) {
@@ -260,16 +294,20 @@ export function validateRelayRequest(input: unknown, attemptId: string, authoriz
   if (relay.fixedEgressProfile !== pin.fixedEgressProfile) {
     throw new PaymentError({ code: "EGRESS_PROFILE_MISMATCH", message: "Relay request egress profile does not match the trusted payment pin." });
   }
+  assertPublicPayloadSafe(relay.requestBody, "requestBody");
+  if (canonicalSha256Hex(relay.requestBody) !== relay.requestDigest) {
+    throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "Relay request digest does not match its canonical request body." });
+  }
   if (relay.method !== pin.method) {
     throw new PaymentError({ code: "METHOD_MISMATCH", message: "Relay method does not match the pinned payment method." });
   }
   if (!sameUrl(relay.destination, pin.destination)) {
     throw new PaymentError({ code: "DESTINATION_MISMATCH", message: "Relay destination does not match the pinned route." });
   }
-  return {
+  return brand({
     ...relay,
     destination: normalizeUrl(relay.destination, "relay destination")
-  };
+  }, validatedRelayRequestBrand) as ValidatedRelayRequest;
 }
 
 export function validateReceipt(input: unknown, pinInput: unknown, attemptId: string, challengeId: string): PaymentReceipt {

@@ -19,13 +19,18 @@ It provides:
 - durable-repository contracts for attempts, immutable events and receipt
   identities, settlement observations, and reconciliation; an unknown or
   partial receipt may resolve once to a verified settled receipt;
+- immutable per-attempt payment-pin/configuration snapshots so later
+  validation reconstructs the original egress, payout, route, and asset
+  terms;
 - idempotency and terminal replay reservations; and
 - explicit `unknown`, `partial_failure`, and `manual_review` outcomes so an
   ambiguous post-payment response is never silently retried.
 
 `InMemoryPaymentRepository` requires an enabled, canary-passed seller
 configuration at construction. Its `transaction` unit-of-work commits the
-attempt, append-only event, challenge linkage, and idempotency record together;
+attempt, append-only event, challenge linkage, receipt indexes, and idempotency
+record together; transactions are serialized in the reference implementation
+so rollback cannot erase a later commit;
 the production repository must provide the same database transaction/CAS
 semantics. Replay keys are normalized for reserve, lookup, and terminal CAS.
 

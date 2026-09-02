@@ -5,9 +5,11 @@ import {
   InMemoryPaymentReplayStore,
   assertPaymentTransition,
   b402PaymentPinSchema,
+  b402SellerConfigurationDigest,
   challengeUnsignedDigest,
   classifyRelayTimeout,
   paymentAuthorizationDigest,
+  paymentPinDigest,
   paymentReplayKey,
   paymentReceiptSchema,
   createPaymentEvent,
@@ -24,10 +26,32 @@ import {
   type PaymentChallenge,
   type PaymentReceipt
 } from "../src/index.js";
+import { canonicalSha256Hex } from "@bnbera/domain";
+
+const SELLER_CONFIGURATION = {
+  enabled: true as const,
+  merchantEnvironment: "testnet",
+  merchantAccountReference: "merchant-1",
+  merchantCredentialReference: "secret://merchant-1",
+  facilitatorEndpoint: "https://facilitator.example.test/v1",
+  settlementNetwork: 97 as const,
+  settlementAsset: "0x2222222222222222222222222222222222222222",
+  settlementDecimals: 18,
+  payoutAddress: "0x3333333333333333333333333333333333333333",
+  payoutVerificationState: "verified" as const,
+  fixedEgressProfile: "b402-egress-1",
+  publicX402Url: "https://agent.example.test/x402",
+  agentCoreRelayAuthenticationReference: "secret://relay-1",
+  priceUsd: "0.01",
+  configurationVersion: 1,
+  canaryStatus: "passed" as const
+};
 
 const PIN: B402PaymentPin = b402PaymentPinSchema.parse({
   enabled: true,
   requestId: "request-1",
+  configurationVersion: SELLER_CONFIGURATION.configurationVersion,
+  configurationDigest: b402SellerConfigurationDigest(validateSellerConfiguration(SELLER_CONFIGURATION)),
   rail: "x402_b402",
   settlementNetwork: 97,
   settlementAsset: "0x2222222222222222222222222222222222222222",
@@ -42,25 +66,6 @@ const PIN: B402PaymentPin = b402PaymentPinSchema.parse({
   payoutVerificationState: "verified",
   maxChallengeLifetimeSeconds: 300
 });
-
-const SELLER_CONFIGURATION = {
-  enabled: true as const,
-  merchantEnvironment: "testnet",
-  merchantAccountReference: "merchant-1",
-  merchantCredentialReference: "secret://merchant-1",
-  facilitatorEndpoint: PIN.facilitatorEndpoint,
-  settlementNetwork: 97 as const,
-  settlementAsset: PIN.settlementAsset,
-  settlementDecimals: 18,
-  payoutAddress: PIN.payoutAddress,
-  payoutVerificationState: "verified" as const,
-  fixedEgressProfile: PIN.fixedEgressProfile,
-  publicX402Url: PIN.destination,
-  agentCoreRelayAuthenticationReference: "secret://relay-1",
-  priceUsd: "0.01",
-  configurationVersion: 1,
-  canaryStatus: "passed" as const
-};
 
 function challenge(): PaymentChallenge {
   const unsigned = {
@@ -96,6 +101,7 @@ function attempt(): PaymentAttempt {
     authorizationDigest: null,
     payerAddress: null,
     pin: PIN,
+    pinDigest: paymentPinDigest(PIN),
     status: "challenged",
     relayRequestDigest: null,
     receiptId: null,
@@ -150,7 +156,7 @@ describe("B402/X402 boundary validation", () => {
       attemptId: ATTEMPT_ID,
       challengeId: current.challengeId,
       challengeDigest: current.challengeDigest,
-      payerAddress: "0x6666666666666666666666666666666666666666",
+      payerAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
       credentialDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       authorizedAtUnix: 1_000_040
     }, current, PIN, 1_000_040);
@@ -162,8 +168,9 @@ describe("B402/X402 boundary validation", () => {
       idempotencyKey: "relay-request-1",
       destination: PIN.destination,
       method: PIN.method,
+      requestBody: { prompt: "hello" },
       authorizationDigest: paymentAuthorizationDigest(authorization),
-      requestDigest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      requestDigest: canonicalSha256Hex({ prompt: "hello" }),
       fixedEgressProfile: PIN.fixedEgressProfile,
       timeoutMs: 10_000
     }, ATTEMPT_ID, authorization, PIN);
@@ -174,8 +181,9 @@ describe("B402/X402 boundary validation", () => {
       idempotencyKey: "relay-request-2",
       destination: PIN.destination,
       method: PIN.method,
-      authorizationDigest: paymentAuthorizationDigest(authorization),
-      requestDigest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+       requestBody: { prompt: "hello" },
+       authorizationDigest: paymentAuthorizationDigest(authorization),
+       requestDigest: canonicalSha256Hex({ prompt: "hello" }),
       fixedEgressProfile: PIN.fixedEgressProfile,
       timeoutMs: 10_000
     }, ATTEMPT_ID, authorization, PIN)).toThrow(/correlation/i);
@@ -213,43 +221,49 @@ describe("B402/X402 boundary validation", () => {
   });
 
   it("makes replay reservation terminal and never silently reuses it", () => {
-    const current = challenge();
-    const authorization = {
+    const initial = attempt();
+    const authorization = validateAuthorization({
       attemptId: ATTEMPT_ID,
-      challengeId: current.challengeId,
-      challengeDigest: current.challengeDigest,
+      challengeId: initial.challenge.challengeId,
+      challengeDigest: initial.challenge.challengeDigest,
       payerAddress: "0x6666666666666666666666666666666666666666",
       credentialDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       authorizedAtUnix: 1_000_040
-    };
-    const key = paymentReplayKey(PIN, current.nonce, authorization);
+    }, initial.challenge, PIN, 1_000_040);
     const store = new InMemoryPaymentReplayStore();
-    expect(store.reserve({ replayKey: key, attemptId: ATTEMPT_ID, expiresAtUnix: current.expiresAtUnix, nowUnix: 1_000_040 }).state).toBe("inflight");
-    expect(() => store.reserve({ replayKey: key, attemptId: "00000000-0000-4000-8000-000000000002", expiresAtUnix: current.expiresAtUnix, nowUnix: 1_000_041 })).toThrow(/replay/i);
-    store.markConsumed({ replayKey: key, attemptId: ATTEMPT_ID, responseDigest: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", nowUnix: 1_000_050 });
-    expect(() => store.reserve({ replayKey: key, attemptId: ATTEMPT_ID, expiresAtUnix: current.expiresAtUnix, nowUnix: 1_000_051 })).toThrow(/replay/i);
+    expect(store.reserve({ attempt: initial, authorization, expiresAtUnix: initial.challenge.expiresAtUnix, nowUnix: 1_000_040 }).state).toBe("inflight");
+    store.markConsumed({ attempt: initial, authorization, responseDigest: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", nowUnix: 1_000_050 });
+    expect(() => store.reserve({ attempt: initial, authorization, expiresAtUnix: initial.challenge.expiresAtUnix, nowUnix: 1_000_051 })).toThrow(/replay/i);
   });
 
   it("uses one canonical replay reservation for case variants at lookup and CAS boundaries", () => {
-    const current = challenge();
-    const authorization = {
+    const initial = attempt();
+    const authorization = validateAuthorization({
       attemptId: ATTEMPT_ID,
-      challengeId: current.challengeId,
-      challengeDigest: current.challengeDigest,
-      payerAddress: "0x6666666666666666666666666666666666666666",
+      challengeId: initial.challenge.challengeId,
+      challengeDigest: initial.challenge.challengeDigest,
+      payerAddress: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
       credentialDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       authorizedAtUnix: 1_000_040
-    };
-    const key = paymentReplayKey(PIN, current.nonce, authorization);
-    const variant = key.toUpperCase();
+    }, initial.challenge, PIN, 1_000_040);
+    const authorizationVariant = validateAuthorization({
+      attemptId: ATTEMPT_ID,
+      challengeId: initial.challenge.challengeId,
+      challengeDigest: initial.challenge.challengeDigest,
+      payerAddress: "0xABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD",
+      credentialDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      authorizedAtUnix: 1_000_040
+    }, initial.challenge, PIN, 1_000_040);
+    const key = paymentReplayKey(initial, authorization);
     const store = new InMemoryPaymentReplayStore();
-    const first = store.reserve({ replayKey: key, attemptId: ATTEMPT_ID, expiresAtUnix: current.expiresAtUnix, nowUnix: 1_000_040 });
-    expect(store.reserve({ replayKey: variant, attemptId: ATTEMPT_ID, expiresAtUnix: current.expiresAtUnix, nowUnix: 1_000_041 })).toEqual(first);
-    expect(store.get(variant)?.replayKey).toBe(key);
-    const consumed = store.markConsumed({ replayKey: variant, attemptId: ATTEMPT_ID, responseDigest: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", nowUnix: 1_000_050 });
-    expect(store.get(key)?.state).toBe("consumed");
+    const first = store.reserve({ attempt: initial, authorization, expiresAtUnix: initial.challenge.expiresAtUnix, nowUnix: 1_000_040 });
+    expect(store.reserve({ attempt: initial, authorization: authorizationVariant, expiresAtUnix: initial.challenge.expiresAtUnix, nowUnix: 1_000_041 })).toEqual(first);
+    expect(store.get({ attempt: initial, authorization: authorizationVariant })?.replayKey).toBe(key);
+    const consumed = store.markConsumed({ attempt: initial, authorization: authorizationVariant, responseDigest: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", nowUnix: 1_000_050 });
+    expect(store.get({ attempt: initial, authorization })?.state).toBe("consumed");
     expect(consumed.replayKey).toBe(key);
-    expect(() => store.markConsumed({ replayKey: key, attemptId: ATTEMPT_ID, responseDigest: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", nowUnix: 1_000_051 })).toThrow(/digest/i);
+    expect(key).toMatch(/^[a-f0-9]{64}$/);
+    expect(() => store.markConsumed({ attempt: initial, authorization, responseDigest: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", nowUnix: 1_000_051 })).toThrow(/digest/i);
   });
 
   it("rejects credential-shaped fields from public payment events", () => {
@@ -282,7 +296,7 @@ describe("B402/X402 boundary validation", () => {
       nowUnix: 1_000_040,
       idempotencyKey: "authorize-1",
       correlationId: "corr-1",
-      metadata: { authorizationDigest: paymentAuthorizationDigest(authorization), payerAddress: authorization.payerAddress }
+      metadata: { authorization }
     }).attempt;
     const pending = transitionPaymentAttempt({ attempt: authorized, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "relay_pending", nowUnix: 1_000_041, idempotencyKey: "relay-1", correlationId: "corr-1" }).attempt;
     const unknown = transitionPaymentAttempt({ attempt: pending, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "unknown", nowUnix: 1_000_050, idempotencyKey: "unknown-1", correlationId: "corr-1" }).attempt;
@@ -319,7 +333,7 @@ describe("B402/X402 boundary validation", () => {
       nowUnix: 1_000_040,
       idempotencyKey: "authorize-partial-1",
       correlationId: "corr-partial-1",
-      metadata: { authorizationDigest: paymentAuthorizationDigest(authorization), payerAddress: authorization.payerAddress }
+      metadata: { authorization }
     }).attempt;
     const pending = transitionPaymentAttempt({ attempt: authorized, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "relay_pending", nowUnix: 1_000_041, idempotencyKey: "relay-partial-1", correlationId: "corr-partial-1" }).attempt;
     const partial = transitionPaymentAttempt({

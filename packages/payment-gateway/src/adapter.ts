@@ -1,10 +1,10 @@
 import type {
   B402PaymentPin,
   PaymentAttempt,
-  PaymentAuthorization,
   PaymentChallenge,
   PaymentReceipt,
-  RelayRequest
+  ValidatedPaymentAuthorization,
+  ValidatedRelayRequest
 } from "./types.js";
 
 export interface PaymentChallengeRequest {
@@ -39,7 +39,7 @@ export interface PaymentReconciliationObservation {
 export interface B402PaymentAdapter {
   readonly kind: "b402";
   issueChallenge(input: PaymentChallengeRequest): Promise<PaymentChallenge>;
-  verifyAuthorization(input: { readonly challenge: PaymentChallenge; readonly authorization: PaymentAuthorization; readonly pin: B402PaymentPin; readonly nowUnix: number }): Promise<{ readonly authorizationDigest: string }>;
-  relayPaidRequest(input: { readonly attempt: PaymentAttempt; readonly authorization: PaymentAuthorization; readonly relay: RelayRequest }): Promise<PaymentRelayOutcome>;
-  reconcile(input: { readonly attempt: PaymentAttempt; readonly authorization: PaymentAuthorization | null }): Promise<PaymentReconciliationObservation>;
+  verifyAuthorization(input: { readonly challenge: PaymentChallenge; readonly authorization: ValidatedPaymentAuthorization; readonly pin: B402PaymentPin; readonly nowUnix: number }): Promise<{ readonly authorizationDigest: string }>;
+  relayPaidRequest(input: { readonly attempt: PaymentAttempt; readonly authorization: ValidatedPaymentAuthorization; readonly relay: ValidatedRelayRequest }): Promise<PaymentRelayOutcome>;
+  reconcile(input: { readonly attempt: PaymentAttempt; readonly authorization: ValidatedPaymentAuthorization | null }): Promise<PaymentReconciliationObservation>;
 }
