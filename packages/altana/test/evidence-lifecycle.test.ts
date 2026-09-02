@@ -171,20 +171,87 @@ test("finalization rejects an authority observation that is stale for the action
   );
 });
 
+test("finalization rejects action, revocation, and rejection chronology violations", () => {
+  const complete = completeEvidence();
+  const actionAfterRevocation = {
+    ...complete,
+    checkpoints: {
+      ...complete.checkpoints,
+      permitted_action_confirmed: {
+        ...complete.checkpoints.permitted_action_confirmed,
+        observedAtUnix: 1_700_000_004,
+      },
+    },
+  };
+  assert.throws(
+    () => finalizePhaseZeroEvidence(actionAfterRevocation, createSimulationAttestor(1_700_000_005)),
+    (error: unknown) => error instanceof AltanaBoundaryError && error.code === "INVALID_EVIDENCE_VALUE",
+  );
+
+  const rejectionBeforeRevocation = {
+    ...complete,
+    checkpoints: {
+      ...complete.checkpoints,
+      post_revocation_action_rejected: {
+        ...complete.checkpoints.post_revocation_action_rejected,
+        observedAtUnix: 1_700_000_002,
+      },
+    },
+  };
+  assert.throws(
+    () => finalizePhaseZeroEvidence(rejectionBeforeRevocation, createSimulationAttestor(1_700_000_005)),
+    (error: unknown) => error instanceof AltanaBoundaryError && error.code === "INVALID_EVIDENCE_VALUE",
+  );
+});
+
+test("finalization rejects decreasing observed blocks when block evidence exists", () => {
+  const complete = completeEvidence();
+  const blocksOutOfOrder = {
+    ...complete,
+    checkpoints: {
+      ...complete.checkpoints,
+      permitted_action_confirmed: {
+        ...complete.checkpoints.permitted_action_confirmed,
+        observedBlockNumber: "105",
+      },
+      revocation_confirmed: {
+        ...complete.checkpoints.revocation_confirmed,
+        observedBlockNumber: "104",
+      },
+      post_revocation_action_rejected: {
+        ...complete.checkpoints.post_revocation_action_rejected,
+        observedBlockNumber: "106",
+      },
+    },
+  };
+  assert.throws(
+    () => finalizePhaseZeroEvidence(blocksOutOfOrder, createSimulationAttestor(1_700_000_005)),
+    (error: unknown) => error instanceof AltanaBoundaryError && error.code === "INVALID_EVIDENCE_VALUE",
+  );
+});
+
 test("live evidence cannot pass without action and revocation transaction/block observations", () => {
+  let attestorInvoked = false;
   const liveAttestor = {
     kind: "authorized-live-adapter" as const,
-    attest: () => ({
-      level: "testnet" as const,
-      attestor: "authorized-live-adapter" as const,
-      attestationId: "live-test",
-      attestedAtUnix: 1_700_000_005,
-    }),
+    attest: () => {
+      attestorInvoked = true;
+      return {
+        level: "testnet" as const,
+        attestor: "authorized-live-adapter" as const,
+        attestationId: "live-test",
+        attestedAtUnix: 1_700_000_005,
+      };
+    },
   };
   assert.throws(
     () => finalizePhaseZeroEvidence(completeEvidence(), liveAttestor),
-    (error: unknown) => error instanceof AltanaBoundaryError && error.code === "INVALID_EVIDENCE_VALUE",
+    (error: unknown) =>
+      error instanceof AltanaBoundaryError &&
+      error.code === "INVALID_EVIDENCE_VALUE" &&
+      error.message.includes("module-private reviewed attestor capability"),
   );
+  assert.equal(attestorInvoked, false);
 });
 
 test("action evidence must match the expected chain, target, and selector", () => {

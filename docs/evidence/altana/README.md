@@ -22,6 +22,10 @@ public and sanitized:
   policy digest before the permitted action;
 - include the actual native value and token/native charges for each action and
   require them to match the expected action;
+- require action, revocation, and post-revocation observations in chronological
+  timestamp/block order when those references are available;
+- never promote live evidence from a caller-fabricated attestor, test
+  authority source, or local-only secret destination;
 - do not mark the sequence passed unless the same bounded action is confirmed
   before revocation and rejected after revocation.
 

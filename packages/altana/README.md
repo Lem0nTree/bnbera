@@ -21,7 +21,9 @@ Studio deployment path must satisfy:
   checkpoint record. Finalization requires correlated chain/target/selector,
   receipt, native/token charges, resulting-state, revocation, and authority
   observations plus an explicit attestor; callers cannot supply a free-form
-  `testnet` label.
+  `testnet` label. A plain `authorized-live-adapter` object is rejected by a
+  module-private reviewed capability, and live evidence cannot use test
+  authority sources or a local-only secret destination.
 
 The sink must still be implemented with a reviewed Studio/AWS secret path. A
 one-time in-memory wrapper cannot protect a misconfigured adapter, logger,

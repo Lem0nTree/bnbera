@@ -183,6 +183,9 @@ The report must include the exact Studio CLI/runtime and Altana SDK versions,
 the selected alternative, policy summary, public transaction references,
 destination kind/acceptance boolean, and any blocked step. A URL, HTTP 200,
 health check, or submitted transaction is not proof of this complete sequence.
+The runner also rejects caller-fabricated `authorized-live-adapter` objects:
+the live path remains behind a module-private reviewed capability and refuses
+test authority sources or `local-test-only` destinations.
 
 ## Required credentials and interactions still outstanding
 

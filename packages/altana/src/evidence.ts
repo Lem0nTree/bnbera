@@ -89,7 +89,10 @@ export interface EvidenceAttestor {
   /**
    * The implementation is an explicit evidence boundary. It must inspect
    * the complete report and issue an attestation only at its claimed level.
-   * The runner never accepts a free-form evidence-level string.
+   * The runner never accepts a free-form evidence-level string. A live
+   * attestor also needs the module-private reviewed capability checked during
+   * finalization; a plain object with `kind: "authorized-live-adapter"` is
+   * deliberately not sufficient.
    */
   readonly kind: EvidenceAttestation["attestor"];
   readonly attest: (evidence: PhaseZeroEvidence) => EvidenceAttestation;
@@ -144,6 +147,12 @@ const SAFE_ATOMIC = /^\d+$/;
 const SAFE_BLOCK = /^\d+$/;
 const VALID_PERIODS = new Set(["call", "hour", "day", "week", "lifetime"]);
 const MAX_AUTHORITY_OBSERVATION_AGE_SECONDS = 60;
+/**
+ * Unexported brand for the reviewed live-attestation adapter. Keeping this
+ * capability private prevents callers from promoting a fabricated object by
+ * merely setting `kind` and returning `level: "testnet"`.
+ */
+const TRUSTED_LIVE_ATTESTOR = Symbol("bnbera.altana.trusted-live-attestor");
 const VALID_SESSION_SOURCES = new Set<SessionStateObservation["source"]>([
   "altana-sdk",
   "keystore-read",
@@ -560,6 +569,12 @@ export function finalizePhaseZeroEvidence(
       "Evidence must be finalized by a recognized attestor boundary.",
     );
   }
+  if (attestor.kind === "authorized-live-adapter" && !isTrustedLiveAttestor(attestor)) {
+    throw new AltanaBoundaryError(
+      "INVALID_EVIDENCE_VALUE",
+      "Live evidence requires the module-private reviewed attestor capability.",
+    );
+  }
   validateCompleteEvidence(evidence, attestor.kind);
   const attestation = attestor.attest(evidence);
   if (attestation === null || typeof attestation !== "object") {
@@ -582,6 +597,15 @@ export function finalizePhaseZeroEvidence(
   };
   assertEvidenceSafe(finalized);
   return finalized;
+}
+
+function isTrustedLiveAttestor(attestor: EvidenceAttestor): boolean {
+  return (
+    attestor.kind === "authorized-live-adapter" &&
+    (attestor as EvidenceAttestor & { readonly [TRUSTED_LIVE_ATTESTOR]?: true })[
+      TRUSTED_LIVE_ATTESTOR
+    ] === true
+  );
 }
 
 export function createSimulationAttestor(nowUnix = Math.floor(Date.now() / 1000)): EvidenceAttestor {
@@ -664,6 +688,7 @@ function validateCompleteEvidence(
   const action = checkpoints.permitted_action_confirmed;
   const post = checkpoints.post_revocation_action_rejected;
   const revoke = checkpoints.revocation_confirmed;
+  assertChronologicalEvidence(action, revoke, post);
   if (
     action.state !== "observed" ||
     action.chainId !== evidence.expectedAction.chainId ||
@@ -703,6 +728,15 @@ function validateCompleteEvidence(
   }
 
   if (attestorKind === "authorized-live-adapter") {
+    if (
+      authority.source === "test" ||
+      evidence.session.secretDestinationKind === "local-test-only"
+    ) {
+      throw new AltanaBoundaryError(
+        "INVALID_EVIDENCE_VALUE",
+        "Live phase-zero evidence cannot use test authority or a local-only secret destination.",
+      );
+    }
     if (evidence.environment.network !== "bsc-testnet" || evidence.environment.chainId !== evidence.expectedAction.chainId) {
       throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Live phase-zero evidence must target the locked BSC testnet.");
     }
@@ -712,6 +746,38 @@ function validateCompleteEvidence(
     if (action.observedBlockNumber === null || revoke.observedBlockNumber === null) {
       throw new AltanaBoundaryError("INVALID_EVIDENCE_VALUE", "Live phase-zero evidence requires confirmed action and revocation block observations.");
     }
+  }
+}
+
+function assertChronologicalEvidence(
+  action: EvidenceCheckpoint,
+  revoke: EvidenceCheckpoint,
+  post: EvidenceCheckpoint,
+): void {
+  if (
+    action.observedAtUnix === null ||
+    revoke.observedAtUnix === null ||
+    post.observedAtUnix === null ||
+    action.observedAtUnix > revoke.observedAtUnix ||
+    revoke.observedAtUnix > post.observedAtUnix
+  ) {
+    throw new AltanaBoundaryError(
+      "INVALID_EVIDENCE_VALUE",
+      "Permitted action, revocation, and post-revocation rejection must be chronological.",
+    );
+  }
+
+  let previousBlock: bigint | null = null;
+  for (const block of [action.observedBlockNumber, revoke.observedBlockNumber, post.observedBlockNumber]) {
+    if (block === null) continue;
+    const currentBlock = BigInt(block);
+    if (previousBlock !== null && currentBlock < previousBlock) {
+      throw new AltanaBoundaryError(
+        "INVALID_EVIDENCE_VALUE",
+        "Observed action, revocation, and rejection blocks must be chronological.",
+      );
+    }
+    previousBlock = currentBlock;
   }
 }
 

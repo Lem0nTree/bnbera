@@ -70,6 +70,11 @@ least-privilege IAM, and the exact pinned Studio deployment path.
   the local policy immediately before submission. The authority read must be
   fresh and bound to the exact session ID and policy digest; missing or stale
   observations fail closed.
+- The permitted action, revocation, and post-revocation rejection must be
+  chronologically ordered by observed time and, when present, block number.
+- A live/testnet attestation requires a reviewed module-private capability;
+  caller-supplied `authorized-live-adapter` objects, test authority sources,
+  and local-only secret destinations fail closed.
 - Revocation or expiry blocks the next state-changing action and pauses the
   corresponding marketplace listing.
 - A successful CLI scaffold, HTTP 200, health check, or submitted transaction
