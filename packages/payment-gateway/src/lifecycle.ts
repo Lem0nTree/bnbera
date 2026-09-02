@@ -9,7 +9,7 @@ import {
   type PaymentEvent,
   type PaymentReceipt
 } from "./types.js";
-import { normalizeAddress, receiptDigest, validateReceipt } from "./validation.js";
+import { normalizeAddress, receiptDigest, validatePaymentPinAgainstSellerConfiguration, validateReceipt } from "./validation.js";
 
 const allowedTransitions: Readonly<Record<PaymentAttemptStatus, readonly PaymentAttemptStatus[]>> = {
   challenged: ["authorized", "rejected", "expired"],
@@ -60,12 +60,15 @@ export interface PaymentTransitionMetadata {
 
 export function assertPaymentTransition(input: {
   readonly attempt: PaymentAttempt;
+  /** Required trusted enabled configuration; callers cannot opt into a pin alone. */
+  readonly sellerConfiguration: unknown;
   readonly nextStatus: PaymentAttemptStatus;
   readonly nowUnix: number;
   readonly metadata?: PaymentTransitionMetadata;
 }): void {
   const { attempt, nextStatus, nowUnix, metadata = {} } = input;
   paymentAttemptSchema.parse(attempt);
+  validatePaymentPinAgainstSellerConfiguration(attempt.pin, input.sellerConfiguration);
   if (!canTransitionPayment(attempt.status, nextStatus) || attempt.status === nextStatus) {
     throw new PaymentError({ code: "ILLEGAL_TRANSITION", message: `Illegal payment transition: ${attempt.status} -> ${nextStatus}.` });
   }
@@ -118,6 +121,7 @@ export function assertPaymentTransition(input: {
 
 export function transitionPaymentAttempt(input: {
   readonly attempt: PaymentAttempt;
+  readonly sellerConfiguration: unknown;
   readonly nextStatus: PaymentAttemptStatus;
   readonly nowUnix: number;
   readonly idempotencyKey: string;

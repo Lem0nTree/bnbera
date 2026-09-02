@@ -109,12 +109,12 @@ describe("ERC-8183 boundary validation", () => {
   });
 
   it("requires evaluator authority for completion and expiry for refunds", () => {
-    expect(() => assertErc8183Transition({ job: JOB, nextState: "funded", action: "fund", actorAddress: TERMS.providerAddress!, nowUnix: 1_000_000 })).toThrow(/authorized/i);
-    expect(() => assertErc8183Transition({ job: JOB, nextState: "funded", action: "fund", actorAddress: TERMS.clientAddress, nowUnix: 1_000_000 })).not.toThrow();
+    expect(() => assertErc8183Transition({ job: JOB, deploymentPin: PIN, nextState: "funded", action: "fund", actorAddress: TERMS.providerAddress!, nowUnix: 1_000_000 })).toThrow(/authorized/i);
+    expect(() => assertErc8183Transition({ job: JOB, deploymentPin: PIN, nextState: "funded", action: "fund", actorAddress: TERMS.clientAddress, nowUnix: 1_000_000 })).not.toThrow();
     const funded = { ...JOB, state: "funded" as const };
     const submitted = { ...funded, state: "submitted" as const };
-    expect(() => assertErc8183Transition({ job: submitted, nextState: "completed", action: "complete", actorAddress: TERMS.providerAddress!, nowUnix: 1_000_100 })).toThrow(/authorized/i);
-    expect(() => assertErc8183Transition({ job: submitted, nextState: "expired", action: "claim_refund", actorAddress: TERMS.providerAddress!, nowUnix: TERMS.expiresAtUnix })).toThrow(/authorized/i);
-    expect(() => assertErc8183Transition({ job: submitted, nextState: "expired", action: "claim_refund", actorAddress: TERMS.clientAddress, nowUnix: TERMS.expiresAtUnix })).not.toThrow();
+    expect(() => assertErc8183Transition({ job: submitted, deploymentPin: PIN, nextState: "completed", action: "complete", actorAddress: TERMS.providerAddress!, nowUnix: 1_000_100 })).toThrow(/authorized/i);
+    expect(() => assertErc8183Transition({ job: submitted, deploymentPin: PIN, nextState: "expired", action: "claim_refund", actorAddress: TERMS.providerAddress!, nowUnix: TERMS.expiresAtUnix })).toThrow(/authorized/i);
+    expect(() => assertErc8183Transition({ job: submitted, deploymentPin: PIN, nextState: "expired", action: "claim_refund", actorAddress: TERMS.clientAddress, nowUnix: TERMS.expiresAtUnix })).not.toThrow();
   });
 });

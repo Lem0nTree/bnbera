@@ -94,6 +94,10 @@ export type B402SellerConfiguration = z.infer<typeof b402SellerConfigurationSche
  * These values are intentionally independent of an incoming 402 challenge.
  */
 export const b402PaymentPinSchema = z.object({
+  /** This pin can only be issued from an enabled, verified B402 configuration. */
+  enabled: z.literal(true),
+  /** Correlates the trusted pin/config boundary with exactly one request. */
+  requestId: safeIdentifierSchema,
   rail: paymentRailSchema,
   settlementNetwork: bscChainIdSchema,
   settlementAsset: nonZeroAddressSchema,
@@ -103,6 +107,10 @@ export const b402PaymentPinSchema = z.object({
   method: paymentMethodSchema,
   destination: httpUrlSchema,
   facilitatorEndpoint: httpUrlSchema,
+  /** Fixed egress and payout values are trusted configuration, never challenge input. */
+  fixedEgressProfile: safeIdentifierSchema,
+  payoutAddress: nonZeroAddressSchema,
+  payoutVerificationState: z.literal("verified"),
   maxChallengeLifetimeSeconds: z.number().int().positive().max(15 * 60)
 }).strict();
 export type B402PaymentPin = z.infer<typeof b402PaymentPinSchema>;
@@ -254,6 +262,9 @@ export const paymentAttemptSchema = z.object({
   }
   if (value.pin.facilitatorEndpoint !== value.challenge.facilitatorEndpoint) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["challenge", "facilitatorEndpoint"], message: "Attempt and challenge facilitators must match." });
+  }
+  if (value.requestId !== value.pin.requestId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["requestId"], message: "Attempt request correlation must match the trusted payment pin." });
   }
 });
 export type PaymentAttempt = z.infer<typeof paymentAttemptSchema>;

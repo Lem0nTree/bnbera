@@ -17,6 +17,11 @@ commerce status. It provides:
 - reconciliation records for provisional, orphaned, or otherwise ambiguous
   chain observations.
 
+`InMemoryErc8183Repository` and `assertErc8183Transition` require an enabled
+deployment pin at their boundary. The repository's `transaction` unit of work
+commits the job, append-only event, and idempotency record together; a
+production adapter must preserve that database transaction/CAS behavior.
+
 The checked-in in-memory repository and tests are deterministic contract
 fixtures. A production adapter must implement the same uniqueness and
 compare-and-set behavior in a PostgreSQL transaction and must verify receipts

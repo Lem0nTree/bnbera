@@ -11,10 +11,13 @@ import {
   paymentReplayKey,
   paymentReceiptSchema,
   createPaymentEvent,
+  parseEnabledSellerConfiguration,
   transitionPaymentAttempt,
   validateAuthorization,
   validateChallenge,
+  validateRelayRequest,
   validateReceipt,
+  validatePaymentPinAgainstSellerConfiguration,
   validateSellerConfiguration,
   type B402PaymentPin,
   type PaymentAttempt,
@@ -23,6 +26,8 @@ import {
 } from "../src/index.js";
 
 const PIN: B402PaymentPin = b402PaymentPinSchema.parse({
+  enabled: true,
+  requestId: "request-1",
   rail: "x402_b402",
   settlementNetwork: 97,
   settlementAsset: "0x2222222222222222222222222222222222222222",
@@ -32,8 +37,30 @@ const PIN: B402PaymentPin = b402PaymentPinSchema.parse({
   method: "eip3009",
   destination: "https://agent.example.test/x402",
   facilitatorEndpoint: "https://facilitator.example.test/v1",
+  fixedEgressProfile: "b402-egress-1",
+  payoutAddress: "0x3333333333333333333333333333333333333333",
+  payoutVerificationState: "verified",
   maxChallengeLifetimeSeconds: 300
 });
+
+const SELLER_CONFIGURATION = {
+  enabled: true as const,
+  merchantEnvironment: "testnet",
+  merchantAccountReference: "merchant-1",
+  merchantCredentialReference: "secret://merchant-1",
+  facilitatorEndpoint: PIN.facilitatorEndpoint,
+  settlementNetwork: 97 as const,
+  settlementAsset: PIN.settlementAsset,
+  settlementDecimals: 18,
+  payoutAddress: PIN.payoutAddress,
+  payoutVerificationState: "verified" as const,
+  fixedEgressProfile: PIN.fixedEgressProfile,
+  publicX402Url: PIN.destination,
+  agentCoreRelayAuthenticationReference: "secret://relay-1",
+  priceUsd: "0.01",
+  configurationVersion: 1,
+  canaryStatus: "passed" as const
+};
 
 function challenge(): PaymentChallenge {
   const unsigned = {
@@ -101,6 +128,9 @@ describe("B402/X402 boundary validation", () => {
     };
     expect(() => validateSellerConfiguration(base)).toThrowError(PaymentError);
     expect(() => validateSellerConfiguration({ ...base, canaryStatus: "passed" })).not.toThrow();
+    expect(() => parseEnabledSellerConfiguration({ ...base, enabled: false, merchantCredentialReference: null, agentCoreRelayAuthenticationReference: null })).toThrow(/disabled/i);
+    expect(validatePaymentPinAgainstSellerConfiguration(PIN, SELLER_CONFIGURATION).pin.fixedEgressProfile).toBe(PIN.fixedEgressProfile);
+    expect(() => validatePaymentPinAgainstSellerConfiguration({ ...PIN, fixedEgressProfile: "untrusted-egress" }, SELLER_CONFIGURATION)).toThrow(/egress/i);
   });
 
   it("requires challenge terms and digest to match independent pins", () => {
@@ -126,6 +156,29 @@ describe("B402/X402 boundary validation", () => {
     }, current, PIN, 1_000_040);
     expect(paymentAuthorizationDigest(authorization)).toHaveLength(64);
     expect(() => validateAuthorization({ ...authorization, challengeId: "challenge-2" }, current, PIN, 1_000_040)).toThrow(/challenge/i);
+    const relay = validateRelayRequest({
+      attemptId: ATTEMPT_ID,
+      requestId: PIN.requestId,
+      idempotencyKey: "relay-request-1",
+      destination: PIN.destination,
+      method: PIN.method,
+      authorizationDigest: paymentAuthorizationDigest(authorization),
+      requestDigest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      fixedEgressProfile: PIN.fixedEgressProfile,
+      timeoutMs: 10_000
+    }, ATTEMPT_ID, authorization, PIN);
+    expect(relay.fixedEgressProfile).toBe(PIN.fixedEgressProfile);
+    expect(() => validateRelayRequest({
+      attemptId: ATTEMPT_ID,
+      requestId: "request-other",
+      idempotencyKey: "relay-request-2",
+      destination: PIN.destination,
+      method: PIN.method,
+      authorizationDigest: paymentAuthorizationDigest(authorization),
+      requestDigest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      fixedEgressProfile: PIN.fixedEgressProfile,
+      timeoutMs: 10_000
+    }, ATTEMPT_ID, authorization, PIN)).toThrow(/correlation/i);
   });
 
   it("requires a verified, recipient-matching receipt before delivery", () => {
@@ -177,6 +230,28 @@ describe("B402/X402 boundary validation", () => {
     expect(() => store.reserve({ replayKey: key, attemptId: ATTEMPT_ID, expiresAtUnix: current.expiresAtUnix, nowUnix: 1_000_051 })).toThrow(/replay/i);
   });
 
+  it("uses one canonical replay reservation for case variants at lookup and CAS boundaries", () => {
+    const current = challenge();
+    const authorization = {
+      attemptId: ATTEMPT_ID,
+      challengeId: current.challengeId,
+      challengeDigest: current.challengeDigest,
+      payerAddress: "0x6666666666666666666666666666666666666666",
+      credentialDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      authorizedAtUnix: 1_000_040
+    };
+    const key = paymentReplayKey(PIN, current.nonce, authorization);
+    const variant = key.toUpperCase();
+    const store = new InMemoryPaymentReplayStore();
+    const first = store.reserve({ replayKey: key, attemptId: ATTEMPT_ID, expiresAtUnix: current.expiresAtUnix, nowUnix: 1_000_040 });
+    expect(store.reserve({ replayKey: variant, attemptId: ATTEMPT_ID, expiresAtUnix: current.expiresAtUnix, nowUnix: 1_000_041 })).toEqual(first);
+    expect(store.get(variant)?.replayKey).toBe(key);
+    const consumed = store.markConsumed({ replayKey: variant, attemptId: ATTEMPT_ID, responseDigest: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", nowUnix: 1_000_050 });
+    expect(store.get(key)?.state).toBe("consumed");
+    expect(consumed.replayKey).toBe(key);
+    expect(() => store.markConsumed({ replayKey: key, attemptId: ATTEMPT_ID, responseDigest: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", nowUnix: 1_000_051 })).toThrow(/digest/i);
+  });
+
   it("rejects credential-shaped fields from public payment events", () => {
     expect(() => createPaymentEvent({
       eventKey: "event-sensitive-1",
@@ -202,16 +277,17 @@ describe("B402/X402 boundary validation", () => {
     }, initial.challenge, PIN, 1_000_040);
     const authorized = transitionPaymentAttempt({
       attempt: initial,
+      sellerConfiguration: SELLER_CONFIGURATION,
       nextStatus: "authorized",
       nowUnix: 1_000_040,
       idempotencyKey: "authorize-1",
       correlationId: "corr-1",
       metadata: { authorizationDigest: paymentAuthorizationDigest(authorization), payerAddress: authorization.payerAddress }
     }).attempt;
-    const pending = transitionPaymentAttempt({ attempt: authorized, nextStatus: "relay_pending", nowUnix: 1_000_041, idempotencyKey: "relay-1", correlationId: "corr-1" }).attempt;
-    const unknown = transitionPaymentAttempt({ attempt: pending, nextStatus: "unknown", nowUnix: 1_000_050, idempotencyKey: "unknown-1", correlationId: "corr-1" }).attempt;
-    expect(() => assertPaymentTransition({ attempt: unknown, nextStatus: "settlement_pending", nowUnix: 1_000_060 })).toThrow(/reconciled/i);
-    const reconciled = transitionPaymentAttempt({ attempt: unknown, nextStatus: "settlement_pending", nowUnix: 1_000_070, idempotencyKey: "reconcile-1", correlationId: "corr-1", metadata: { reconciliationConfirmed: true } }).attempt;
+    const pending = transitionPaymentAttempt({ attempt: authorized, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "relay_pending", nowUnix: 1_000_041, idempotencyKey: "relay-1", correlationId: "corr-1" }).attempt;
+    const unknown = transitionPaymentAttempt({ attempt: pending, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "unknown", nowUnix: 1_000_050, idempotencyKey: "unknown-1", correlationId: "corr-1" }).attempt;
+    expect(() => assertPaymentTransition({ attempt: unknown, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "settlement_pending", nowUnix: 1_000_060 })).toThrow(/reconciled/i);
+    const reconciled = transitionPaymentAttempt({ attempt: unknown, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "settlement_pending", nowUnix: 1_000_070, idempotencyKey: "reconcile-1", correlationId: "corr-1", metadata: { reconciliationConfirmed: true } }).attempt;
     expect(reconciled.status).toBe("settlement_pending");
   });
 
@@ -238,15 +314,17 @@ describe("B402/X402 boundary validation", () => {
     }, initial.challenge, PIN, 1_000_040);
     const authorized = transitionPaymentAttempt({
       attempt: initial,
+      sellerConfiguration: SELLER_CONFIGURATION,
       nextStatus: "authorized",
       nowUnix: 1_000_040,
       idempotencyKey: "authorize-partial-1",
       correlationId: "corr-partial-1",
       metadata: { authorizationDigest: paymentAuthorizationDigest(authorization), payerAddress: authorization.payerAddress }
     }).attempt;
-    const pending = transitionPaymentAttempt({ attempt: authorized, nextStatus: "relay_pending", nowUnix: 1_000_041, idempotencyKey: "relay-partial-1", correlationId: "corr-partial-1" }).attempt;
+    const pending = transitionPaymentAttempt({ attempt: authorized, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "relay_pending", nowUnix: 1_000_041, idempotencyKey: "relay-partial-1", correlationId: "corr-partial-1" }).attempt;
     const partial = transitionPaymentAttempt({
       attempt: pending,
+      sellerConfiguration: SELLER_CONFIGURATION,
       nextStatus: "partial_failure",
       nowUnix: 1_000_050,
       idempotencyKey: "partial-1",
@@ -254,6 +332,6 @@ describe("B402/X402 boundary validation", () => {
       metadata: { failureCode: "RELAY_TIMEOUT", sanitizedFailure: "The relay timed out before a response was observed." }
     }).attempt;
     expect(partial.status).toBe("partial_failure");
-    expect(() => assertPaymentTransition({ attempt: partial, nextStatus: "settlement_pending", nowUnix: 1_000_060 })).toThrow(/reconciled/i);
+    expect(() => assertPaymentTransition({ attempt: partial, sellerConfiguration: SELLER_CONFIGURATION, nextStatus: "settlement_pending", nowUnix: 1_000_060 })).toThrow(/reconciled/i);
   });
 });

@@ -29,7 +29,8 @@ describe("commerce and payment database schema", () => {
     expect(Object.keys(erc8183Jobs)).toEqual(expect.arrayContaining(["chainId", "commerceContract", "paymentToken", "budgetAtomic", "state"]));
     expect(Object.keys(erc8183JobEvents)).toEqual(expect.arrayContaining(["eventKey", "transactionHash", "confirmationState", "payloadDigest"]));
     expect(Object.keys(paymentChallenges)).toEqual(expect.arrayContaining(["challengeDigest", "settlementNetwork", "settlementAsset", "amountAtomic", "recipient", "method", "expiresAt"]));
-    expect(Object.keys(paymentAttempts)).toEqual(expect.arrayContaining(["idempotencyKey", "challengeId", "status", "receiptId"]));
+    expect(Object.keys(paymentAttempts)).toEqual(expect.arrayContaining(["idempotencyKey", "challengeId", "status"]));
+    expect(Object.keys(paymentAttempts)).not.toContain("receiptId");
     expect(Object.keys(paymentAttemptEvents)).toContain("eventKey");
     expect(Object.keys(paymentReceipts)).toEqual(expect.arrayContaining(["attemptId", "settlementTransactionHash", "payoutAddress", "receiptDigest"]));
     expect(Object.keys(paymentReplayReservations)).toEqual(expect.arrayContaining(["replayKey", "state", "expiresAt"]));
@@ -52,7 +53,14 @@ describe("commerce and payment database schema", () => {
       expect(migration).toContain(`CREATE TABLE "${table}"`);
     }
     expect(migration).not.toContain('DROP CONSTRAINT "agents_current_version_id_agent_versions_id_fk"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "erc8183_job_network_identity_unique"');
     expect(migration).toContain('CREATE UNIQUE INDEX "payment_attempt_rail_idempotency_unique"');
     expect(migration).toContain('CREATE UNIQUE INDEX "payment_replay_key_unique"');
+  });
+
+  it("models protocol job identity and receipt ownership at their canonical boundaries", () => {
+    expect(Object.keys(erc8183Jobs)).toEqual(expect.arrayContaining(["chainId", "commerceContract", "erc8183JobId"]));
+    expect(Object.keys(paymentReceipts)).toContain("attemptId");
+    expect(Object.keys(paymentAttempts)).not.toContain("receiptId");
   });
 });

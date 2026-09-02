@@ -8,7 +8,7 @@ import {
   type Erc8183JobRecord,
   type Erc8183JobState
 } from "./types.js";
-import { normalizeAddress, parseAtomic } from "./validation.js";
+import { assertBudgetMatchesPin, assertPinMatchesJob, normalizeAddress, parseAtomic, parseEnabledDeploymentPin } from "./validation.js";
 
 const allowedTransitions: Readonly<Record<Erc8183JobState, readonly Erc8183JobState[]>> = {
   open: ["funded", "rejected"],
@@ -63,13 +63,17 @@ function assertActorForAction(job: Erc8183JobRecord, action: Erc8183ActionType, 
 
 export function assertErc8183Transition(input: {
   readonly job: Erc8183JobRecord;
+  readonly deploymentPin: unknown;
   readonly nextState: Erc8183JobState;
   readonly action: Erc8183ActionType;
   readonly actorAddress: string;
   readonly nowUnix: number;
 }): void {
-  const { job, nextState, action, actorAddress, nowUnix } = input;
+  const { job, deploymentPin, nextState, action, actorAddress, nowUnix } = input;
   erc8183JobRecordSchema.parse(job);
+  const enabledPin = parseEnabledDeploymentPin(deploymentPin);
+  assertPinMatchesJob(job.terms, enabledPin);
+  assertBudgetMatchesPin(job.terms.budgetAtomic, enabledPin);
   if (action === "reconcile") {
     if (nextState !== job.state) {
       throw new CommerceError({ code: "ILLEGAL_TRANSITION", message: "Reconciliation cannot change the protocol state." });
@@ -123,6 +127,7 @@ function eventTypeFor(action: Erc8183ActionType, nextState: Erc8183JobState): "j
 
 export function transitionErc8183Job(input: {
   readonly job: Erc8183JobRecord;
+  readonly deploymentPin: unknown;
   readonly nextState: Erc8183JobState;
   readonly action: Erc8183ActionType;
   readonly actorAddress: string;
@@ -132,6 +137,7 @@ export function transitionErc8183Job(input: {
   readonly correlationId: string;
 }): { readonly job: Erc8183JobRecord; readonly event: ReturnType<typeof createErc8183JobEvent> } {
   assertErc8183Transition(input);
+  const enabledPin = parseEnabledDeploymentPin(input.deploymentPin);
   const metadata = input.metadata ?? {};
   if (metadata.deliverableDigest !== undefined) {
     if (input.nextState !== "submitted") {
@@ -157,6 +163,7 @@ export function transitionErc8183Job(input: {
     }
     parseAtomic(metadata.budgetAtomic, "Job budget");
     terms = { ...terms, budgetAtomic: metadata.budgetAtomic };
+    assertBudgetMatchesPin(terms.budgetAtomic, enabledPin);
   }
   const nextJob: Erc8183JobRecord = {
     ...input.job,

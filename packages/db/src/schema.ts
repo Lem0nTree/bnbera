@@ -677,7 +677,9 @@ export const commerceJobs = pgTable(
     updatedAt: now()
   },
   (table) => [
-    uniqueIndex("commerce_erc8183_job_unique").on(table.erc8183JobId),
+    // Protocol identity is canonicalized in erc8183_jobs as
+    // (chain_id, commerce_contract, erc8183_job_id). Do not enforce a global
+    // protocol job-id uniqueness constraint on the legacy commerce projection.
     index("commerce_provider_status_idx").on(table.providerAgentId, table.status)
   ]
 );
@@ -821,7 +823,6 @@ export const paymentAttempts = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     status: paymentAttemptStatusEnum("status").notNull().default("challenged"),
     relayRequestDigest: varchar("relay_request_digest", { length: 64 }),
-    receiptId: uuid("receipt_id"),
     failureCode: varchar("failure_code", { length: 240 }),
     sanitizedFailure: varchar("sanitized_failure", { length: 500 }),
     createdAt: now(),
@@ -896,6 +897,9 @@ export const paymentReceipts = pgTable(
     createdAt: now()
   },
   (table) => [
+    // Receipt ownership is a single-direction relationship. The attempt
+    // record intentionally has no receipt_id backlink; unknown/partial
+    // receipts are replaced by the canonical attempt row here.
     uniqueIndex("payment_receipt_attempt_unique").on(table.attemptId),
     uniqueIndex("payment_receipt_digest_unique").on(table.receiptDigest),
     check("payment_receipt_network_check", sql`${table.settlementNetwork} in (56, 97)`),

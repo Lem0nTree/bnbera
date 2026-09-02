@@ -4,6 +4,7 @@ import {
   InMemoryPaymentRepository,
   b402PaymentPinSchema,
   challengeUnsignedDigest,
+  createPaymentEvent,
   paymentAuthorizationDigest,
   paymentAttemptSchema,
   paymentReceiptSchema,
@@ -12,6 +13,8 @@ import {
 } from "../src/index.js";
 
 const PIN = b402PaymentPinSchema.parse({
+  enabled: true,
+  requestId: "request-repo-1",
   rail: "x402_b402",
   settlementNetwork: 97,
   settlementAsset: "0x2222222222222222222222222222222222222222",
@@ -21,8 +24,30 @@ const PIN = b402PaymentPinSchema.parse({
   method: "permit2_exact",
   destination: "https://agent.example.test/x402",
   facilitatorEndpoint: "https://facilitator.example.test/v1",
+  fixedEgressProfile: "b402-egress-repo-1",
+  payoutAddress: "0x3333333333333333333333333333333333333333",
+  payoutVerificationState: "verified",
   maxChallengeLifetimeSeconds: 300
 });
+
+const SELLER_CONFIGURATION = {
+  enabled: true as const,
+  merchantEnvironment: "testnet",
+  merchantAccountReference: "merchant-repo-1",
+  merchantCredentialReference: "secret://merchant-repo-1",
+  facilitatorEndpoint: PIN.facilitatorEndpoint,
+  settlementNetwork: 97 as const,
+  settlementAsset: PIN.settlementAsset,
+  settlementDecimals: 18,
+  payoutAddress: PIN.payoutAddress,
+  payoutVerificationState: "verified" as const,
+  fixedEgressProfile: PIN.fixedEgressProfile,
+  publicX402Url: PIN.destination,
+  agentCoreRelayAuthenticationReference: "secret://relay-repo-1",
+  priceUsd: "0.01",
+  configurationVersion: 1,
+  canaryStatus: "passed" as const
+};
 
 const unsignedChallenge = {
   challengeId: "challenge-repo-1",
@@ -70,8 +95,17 @@ const ATTEMPT: PaymentAttempt = paymentAttemptSchema.parse({
 });
 
 describe("payment repository idempotency and reconciliation", () => {
+  it("requires an enabled canary-passed seller configuration at repository construction", () => {
+    expect(() => new InMemoryPaymentRepository({
+      ...SELLER_CONFIGURATION,
+      enabled: false,
+      merchantCredentialReference: null,
+      agentCoreRelayAuthenticationReference: null
+    })).toThrow(/disabled/i);
+  });
+
   it("persists one canonical challenge and rejects digest reuse", async () => {
-    const repository = new InMemoryPaymentRepository();
+    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION);
     expect((await repository.saveChallenge(challenge)).replayed).toBe(false);
     expect((await repository.saveChallenge(challenge)).replayed).toBe(true);
     expect((await repository.getChallenge(challenge.challengeId))?.challengeDigest).toBe(challenge.challengeDigest);
@@ -79,17 +113,17 @@ describe("payment repository idempotency and reconciliation", () => {
   });
 
   it("replays an identical attempt and detects conflicting idempotency", async () => {
-    const repository = new InMemoryPaymentRepository();
+    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION);
     const first = await repository.create({ attempt: ATTEMPT });
     const replay = await repository.create({ attempt: ATTEMPT });
     expect(first.replayed).toBe(false);
     expect(replay.replayed).toBe(true);
-    await expect(repository.create({ attempt: { ...ATTEMPT, requestId: "request-repo-2" } })).rejects.toThrow(/idempotency/i);
+    await expect(repository.create({ attempt: { ...ATTEMPT, failureCode: "conflict" } })).rejects.toThrow(/idempotency/i);
     await expect(repository.create({ attempt: { ...ATTEMPT, attemptId: "00000000-0000-4000-8000-000000000012", idempotencyKey: "attempt-repo-2" } })).rejects.toThrow(/challenge/i);
   });
 
   it("does not apply a stale transition and replays the same successful action", async () => {
-    const repository = new InMemoryPaymentRepository();
+    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION);
     await repository.create({ attempt: ATTEMPT });
     const authorizationDigest = paymentAuthorizationDigest(AUTHORIZATION);
     const transition = { attemptId: ATTEMPT_ID, expectedStatus: "challenged" as const, nextStatus: "authorized" as const, idempotencyKey: "authorize-repo-1", correlationId: "corr-repo-1", nowUnix: 2_000_010, metadata: { authorizationDigest, payerAddress: AUTHORIZATION.payerAddress } };
@@ -100,8 +134,32 @@ describe("payment repository idempotency and reconciliation", () => {
     await expect(repository.transition({ attemptId: ATTEMPT_ID, expectedStatus: "challenged", nextStatus: "relay_pending", idempotencyKey: "relay-repo-1", correlationId: "corr-repo-1", nowUnix: 2_000_011 })).rejects.toThrow(/status/i);
   });
 
+  it("rolls back an attempt transition when the event commit conflicts", async () => {
+    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION);
+    await repository.create({ attempt: ATTEMPT });
+    await repository.appendEvent(createPaymentEvent({
+      eventKey: "action:authorize-atomic",
+      attemptId: ATTEMPT_ID,
+      eventType: "payment_rejected",
+      previousStatus: "challenged",
+      nextStatus: "rejected",
+      correlationId: "corr-atomic",
+      observedAtUnix: 2_000_010
+    }));
+    await expect(repository.transition({
+      attemptId: ATTEMPT_ID,
+      expectedStatus: "challenged",
+      nextStatus: "authorized",
+      idempotencyKey: "authorize-atomic",
+      correlationId: "corr-atomic",
+      nowUnix: 2_000_010,
+      metadata: { authorizationDigest: paymentAuthorizationDigest(AUTHORIZATION), payerAddress: AUTHORIZATION.payerAddress }
+    })).rejects.toThrow(/event key/i);
+    expect((await repository.get(ATTEMPT_ID))?.status).toBe("challenged");
+  });
+
   it("deduplicates receipts and resolves an ambiguous receipt after settlement", async () => {
-    const repository = new InMemoryPaymentRepository();
+    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION);
     await repository.create({ attempt: ATTEMPT });
     const receipt: PaymentReceipt = paymentReceiptSchema.parse({
       receiptId: randomUUID(),
@@ -152,7 +210,7 @@ describe("payment repository idempotency and reconciliation", () => {
   });
 
   it("keeps reconciliation records due and increments attempts", async () => {
-    const repository = new InMemoryPaymentRepository();
+    const repository = new InMemoryPaymentRepository(SELLER_CONFIGURATION);
     await repository.create({ attempt: ATTEMPT });
     const record = await repository.enqueue({ attemptId: ATTEMPT_ID, reasonCode: "UNKNOWN_POST_PAYMENT_OUTCOME", nextAttemptAtUnix: null, observedPaymentTransactionHash: null, observedSettlementTransactionHash: null, detailDigest: null, nowUnix: 2_000_030 });
     expect((await repository.listDue(2_000_031)).length).toBe(1);

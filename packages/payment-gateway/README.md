@@ -11,7 +11,8 @@ separate from ERC-8183 job commerce and models the complete boundary:
 It provides:
 
 - independently pinned network, asset, decimals, amount, recipient, payment
-  method, destination, facilitator, and challenge lifetime checks;
+  method, destination, facilitator, fixed-egress profile, verified payout,
+  request correlation, and challenge lifetime checks;
 - secret-reference-only seller configuration validation and an adapter seam
   that never accepts raw credentials in public domain values;
 - EIP-3009 and Permit2 Exact method types (Permit2 Upto is not enabled);
@@ -21,6 +22,12 @@ It provides:
 - idempotency and terminal replay reservations; and
 - explicit `unknown`, `partial_failure`, and `manual_review` outcomes so an
   ambiguous post-payment response is never silently retried.
+
+`InMemoryPaymentRepository` requires an enabled, canary-passed seller
+configuration at construction. Its `transaction` unit-of-work commits the
+attempt, append-only event, challenge linkage, and idempotency record together;
+the production repository must provide the same database transaction/CAS
+semantics. Replay keys are normalized for reserve, lookup, and terminal CAS.
 
 The current `config/standards.lock.json` disables hosted B402 settlement until
 the facilitator, domain, payout recipient, and a complete paid canary are

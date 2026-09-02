@@ -99,6 +99,17 @@ export function assertPinMatchesJob(
   }
 }
 
+export function assertBudgetMatchesPin(
+  budgetAtomic: string,
+  pin: EnabledErc8183DeploymentPin
+): void {
+  parseAtomic(budgetAtomic, "Job budget");
+  const budget = BigInt(budgetAtomic);
+  if (budget < BigInt(pin.minBudgetAtomic) || budget > BigInt(pin.maxBudgetAtomic)) {
+    throw new CommerceError({ code: "INVALID_AMOUNT", message: "Job budget is outside the pinned min/max range." });
+  }
+}
+
 export function validateJobTerms(
   input: unknown,
   pin: Erc8183DeploymentPin,
@@ -110,11 +121,7 @@ export function validateJobTerms(
   }
   const enabled = parseEnabledDeploymentPin(pin);
   assertPinMatchesJob(terms.data, enabled);
-  parseAtomic(terms.data.budgetAtomic, "Job budget");
-  const budget = BigInt(terms.data.budgetAtomic);
-  if (budget < BigInt(enabled.minBudgetAtomic) || budget > BigInt(enabled.maxBudgetAtomic)) {
-    throw new CommerceError({ code: "INVALID_AMOUNT", message: "Job budget is outside the pinned min/max range." });
-  }
+  assertBudgetMatchesPin(terms.data.budgetAtomic, enabled);
   if (!Number.isSafeInteger(nowUnix) || nowUnix <= 0 || terms.data.expiresAtUnix <= nowUnix + enabled.minExpiryLeadSeconds) {
     throw new CommerceError({ code: "INVALID_EXPIRY", message: "Job expiry must leave the configured execution lead time." });
   }

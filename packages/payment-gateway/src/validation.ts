@@ -113,6 +113,19 @@ export function validateSellerConfiguration(input: unknown): B402SellerConfigura
   };
 }
 
+/**
+ * Repository and lifecycle boundaries must receive a verified enabled
+ * configuration. Keeping this check here prevents callers from opting into a
+ * disabled standards-lock entry by merely setting a payment pin's fields.
+ */
+export function parseEnabledSellerConfiguration(input: unknown): B402SellerConfiguration {
+  const config = validateSellerConfiguration(input);
+  if (!config.enabled) {
+    throw new PaymentError({ code: "PAYMENT_DISABLED", message: "B402 payment configuration is disabled by the standards lock.", nextAction: "verify_standards_lock" });
+  }
+  return config;
+}
+
 export function validatePaymentPin(input: unknown): B402PaymentPin {
   const pin = safeParse(b402PaymentPinSchema, input, "INVALID_PAYMENT_CONFIG");
   parseAtomic(pin.amountAtomic, "Pinned payment amount");
@@ -123,6 +136,44 @@ export function validatePaymentPin(input: unknown): B402PaymentPin {
     destination: normalizeUrl(pin.destination, "payment destination"),
     facilitatorEndpoint: normalizeUrl(pin.facilitatorEndpoint, "facilitator endpoint")
   };
+}
+
+/**
+ * Bind a per-request payment pin to the enabled seller configuration. Amount,
+ * recipient, method, and request id remain request-specific, while network,
+ * asset, route, fixed egress, and payout trust are not caller-selectable.
+ */
+export function validatePaymentPinAgainstSellerConfiguration(
+  pinInput: unknown,
+  configurationInput: unknown
+): { readonly pin: B402PaymentPin; readonly configuration: B402SellerConfiguration } {
+  const configuration = parseEnabledSellerConfiguration(configurationInput);
+  const pin = validatePaymentPin(pinInput);
+  if (pin.settlementNetwork !== configuration.settlementNetwork) {
+    throw new PaymentError({ code: "NETWORK_MISMATCH", message: "Payment pin network does not match the enabled seller configuration." });
+  }
+  if (normalizeAddress(pin.settlementAsset, "pinned asset") !== normalizeAddress(configuration.settlementAsset, "configured settlement asset")) {
+    throw new PaymentError({ code: "ASSET_MISMATCH", message: "Payment pin asset does not match the enabled seller configuration." });
+  }
+  if (pin.settlementDecimals !== configuration.settlementDecimals) {
+    throw new PaymentError({ code: "DECIMALS_MISMATCH", message: "Payment pin decimals do not match the enabled seller configuration." });
+  }
+  if (pin.fixedEgressProfile !== configuration.fixedEgressProfile) {
+    throw new PaymentError({ code: "EGRESS_PROFILE_MISMATCH", message: "Payment pin egress profile does not match the trusted seller configuration." });
+  }
+  if (normalizeAddress(pin.payoutAddress, "pinned payout address") !== normalizeAddress(configuration.payoutAddress, "configured payout address")) {
+    throw new PaymentError({ code: "PAYOUT_MISMATCH", message: "Payment pin payout address does not match the independently verified seller configuration." });
+  }
+  if (pin.payoutVerificationState !== configuration.payoutVerificationState || configuration.payoutVerificationState !== "verified") {
+    throw new PaymentError({ code: "PAYOUT_MISMATCH", message: "Payment pin payout verification is not enabled and verified." });
+  }
+  if (!sameUrl(pin.destination, configuration.publicX402Url)) {
+    throw new PaymentError({ code: "DESTINATION_MISMATCH", message: "Payment pin destination does not match the enabled seller route." });
+  }
+  if (!sameUrl(pin.facilitatorEndpoint, configuration.facilitatorEndpoint)) {
+    throw new PaymentError({ code: "FACILITATOR_MISMATCH", message: "Payment pin facilitator does not match the enabled seller configuration." });
+  }
+  return { pin, configuration };
 }
 
 function assertChallengeTerms(challenge: PaymentChallenge, pin: B402PaymentPin, nowUnix: number): void {
@@ -203,6 +254,12 @@ export function validateRelayRequest(input: unknown, attemptId: string, authoriz
   if (relay.attemptId !== attemptId || relay.authorizationDigest !== paymentAuthorizationDigest(authorization)) {
     throw new PaymentError({ code: "INVALID_AUTHORIZATION", message: "Relay request is not bound to the validated authorization." });
   }
+  if (relay.requestId !== pin.requestId) {
+    throw new PaymentError({ code: "REQUEST_MISMATCH", message: "Relay request correlation does not match the trusted payment pin." });
+  }
+  if (relay.fixedEgressProfile !== pin.fixedEgressProfile) {
+    throw new PaymentError({ code: "EGRESS_PROFILE_MISMATCH", message: "Relay request egress profile does not match the trusted payment pin." });
+  }
   if (relay.method !== pin.method) {
     throw new PaymentError({ code: "METHOD_MISMATCH", message: "Relay method does not match the pinned payment method." });
   }
@@ -249,7 +306,7 @@ export function validateReceipt(input: unknown, pinInput: unknown, attemptId: st
     if (!receipt.payoutVerified || receipt.actualRecipient === null || receipt.payoutAddress === null) {
       throw new PaymentError({ code: "PAYOUT_MISMATCH", message: "A settled receipt requires independently verified payout-recipient evidence." });
     }
-    if (normalizeAddress(receipt.payoutAddress, "payout address") !== normalizeAddress(pin.recipient, "pinned recipient")) {
+    if (normalizeAddress(receipt.payoutAddress, "payout address") !== normalizeAddress(pin.payoutAddress, "pinned payout address")) {
       throw new PaymentError({ code: "PAYOUT_MISMATCH", message: "Observed payout address does not match the pinned recipient." });
     }
     if (receipt.settledAtUnix === null) {
