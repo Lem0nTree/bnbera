@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1788294035106,
+      "tag": "0000_round_wallflower",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788294035107,
+      "tag": "0001_wave1_combined",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788331000000,
+      "tag": "0002_wave1_legacy_repair",
+      "breakpoints": true
+    }
+  ]
+}

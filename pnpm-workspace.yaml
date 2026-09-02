@@ -1,0 +1,17 @@
+packages:
+  - apps/*
+  - packages/*
+  - spikes/*
+
+allowBuilds:
+  esbuild: true
+
+# pnpm 10 uses this allowlist; pnpm 11 reads `allowBuilds` above. Keep both so
+# the pinned CI toolchain and newer local wrappers fail closed consistently.
+onlyBuiltDependencies:
+  - esbuild
+
+# ESLint 9.17.0 accepts ^3.2.0; pin an aged release instead of resolving a
+# same-day transitive release during the minimum-release-age gate.
+overrides:
+  '@eslint/eslintrc': 3.3.6

@@ -1,0 +1,26 @@
+{
+  "name": "@bnbera/auth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue",
+    "lint": "eslint src --max-warnings 0",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@bnbera/config": "workspace:*",
+    "@bnbera/domain": "workspace:*",
+    "better-auth": "1.2.7",
+    "siwe": "3.0.0",
+    "zod": "3.24.1"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@bnbera/greenfield",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Provider-neutral IPFS and BNB Greenfield evidence publication boundary",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue",
+    "lint": "eslint src test --max-warnings 0",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "check": "pnpm build && pnpm lint && pnpm typecheck && pnpm test"
+  },
+  "dependencies": {
+    "@bnbera/evidence": "workspace:*",
+    "@bnbera/domain": "workspace:*",
+    "zod": "3.24.1"
+  }
+}
