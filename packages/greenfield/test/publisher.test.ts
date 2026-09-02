@@ -8,6 +8,8 @@ import {
   EvidencePublisher,
   InMemoryPublicationStore,
   defaultPublicationConfiguration,
+  deterministicAttemptId,
+  publicationConfigurationDigest,
   publicationAttemptRecordSchema,
   type GreenfieldPublisher,
   type PublicationAttemptState,
@@ -89,9 +91,13 @@ async function seedAttempt(
   const objectName = deterministicObjectName(digest.artifact);
   const now = "2026-09-02T08:00:00.000Z";
   const record = publicationAttemptRecordSchema.parse({
-    attemptId: `seed-${options.idempotencyKey}`,
+    attemptId: deterministicAttemptId(`${options.idempotencyKey}:greenfield`, "greenfield"),
     idempotencyKey: `${options.idempotencyKey}:greenfield`,
     provider: "greenfield",
+    providerLabel: defaultPublicationConfiguration.greenfield.providerLabel,
+    configurationDigest: publicationConfigurationDigest({ ...defaultPublicationConfiguration, enabledProviders: ["greenfield"] }),
+    configuredNetwork: defaultPublicationConfiguration.greenfield.network,
+    configuredBucket: defaultPublicationConfiguration.greenfield.bucket,
     artifactId: digest.artifact.artifactId,
     artifactType: digest.artifact.artifactType,
     artifactVersion: digest.artifact.version,
@@ -100,6 +106,9 @@ async function seedAttempt(
     keccak256Digest: digest.keccak256Digest,
     sizeBytes: digest.sizeBytes,
     state,
+    revision: 0,
+    leaseOwner: null,
+    leaseExpiresAt: null,
     providerReference: options.providerReference ?? null,
     creationTransactionHash: "0x1111111111111111111111111111111111111111111111111111111111111111",
     sealTransactionHash: null,
@@ -291,6 +300,23 @@ describe("independent evidence publication", () => {
     expect(malformedSealResult.attempts[0]?.lastErrorCode).toBe("MALFORMED_TRANSACTION");
   });
 
+  it("fails closed when Greenfield says sealed without a seal transaction", async () => {
+    const base = new DeterministicGreenfieldPublisher();
+    const noncanonicalSeal: GreenfieldPublisher = {
+      createObject: (input) => base.createObject(input),
+      uploadObject: (input) => base.uploadObject(input),
+      waitForSeal: async () => ({ status: "sealed", sealTransactionHash: null }),
+      readObject: (input) => base.readObject(input)
+    };
+    const result = await publisher({
+      greenfield: noncanonicalSeal,
+      config: configuration({ enabledProviders: ["greenfield"] })
+    }).publish({ artifact, idempotencyKey: "missing-seal-transaction" });
+    expect(result.attempts[0]?.state).toBe("provider_failed");
+    expect(result.attempts[0]?.lastErrorCode).toBe("SEAL_TRANSACTION_MISSING");
+    expect(result.attempts[0]?.verification).toBeNull();
+  });
+
   it("persists validation_failed for artifacts over the configured limit", async () => {
     const store = new InMemoryPublicationStore();
     const result = await publisher({
@@ -329,6 +355,30 @@ describe("independent evidence publication", () => {
     expect(result.attempts[0]?.lastErrorCode).toBe("PROVIDER_FAILED");
   });
 
+  it("rejects reuse after the trusted configuration snapshot changes", async () => {
+    const store = new InMemoryPublicationStore();
+    const greenfield = new DeterministicGreenfieldPublisher();
+    const initial = publisher({
+      store,
+      greenfield,
+      config: configuration({ enabledProviders: ["greenfield"] })
+    });
+    await initial.publish({ artifact, idempotencyKey: "configuration-snapshot" });
+    const changed = publisher({
+      store,
+      greenfield,
+      config: configuration({
+        enabledProviders: ["greenfield"],
+        greenfield: { network: "different-network", providerLabel: "trusted-label", bucket: "greenfield-test" }
+      })
+    });
+    await expect(
+      changed.reconcile({ artifact, idempotencyKey: "configuration-snapshot", provider: "greenfield" })
+    ).rejects.toMatchObject({ code: "CONFIGURATION_CHANGED" });
+    expect(greenfield.getCreateCount()).toBe(1);
+    expect(greenfield.getUploadCount()).toBe(1);
+  });
+
   it("uses atomic create-or-get and one provider operation under concurrent requests", async () => {
     const store = new InMemoryPublicationStore();
     const greenfield = new DeterministicGreenfieldPublisher();
@@ -342,6 +392,26 @@ describe("independent evidence publication", () => {
     expect(store.values()).toHaveLength(1);
     expect(store.values()[0]?.state).toBe("verified");
     expect(results.some((result) => result.attempts[0]?.state === "verified")).toBe(true);
+  });
+
+  it("rejects stale revisions and non-owner lease writes", async () => {
+    const store = new InMemoryPublicationStore();
+    const seeded = await seedAttempt(store, "submitted", {
+      idempotencyKey: "cas-contract",
+      providerReference: "object-reference"
+    });
+    const owner = "33333333-3333-4333-8333-333333333333";
+    const lease = await store.acquireLease(seeded.record.attemptId, owner, seeded.record.createdAt, 60_000);
+    expect(lease.acquired).toBe(true);
+    expect(lease.record?.revision).toBe(1);
+    const leased = lease.record!;
+    const next = { ...leased, state: "uploading" as const, revision: leased.revision + 1 };
+    await expect(store.save(next, 0, owner, leased.createdAt)).rejects.toMatchObject({ code: "CONCURRENT_UPDATE" });
+    await expect(store.save(next, leased.revision, "44444444-4444-4444-8444-444444444444", leased.createdAt)).rejects.toMatchObject({
+      code: "LEASE_LOST"
+    });
+    await store.save(next, leased.revision, owner, leased.createdAt);
+    expect((await store.findByAttemptId(seeded.record.attemptId))?.revision).toBe(2);
   });
 
   it("retries only terminal retryable failures", async () => {

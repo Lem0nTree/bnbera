@@ -13,6 +13,15 @@ function uriForProvider(provider: LocatorProvider, value: string): boolean {
   return /^(?:greenfield|gnfd):\/\/[^\s]+$/.test(value);
 }
 
+function uriHasCredentials(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.username.length > 0 || parsed.password.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export const evidenceLocatorSchema = z
   .object({
     provider: z.enum(locatorProviders),
@@ -32,6 +41,13 @@ export const evidenceLocatorSchema = z
   .superRefine((value, context) => {
     if (!uriForProvider(value.provider, value.uri)) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["uri"], message: "URI does not match provider" });
+    }
+    if (uriHasCredentials(value.uri)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["uri"],
+        message: "Evidence locators must not contain URL usernames or passwords"
+      });
     }
     if (value.provider === "greenfield" && (value.bucket === null || value.objectName === null)) {
       context.addIssue({

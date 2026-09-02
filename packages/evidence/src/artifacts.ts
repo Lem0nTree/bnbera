@@ -212,7 +212,10 @@ const publicServiceSchema = z
     url: z
       .string()
       .url()
-      .refine((value) => ["http:", "https:"].includes(new URL(value).protocol)),
+      .refine((value) => {
+        const parsed = new URL(value);
+        return ["http:", "https:"].includes(parsed.protocol) && parsed.username.length === 0 && parsed.password.length === 0;
+      }, "Service URLs must use HTTP(S) without embedded credentials"),
     protocolVersion: z.string().trim().min(1).max(128),
     discoverySource: z.enum(["8004scan", "registry_event", "manual", "creator"]),
     validationStatus: z.enum(["pending", "healthy", "unhealthy", "rejected"]),

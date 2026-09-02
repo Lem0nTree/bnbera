@@ -14,5 +14,11 @@ reported as a live Greenfield or IPFS publication. Production adapters must be
 added only after the SDK version, provider allowlist, bucket, wallet, and
 credential references are pinned in `config/standards.lock.json`. Requests
 cannot override providers, networks, buckets, or deterministic object names. A
-persistent adapter must implement atomic create-or-get and a compare-and-set
-lease before provider calls are enabled.
+persistent adapter must implement atomic create-or-get plus revision-and
+lease-owner compare-and-set writes before provider calls are enabled. Attempts
+record the trusted configuration digest, network, bucket and provider label;
+durable hydration rejects a `verified` graph unless its locator, readback
+hashes, size, version and (for Greenfield) non-null seal transaction all
+match. `PersistentEvidenceRepositories.unitOfWork` is the transaction seam
+for object, attempt, locator and verification rows. Live adapters remain
+blocked until their SDK, credentials and storage contract are approved.

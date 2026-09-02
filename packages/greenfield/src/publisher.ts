@@ -8,6 +8,7 @@ import {
   type ArtifactDigest
 } from "@bnbera/evidence";
 import {
+  publicationConfigurationDigest,
   publicationAttemptRecordSchema,
   publicationConfigurationSchema,
   publicationFailureCodes,
@@ -22,6 +23,7 @@ import {
   type PublicationStore,
   type PublishEvidenceInput,
   PublicationProviderError,
+  assertDurablePublicationAttempt,
   isPublicationProviderError
 } from "./types.js";
 
@@ -68,8 +70,17 @@ function nowIso(clock: Clock): string {
   return clock().toISOString();
 }
 
-function deterministicAttemptId(idempotencyKey: string, provider: PublicationProvider): string {
-  return `publication-${provider}-${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 32)}`;
+function deterministicUuid(seed: string): string {
+  const hex = createHash("sha256").update(seed).digest("hex").slice(0, 32).split("");
+  hex[12] = "5";
+  hex[16] = ((Number.parseInt(hex[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8).join("")}-${hex.slice(8, 12).join("")}-${hex.slice(12, 16).join("")}-${hex
+    .slice(16, 20)
+    .join("")}-${hex.slice(20, 32).join("")}`;
+}
+
+export function deterministicAttemptId(idempotencyKey: string, provider: PublicationProvider): string {
+  return deterministicUuid(`bnbera.publication-attempt:${provider}:${idempotencyKey}`);
 }
 
 function providerIdempotencyKey(idempotencyKey: string, provider: PublicationProvider): string {
@@ -134,6 +145,7 @@ export class EvidencePublisher {
   private readonly clock: Clock;
   private readonly sleep: Sleeper;
   private readonly configuration: PublicationConfiguration;
+  private readonly configurationDigest: string;
 
   constructor(
     private readonly dependencies: {
@@ -147,6 +159,7 @@ export class EvidencePublisher {
     }
   ) {
     this.configuration = publicationConfigurationSchema.parse(dependencies.configuration);
+    this.configurationDigest = publicationConfigurationDigest(this.configuration);
     this.clock = dependencies.clock ?? (() => new Date());
     this.sleep = dependencies.sleep ?? (async () => undefined);
   }
@@ -240,30 +253,33 @@ export class EvidencePublisher {
       const duplicate = this.newRecord(input, digest, provider, "duplicate");
       return this.withError(duplicate, "DUPLICATE_IDEMPOTENCY_KEY", "Idempotency key is bound to different content");
     }
+    this.assertCurrentConfiguration(existing, provider);
+    assertDurablePublicationAttempt(existing);
     if (existing.state === "verified" || (!result.created && !existing.retryable && terminalStates.has(existing.state))) {
       return existing;
     }
 
     const leaseToken = randomUUID();
-    const acquired = await this.dependencies.store.acquireLease(
+    const lease = await this.dependencies.store.acquireLease(
       existing.attemptId,
       leaseToken,
       nowIso(this.clock),
       this.configuration.leaseDurationMs
     );
-    if (!acquired) {
+    if (!lease.acquired || lease.record === null) {
       // Another worker owns the attempt. Returning the durable state avoids a
       // duplicate provider operation; the reconciler will observe completion.
       return (await this.dependencies.store.findByAttemptId(existing.attemptId)) ?? existing;
     }
 
-    let initial = existing;
+    let initial = lease.record;
+    let outcome: PublicationAttemptRecord | null = null;
     try {
       if (!result.created && terminalStates.has(existing.state)) {
         if (!existing.retryable) {
           return existing;
         }
-        const retrying = await this.transition(existing, "retrying", {
+        const retrying = await this.transition(initial, "retrying", {
           retryCount: existing.retryCount + 1,
           lastErrorCode: null,
           lastErrorMessage: null,
@@ -273,13 +289,15 @@ export class EvidencePublisher {
           verification: null
         });
         initial = await this.transition(retrying, "pending");
-      } else if (!result.created && existing.state === "retrying") {
-        initial = await this.transition(existing, "pending");
+      } else if (!result.created && initial.state === "retrying") {
+        initial = await this.transition(initial, "pending");
       }
-      return await this.runProvider(digest, provider, initial);
+      outcome = await this.runProvider(digest, provider, initial);
     } finally {
-      await this.dependencies.store.releaseLease(existing.attemptId, leaseToken);
+      const released = await this.dependencies.store.releaseLease(existing.attemptId, leaseToken, nowIso(this.clock));
+      outcome = released ?? (await this.dependencies.store.findByAttemptId(existing.attemptId)) ?? outcome;
     }
+    return outcome ?? initial;
   }
 
   private newRecord(
@@ -296,6 +314,10 @@ export class EvidencePublisher {
       attemptId: deterministicAttemptId(providerIdempotencyKey(input.idempotencyKey, provider), provider),
       idempotencyKey: providerIdempotencyKey(input.idempotencyKey, provider),
       provider,
+      providerLabel: provider === "ipfs" ? this.configuration.ipfs.providerLabel : this.configuration.greenfield.providerLabel,
+      configurationDigest: this.configurationDigest,
+      configuredNetwork: provider === "ipfs" ? this.configuration.ipfs.network : this.configuration.greenfield.network,
+      configuredBucket: provider === "ipfs" ? null : this.configuration.greenfield.bucket,
       artifactId: digest.artifact.artifactId,
       artifactType: digest.artifact.artifactType,
       artifactVersion: digest.artifact.version,
@@ -304,6 +326,9 @@ export class EvidencePublisher {
       keccak256Digest: digest.keccak256Digest,
       sizeBytes: digest.sizeBytes,
       state,
+      revision: 0,
+      leaseOwner: null,
+      leaseExpiresAt: null,
       providerReference: null,
       creationTransactionHash: null,
       sealTransactionHash: null,
@@ -346,6 +371,9 @@ export class EvidencePublisher {
       }
       return this.runGreenfield(digest, record);
     } catch (error) {
+      if (record.state !== "provider_failed" && !stateTransitions[record.state].includes("provider_failed")) {
+        throw error;
+      }
       return this.fail(record, "provider_failed", errorCode(error, "PROVIDER_FAILED"), errorMessage(error));
     }
   }
@@ -543,6 +571,14 @@ export class EvidencePublisher {
         seal = await adapter.waitForSeal({ objectReference, attempt });
         const sealTransactionHash = checkedTransactionHash(seal.sealTransactionHash, "Greenfield seal transaction");
         if (seal.status === "sealed") {
+          if (sealTransactionHash === null) {
+            return this.fail(
+              record,
+              "provider_failed",
+              "SEAL_TRANSACTION_MISSING",
+              "Greenfield reported sealed without a canonical seal transaction hash"
+            );
+          }
           record = await this.transition(record, "reading_back", { sealTransactionHash });
           return this.verifyReadback(record, digest, () => adapter.readObject({ objectReference }), true);
         }
@@ -633,15 +669,22 @@ export class EvidencePublisher {
     if (record.state !== nextState && !stateTransitions[record.state].includes(nextState)) {
       throw new Error(`Illegal publication state transition: ${record.state} -> ${nextState}`);
     }
+    if (record.leaseOwner === null) {
+      throw new PublicationProviderError("LEASE_LOST", "Publication attempt is not held by a worker", false);
+    }
+    const expectedRevision = record.revision;
+    const leaseToken = record.leaseOwner;
     const updated = publicationAttemptRecordSchema.parse({
       ...record,
       ...patch,
       state: nextState,
+      revision: expectedRevision + 1,
+      leaseOwner: leaseToken,
       startedAt: record.startedAt ?? (nextState === "validating" ? nowIso(this.clock) : null),
       completedAt: terminalStates.has(nextState) ? nowIso(this.clock) : record.completedAt,
       updatedAt: nowIso(this.clock)
     });
-    await this.persist(updated);
+    await this.persist(updated, expectedRevision, leaseToken);
     return updated;
   }
 
@@ -669,7 +712,12 @@ export class EvidencePublisher {
       code !== "OBJECT_TOO_LARGE" &&
       code !== "INVALID_ARTIFACT" &&
       code !== "FORBIDDEN_PUBLIC_FIELD" &&
-      code !== "MALFORMED_TRANSACTION";
+      code !== "MALFORMED_TRANSACTION" &&
+      code !== "SEAL_TRANSACTION_MISSING" &&
+      code !== "CONFIGURATION_CHANGED" &&
+      code !== "DURABLE_GRAPH_INVALID" &&
+      code !== "CONCURRENT_UPDATE" &&
+      code !== "LEASE_LOST";
     const failed = await this.transition(record, state, {
       ...patch,
       lastErrorCode: code,
@@ -689,8 +737,26 @@ export class EvidencePublisher {
     return failed;
   }
 
-  private async persist(record: PublicationAttemptRecord): Promise<void> {
-    await this.dependencies.store.save(record);
+  private async persist(record: PublicationAttemptRecord, expectedRevision: number, leaseToken: string): Promise<void> {
+    await this.dependencies.store.save(record, expectedRevision, leaseToken, nowIso(this.clock));
+  }
+
+  private assertCurrentConfiguration(record: PublicationAttemptRecord, provider: PublicationProvider): void {
+    const providerLabel = provider === "ipfs" ? this.configuration.ipfs.providerLabel : this.configuration.greenfield.providerLabel;
+    const configuredNetwork = provider === "ipfs" ? this.configuration.ipfs.network : this.configuration.greenfield.network;
+    const configuredBucket = provider === "ipfs" ? null : this.configuration.greenfield.bucket;
+    if (
+      record.configurationDigest !== this.configurationDigest ||
+      record.providerLabel !== providerLabel ||
+      record.configuredNetwork !== configuredNetwork ||
+      record.configuredBucket !== configuredBucket
+    ) {
+      throw new PublicationProviderError(
+        "CONFIGURATION_CHANGED",
+        "Publication attempt was created under a different trusted storage configuration",
+        false
+      );
+    }
   }
 
   private withError(record: PublicationAttemptRecord, code: PublicationFailureCode, message: string): PublicationAttemptRecord {

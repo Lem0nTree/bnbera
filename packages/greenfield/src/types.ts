@@ -1,6 +1,6 @@
 import type { CanonicalArtifact, ArtifactDigest } from "@bnbera/evidence";
 import { evidenceEnvironments, evidenceLocatorSchema, verificationResultSchema } from "@bnbera/evidence";
-import { publicationAttemptStates, publicationProviders } from "@bnbera/domain";
+import { canonicalizeJson, publicationAttemptStates, publicationProviders, sha256Hex } from "@bnbera/domain";
 import { z } from "zod";
 
 export { publicationAttemptStates, publicationProviders };
@@ -27,7 +27,12 @@ export const publicationFailureCodes = [
   "HASH_MISMATCH",
   "SIZE_MISMATCH",
   "DUPLICATE_IDEMPOTENCY_KEY",
-  "UNSUPPORTED_PROVIDER"
+  "UNSUPPORTED_PROVIDER",
+  "CONFIGURATION_CHANGED",
+  "DURABLE_GRAPH_INVALID",
+  "SEAL_TRANSACTION_MISSING",
+  "CONCURRENT_UPDATE",
+  "LEASE_LOST"
 ] as const;
 export type PublicationFailureCode = (typeof publicationFailureCodes)[number];
 
@@ -78,15 +83,26 @@ export const defaultPublicationConfiguration: PublicationConfiguration = publica
   leaseDurationMs: 60_000
 });
 
+/** Digest of the trusted publication boundary. It is stored on every attempt
+ * so a worker can never silently reuse an attempt under changed routing,
+ * bucket, provider-label, or size/seal settings. */
+export function publicationConfigurationDigest(input: PublicationConfiguration): string {
+  return sha256Hex(canonicalizeJson(publicationConfigurationSchema.parse(input)));
+}
+
 const timestampSchema = z.string().datetime({ offset: true });
 const digestSchema = z.string().regex(/^[0-9a-fA-F]{64}$/);
 const transactionHashSchema = z.string().regex(/^0x[0-9a-fA-F]{64}$/);
 
 export const publicationAttemptRecordSchema = z
   .object({
-    attemptId: z.string().trim().min(1).max(160),
+    attemptId: z.string().uuid(),
     idempotencyKey: z.string().trim().min(1).max(256),
     provider: z.enum(publicationProviders),
+    providerLabel: safeLabel,
+    configurationDigest: digestSchema,
+    configuredNetwork: safeLabel,
+    configuredBucket: safeBucket.nullable(),
     artifactId: z.string().trim().min(1).max(160),
     artifactType: z.string().trim().min(1).max(64),
     artifactVersion: z.number().int().positive(),
@@ -95,6 +111,9 @@ export const publicationAttemptRecordSchema = z
     keccak256Digest: digestSchema,
     sizeBytes: z.number().int().nonnegative(),
     state: publicationAttemptStateSchema,
+    revision: z.number().int().nonnegative().default(0),
+    leaseOwner: z.string().uuid().nullable(),
+    leaseExpiresAt: timestampSchema.nullable(),
     providerReference: z.string().trim().min(1).max(512).nullable(),
     creationTransactionHash: transactionHashSchema.nullable(),
     sealTransactionHash: transactionHashSchema.nullable(),
@@ -183,15 +202,29 @@ export interface PublicationStore {
   readonly createOrGet: (
     record: PublicationAttemptRecord
   ) => Promise<{ readonly record: PublicationAttemptRecord; readonly created: boolean }>;
-  readonly save: (record: PublicationAttemptRecord) => Promise<void>;
+  /** Compare-and-set every durable state write. Implementations must reject
+   * stale revisions and writes from a worker that does not own the lease. */
+  readonly save: (
+    record: PublicationAttemptRecord,
+    expectedRevision: number,
+    leaseToken: string,
+    now?: string
+  ) => Promise<void>;
   /** Compare-and-set lease used to ensure one worker resumes an attempt. */
   readonly acquireLease: (
     attemptId: string,
     leaseToken: string,
     now: string,
     durationMs: number
-  ) => Promise<boolean>;
-  readonly releaseLease: (attemptId: string, leaseToken: string) => Promise<void>;
+  ) => Promise<{
+    readonly acquired: boolean;
+    readonly record: PublicationAttemptRecord | null;
+  }>;
+  readonly releaseLease: (
+    attemptId: string,
+    leaseToken: string,
+    now?: string
+  ) => Promise<PublicationAttemptRecord | null>;
   readonly appendAudit: (event: PublicationAuditEvent) => Promise<void>;
 }
 
@@ -214,6 +247,62 @@ export class PublicationProviderError extends Error {
     this.name = "PublicationProviderError";
     this.code = code;
     this.retryable = retryable;
+  }
+}
+
+const validTransactionHash = /^0x[0-9a-fA-F]{64}$/;
+
+/** Validate the graph that is hydrated from durable object/attempt/locator/
+ * verification rows before callers are allowed to treat it as verified. */
+export function assertDurablePublicationAttempt(record: PublicationAttemptRecord): void {
+  if (record.state !== "verified") {
+    return;
+  }
+  const locator = record.locator;
+  const verification = record.verification;
+  const matchingLocator =
+    locator !== null &&
+    locator.immutable === true &&
+    locator.provider === record.provider &&
+    locator.providerLabel === record.providerLabel &&
+    locator.network === record.configuredNetwork &&
+    locator.bucket === record.configuredBucket &&
+    locator.version === record.artifactVersion &&
+    locator.sha256Digest.toLowerCase() === record.sha256Digest.toLowerCase() &&
+    locator.keccak256Digest.toLowerCase() === record.keccak256Digest.toLowerCase() &&
+    locator.sizeBytes === record.sizeBytes &&
+    locator.verifiedAt !== null;
+  const matchingVerification =
+    verification !== null &&
+    verification.status === "verified" &&
+    verification.readbackStatus === "matched" &&
+    verification.hashesMatch === true &&
+    verification.sizeMatches === true &&
+    verification.expectedSha256Digest.toLowerCase() === record.sha256Digest.toLowerCase() &&
+    verification.observedSha256Digest?.toLowerCase() === record.sha256Digest.toLowerCase() &&
+    verification.expectedKeccak256Digest.toLowerCase() === record.keccak256Digest.toLowerCase() &&
+    verification.observedKeccak256Digest?.toLowerCase() === record.keccak256Digest.toLowerCase() &&
+    verification.expectedSizeBytes === record.sizeBytes &&
+    verification.observedSizeBytes === record.sizeBytes;
+  if (!matchingLocator || !matchingVerification) {
+    throw new PublicationProviderError(
+      "DURABLE_GRAPH_INVALID",
+      "Verified publication is missing matching locator or readback evidence",
+      false
+    );
+  }
+  if (record.provider === "greenfield") {
+    if (
+      record.sealTransactionHash === null ||
+      !validTransactionHash.test(record.sealTransactionHash) ||
+      verification?.sealConfirmed !== true
+    ) {
+      throw new PublicationProviderError(
+        "DURABLE_GRAPH_INVALID",
+        "Verified Greenfield publication is missing canonical seal confirmation",
+        false
+      );
+    }
   }
 }
 

@@ -58,10 +58,20 @@ describe("foundation database schema", () => {
 
   it("keeps provider attempts, immutable locators, and readback results separate", () => {
     expect(Object.keys(evidencePublicationAttempts)).toEqual(
-      expect.arrayContaining(["provider", "state", "idempotencyKey", "providerReference"])
+      expect.arrayContaining([
+        "provider",
+        "providerLabel",
+        "state",
+        "idempotencyKey",
+        "providerReference",
+        "configurationDigest",
+        "configuredNetwork",
+        "revision",
+        "leaseOwner"
+      ])
     );
     expect(Object.keys(evidenceLocators)).toEqual(
-      expect.arrayContaining(["provider", "uri", "sha256Digest", "keccak256Digest", "immutable"])
+      expect.arrayContaining(["provider", "providerLabel", "uri", "sha256Digest", "keccak256Digest", "immutable"])
     );
     expect(Object.keys(evidenceVerificationResults)).toEqual(
       expect.arrayContaining(["status", "sealConfirmed", "readbackStatus", "hashesMatch", "sizeMatches"])

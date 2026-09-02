@@ -110,6 +110,43 @@ describe("canonical public artifacts", () => {
     ).toThrow(ArtifactSecurityError);
   });
 
+  it("rejects embedded credentials in public service URLs", () => {
+    expect(() =>
+      digestArtifact(
+        profile({
+          payload: {
+            ...profile().payload,
+            services: [
+              {
+                kind: "a2a",
+                url: "https://user:password@example.com/.well-known/agent.json",
+                protocolVersion: "1",
+                discoverySource: "manual",
+                validationStatus: "pending",
+                observedAt: "2026-09-02T08:00:00Z"
+              }
+            ]
+          }
+        })
+      )
+    ).toThrow();
+  });
+
+  it("rejects embedded credentials in storage locators", () => {
+    expect(() =>
+      createEvidenceLocator({
+        provider: "ipfs",
+        providerLabel: "ipfs-test",
+        network: "ipfs-test",
+        uri: "ipfs://user:password@claim-evidence",
+        version: 1,
+        sha256Digest: "a".repeat(64),
+        keccak256Digest: "b".repeat(64),
+        sizeBytes: 1
+      })
+    ).toThrow();
+  });
+
   it("models a submission claim as a correlated storage and protocol evidence graph", () => {
     const referenced = digestArtifact(profile());
     const ipfs = createEvidenceLocator({
