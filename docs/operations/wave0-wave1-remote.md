@@ -5,6 +5,9 @@
 **Scope:** the checked-in Wave 0 foundation and Wave 1 identity, commerce,
 and evidence contract surfaces on the authorized AWS development host.
 
+For the operator-facing credential collection and live activation sequence,
+see [Wave 0 and Wave 1 activation guide](./wave0-wave1-activation-guide.md).
+
 This runbook records reproducible checks for the current repository. It does
 not turn a disabled external rail into a live feature: ERC-8183, B402, Altana,
 Greenfield, and IPFS remain gated until their standards-lock entries,

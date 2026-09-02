@@ -33,6 +33,8 @@ and does not connect to PostgreSQL.
 
 Remote Wave 0/1 operations are documented in
 [`docs/operations/wave0-wave1-remote.md`](./docs/operations/wave0-wave1-remote.md).
+The guided credential collection and activation sequence is in
+[`docs/operations/wave0-wave1-activation-guide.md`](./docs/operations/wave0-wave1-activation-guide.md).
 After migrations, use `pnpm ops:ingestion-smoke` with a disposable database to
 verify durable identity ingestion, and `pnpm ops:standards-check` with explicit
 read-only BSC RPC endpoints to verify the configured ERC-8004 contracts.
