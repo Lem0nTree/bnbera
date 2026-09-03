@@ -24,6 +24,12 @@
     "agentStudioCli": {
       "url": "https://docs.bnbchain.org/developer-kit/bnbchain-studio/cli-reference/"
     },
+    "altanaSdk": {
+      "url": "https://github.com/altananetwork/altana-sdk"
+    },
+    "playwrightMcp": {
+      "url": "https://github.com/microsoft/playwright-mcp"
+    },
     "greenfieldEndpoints": {
       "url": "https://docs.bnbchain.org/bnb-greenfield/for-developers/network-endpoint/endpoints/"
     },
@@ -38,8 +44,8 @@
     "agentStudioCli": {
       "package": "@bnbagent/studio-cli",
       "version": "0.0.13",
-      "integrity": null,
-      "verificationStatus": "pending-package-integrity"
+      "integrity": "sha512-hwrblw3O1FZgBGu7kZdtB3wmXCJbYmQIybgp1A6H2HD7YAe79vhnTl943Ubx2IQ5jUErDsU0Uf1RQ34MCIyobA==",
+      "verificationStatus": "pinned-from-npm-registry"
     },
     "agentStudioRuntime": {
       "package": "@bnbagent/studio-runtime",
@@ -48,10 +54,24 @@
       "verificationStatus": "pending-package-integrity"
     },
     "altanaSdk": {
-      "package": null,
-      "version": null,
-      "integrity": null,
-      "verificationStatus": "unresolved"
+      "package": "@altananetwork/sdk",
+      "version": "0.9.0",
+      "integrity": "sha512-1RLOTvjQm5CHcIFDh/cN78prUkw59+v6qRDy43xKEOadmLyztpoHJIE1H+4Pisq4AbG+09tW8qMJ1UyuI/JBzw==",
+      "verificationStatus": "pinned-from-npm-registry"
+    },
+    "altanaMcp": {
+      "package": "@altananetwork/mcp",
+      "version": "0.9.0",
+      "integrity": "sha512-n49oKFsx2tAi568jd7npStDW/R+s3xPFylCNwEYBg+WmXkoJrOcwn8SVgfNWUHJkaaUbsFNFYc22UJ567UjLDQ==",
+      "network": "bnb-testnet",
+      "verificationStatus": "installed-on-aws-development-host"
+    },
+    "playwrightMcp": {
+      "package": "@playwright/mcp",
+      "version": "0.0.80",
+      "integrity": "sha512-FOPXHm2SvFhAQylm10jMZ35B/SR2TaMLVkavAlwoG4N2qCb5RqbvhQYcu3zmXNyxR2DW0Ooxe+9XPVt5UjKRCQ==",
+      "mode": "headless-isolated",
+      "verificationStatus": "installed-on-aws-development-host"
     }
   },
   "networks": {

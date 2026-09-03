@@ -3,7 +3,7 @@
 - **Status:** Execution plan for implementation
 - **Audience:** Integration lead, coding subagents, reviewers, and release owner
 - **Scope:** Complete the BNBEra hackathon platform described by the four architecture plans
-- **Last updated:** 2026-09-01
+- **Last updated:** 2026-09-03
 
 ## 1. Purpose
 
@@ -18,19 +18,20 @@ This document turns the BNBEra architecture into independently assignable workst
 
 It is an implementation coordination document, not a replacement for the architecture plans. If this plan conflicts with an accepted architecture decision record (ADR) or a newer architecture revision, the ADR or newer revision wins and this document must be updated.
 
-## 2. Architecture baseline must be created first
+## 2. Confirm the implementation baseline first
 
-At the time this plan was written, the revised architecture documents were modified in the working tree but not yet committed. The visible `main` HEAD, `7b8d4b5`, predates those revisions and **must not** be used as an implementation base.
+The repository now contains the Wave 0/1 foundation packages, migrations, architecture plans, and a candidate `config/standards.lock.json`. Before starting new implementation, the integration lead must confirm the exact local and remote checkout state rather than relying on a historical SHA or assuming that an operational service exists.
 
-Before any implementation subagent starts, the integration lead must:
+Before any implementation agent starts, the integration lead must:
 
-1. review and commit the four revised architecture plans together with this delivery plan;
-2. record the resulting commit as `ARCHITECTURE_BASE_SHA` in the coordination issue or project board;
-3. create `codex/platform-integration` from that exact SHA;
-4. create or approve `config/standards.lock.json` before any onchain integration is merged;
-5. publish the initial shared domain, API, event, and database contracts before dependent UI work begins.
+1. record the absolute checkout, branch, base SHA, remote SHA, and `git status --short`;
+2. preserve or reconcile existing uncommitted work before creating implementation branches/worktrees;
+3. select one green integration SHA and record it as `ARCHITECTURE_BASE_SHA` in the coordination record;
+4. verify that every agent can read the root `AGENTS.md`, this plan, the master plan, the relevant focused plan/ADR, and `config/standards.lock.json` from its actual checkout;
+5. freeze only the minimum marketplace contracts needed by the current slice; do not delay the public web on unrelated Creator, payment, or evidence contracts;
+6. keep unresolved standards-lock integrations disabled until their specific feature gate is being implemented and verified.
 
-No subagent may branch from an uncommitted working tree or from `7b8d4b5`. No implementation subagent commits directly to `main`.
+No implementation agent branches from an uncommitted shared working tree or commits directly to `main`.
 
 ## 3. Branch and worktree model
 
@@ -45,7 +46,7 @@ Each feature branch is short-lived and is deleted only after its work is merged 
 
 ### 3.2 Branch-cut rule
 
-Wave 0 branches are cut from `ARCHITECTURE_BASE_SHA`. Later branches are cut from the latest green commit on `codex/platform-integration` after their dependency gate has passed. The exact base SHA must be written in every handoff.
+Revised W0 branches are cut from `ARCHITECTURE_BASE_SHA`. Later branches are cut from the latest green commit on `codex/platform-integration` after their applicable feature gate has passed. The exact base SHA must be written in every handoff.
 
 Example for an isolated Windows worktree:
 
@@ -67,19 +68,21 @@ Use one of these safe modes:
 
 The planned execution limit is one integration lead plus no more than three active implementation agents in a wave. More named workstreams can be staffed sequentially by the same trusted agent; the names below describe ownership, not a requirement to run twelve agents at once.
 
-## 4. Required reading for every subagent
+## 4. Focused required reading for every subagent
 
-Every subagent must read these files before changing code:
+Every implementation agent must read these files in full before changing code:
 
-1. [`01-marketplace-donor-merge-plan.md`](./01-marketplace-donor-merge-plan.md)
-2. [`02-greenfield-data-and-evidence-plan.md`](./02-greenfield-data-and-evidence-plan.md)
-3. [`03-no-code-agent-deployer-plan.md`](./03-no-code-agent-deployer-plan.md)
-4. [`04-bnbera-master-implementation-plan.md`](./04-bnbera-master-implementation-plan.md)
-5. this delivery plan;
-6. the repository `AGENTS.md`, if one is added;
-7. `config/standards.lock.json`, once created;
-8. relevant accepted ADRs under `docs/adr/`;
-9. any shared schemas or interfaces their code consumes.
+1. the repository root `AGENTS.md`;
+2. [`04-bnbera-master-implementation-plan.md`](./04-bnbera-master-implementation-plan.md);
+3. this delivery plan;
+4. `config/standards.lock.json`;
+5. the focused plan relevant to the assignment: marketplace/web, evidence, or Creator/deployer;
+6. relevant accepted ADRs under `docs/adr/`;
+7. shared schemas or interfaces consumed by the change.
+
+Reading all focused plans is not required for an isolated task. For example, a W0 web agent reads the marketplace plan but need not read the Greenfield and Creator plans unless its assigned slice crosses those boundaries.
+
+Before its first edit, the agent reports documentation-read evidence: exact paths read, assigned wave/vertical, applicable feature gate, risk tier, and the relevant constraints or unresolved lock entries. The coordinator must not accept a handoff that omits this evidence.
 
 Agents using copied or adapted donor code must also read the donor repository's license, notice files, dependency manifests, and provenance notes. Code must not be copied until reuse rights and attribution requirements are recorded.
 
@@ -126,17 +129,19 @@ Changes to a frozen shared contract require an ADR or a clearly marked contract-
 |---|---|---|---:|---|
 | A0 Integration Lead | `codex/platform-integration` | Baseline, contracts, integration, release promotion | All | Required |
 | A1 Foundation | `codex/foundation-domain` | Buildable workspace, domain, database, auth, donor provenance | 0 | Required |
-| A2 Altana | `codex/altana-bootstrap` | Proven scoped-session bootstrap and revocation path | 0 | Required |
+| A2 Altana | `codex/altana-bootstrap` | Proven scoped-session bootstrap and revocation path | Post-W1 | Required only for Creator gate |
 | A3 Identity | `codex/identity-discovery` | Discovery, claims, services, finality, and reorg handling | 1 | Required |
-| A4 Marketplace | `codex/marketplace-search` | Enriched retrieval, filters, ranking, and explanations | 2 | Required |
-| A5 Commerce | `codex/commerce-rails` | ERC-8183 lifecycle and paid X402/B402 path | 1 | Required |
-| A6 Creator | `codex/creator-studio` | Thin Studio deploy/register/verify/list lifecycle | 2 | Required |
-| A7 Strategies | `codex/reference-strategies` | Protocol adapters and gap-driven reference strategies | 2 | Adapters required; extra agents conditional |
-| A8 Evidence | `codex/greenfield-evidence` | Canonical artifacts and verified Greenfield/IPFS publication | 1 | Required |
-| A9 Web | `codex/web-product` | Integrated marketplace, Creator, commerce, and evidence UX | 3 | Required |
-| A10 Operations | `codex/infra-operations` | Least-privilege deployable infrastructure and observability | 3 | Required |
-| A11 QA | `codex/qa-release` | Independent end-to-end and security release evidence | 3–4 | Required |
-| A12 Submission | `codex/hackathon-evidence` | Claim-to-evidence index, demo, and optional bounty proofs | 4 | Core evidence required; extra bounties conditional |
+| A4 Marketplace | `codex/marketplace-search` | Deterministic retrieval, filters, ranking, and explanations | W1 | Required |
+| A5 Commerce | `codex/commerce-rails` | First complete activation/hire path; additional rail only when viable | Post-W1 | Required for Activation gate |
+| A6 Creator | `codex/creator-studio` | Thin Studio deploy/register/verify/list lifecycle | Post-W1 | Required only for Creator gate |
+| A7 Strategies | `codex/reference-strategies` | Protocol adapters and gap-driven reference strategy | Post-W1 | Conditional |
+| A8 Evidence | `codex/greenfield-evidence` | Canonical artifacts and verified Greenfield/IPFS publication | Post-W1 | Required only for Evidence gate |
+| A9 Web | `codex/web-product` | Public marketplace shell and progressively integrated feature UX | W0–W1 | Required |
+| A10 Operations | `codex/infra-operations` | Least-privilege deployment and observability for included features | Post-W1 | Required for deployment |
+| A11 QA | `codex/qa-release` | Risk-tiered verification and independent release evidence | W0 onward | Required |
+| A12 Submission | `codex/hackathon-evidence` | Claim-to-evidence index, demo, and optional bounty proofs | Post-W1 | Core evidence required; extra bounties conditional |
+
+The A0–A12 sections below remain capability ownership references, not twelve parallel staffing requirements. For hackathon execution, their work is consolidated into four remaining delivery verticals after W1: Marketplace Data + Web (A3/A4/A9), Activation + Commerce (A5), Creator + Altana + Reference Agent (A2/A6/A7), and QA + Deployment + Submission (A8/A10/A11/A12), coordinated by A0. One agent may own multiple compatible capability areas in an isolated worktree.
 
 ### A0 — Integration and Architecture Lead
 
@@ -184,7 +189,7 @@ Create the implementation baseline, establish shared contracts, integrate review
 
 - **Branch:** `codex/foundation-domain`
 - **Base gate:** `ARCHITECTURE_BASE_SHA`
-- **Wave:** 0
+- **Wave:** W0
 
 **Goal**
 
@@ -224,8 +229,8 @@ Create the buildable monorepo foundation and canonical domain layer, and extract
 ### A2 — Altana Bootstrap and Custody Boundary
 
 - **Branch:** `codex/altana-bootstrap`
-- **Base gate:** `ARCHITECTURE_BASE_SHA`
-- **Wave:** 0
+- **Base gate:** Core Marketplace green; pinned Altana/Studio inputs and browser test access available
+- **Wave:** Post-W1 Creator + Altana vertical
 
 **Goal**
 
@@ -265,7 +270,7 @@ Complete the phase-zero Altana-to-Agent-Studio spike and select a technically pr
 
 - **Branch:** `codex/identity-discovery`
 - **Base gate:** A1 merged and shared identity/state contracts frozen
-- **Wave:** 1
+- **Wave:** W1
 
 **Goal**
 
@@ -306,12 +311,12 @@ Build external-agent ingestion and canonical identity synchronization across 800
 ### A4 — Marketplace Search, Filtering, and Matching
 
 - **Branch:** `codex/marketplace-search`
-- **Base gate:** A1 and A3 merged; marketplace eligibility and service schemas frozen
-- **Wave:** 2
+- **Base gate:** minimum marketplace identity, eligibility, and service read contracts frozen; A3 may continue enriching behind the same contract
+- **Wave:** W1
 
 **Goal**
 
-Build BNBEra's verified marketplace representation, semantic retrieval, hard filters, deterministic ranking, comparison data, and human-readable match explanations.
+Build BNBEra's useful marketplace representation, deterministic retrieval, hard filters, comparison data, and human-readable match explanations. Semantic retrieval is an enhancement after deterministic search works, not a W1 blocker.
 
 **Owned paths**
 
@@ -336,7 +341,8 @@ Build BNBEra's verified marketplace representation, semantic retrieval, hard fil
 
 **Deliverables and exit criteria**
 
-- embeddings generated from BNBEra's verified/enriched representation, not blindly from upstream search results;
+- deterministic text/filter retrieval works without an embedding provider;
+- when enabled, embeddings are generated from BNBEra's verified/enriched representation, not blindly from upstream search results;
 - semantic candidates combined with authority, protocol, health, price, runtime, and execution constraints;
 - strict hard-filter behavior before ranking where required;
 - stable ranking explanation and exclusion reason codes;
@@ -347,7 +353,7 @@ Build BNBEra's verified marketplace representation, semantic retrieval, hard fil
 
 - **Branch:** `codex/commerce-rails`
 - **Base gate:** A1 merged; standards lock and commerce event contracts frozen
-- **Wave:** 1
+- **Wave:** Post-W1 Activation + Commerce vertical
 
 **Goal**
 
@@ -389,7 +395,7 @@ Implement ERC-8183 job commerce and the complete paid X402/B402 request path as 
 
 - **Branch:** `codex/creator-studio`
 - **Base gate:** A1 and A2 merged; A5 interfaces available; Altana bootstrap alternative accepted
-- **Wave:** 2
+- **Wave:** Post-W1 Creator + Altana vertical
 
 **Goal**
 
@@ -434,7 +440,7 @@ Build the thin Creator MVP from validated configuration through Studio deploymen
 
 - **Branch:** `codex/reference-strategies`
 - **Base gate:** A1 merged; standards lock and strategy interface frozen
-- **Wave:** 2
+- **Wave:** Post-W1 conditional Creator/reference-agent work
 
 **Goal**
 
@@ -474,7 +480,7 @@ Provide typed protocol data adapters and only the minimum deterministic referenc
 
 - **Branch:** `codex/greenfield-evidence`
 - **Base gate:** A1 merged; canonical evidence locator and event contracts frozen
-- **Wave:** 1
+- **Wave:** Post-W1 QA + Deployment + Submission vertical when Evidence Publication is selected
 
 **Goal**
 
@@ -515,12 +521,12 @@ Implement canonical artifacts, IPFS plus Greenfield publication, seal/readback v
 ### A9 — Web Product and User Experience
 
 - **Branch:** `codex/web-product`
-- **Base gate:** A3, A4, A5, A6, and A8 API contracts frozen; foundation UI shell available
-- **Wave:** 3
+- **Base gate:** W0 marketplace read contract and foundation UI shell available; later feature panels integrate only after their own API contracts freeze
+- **Wave:** W0–W1, then continuous vertical integration
 
 **Goal**
 
-Implement the real browser experience for discovery, comparison, identity/claim state, Creator, jobs, payments, deployments, and evidence without fabricating backend state.
+Implement the real browser experience early, beginning with browse, category, search/filter, comparison, detail, and identity/claim state. Add Creator, jobs, payments, deployments, and evidence only as their independent feature gates become available, without fabricating backend state.
 
 **Owned paths**
 
@@ -531,25 +537,26 @@ Implement the real browser experience for discovery, comparison, identity/claim 
 
 **Must read**
 
-- product-facing and UI sections of all four architecture plans;
+- product-facing and UI sections of the master and marketplace plans for W0/W1; add the Creator or evidence focused plan only when implementing that gated panel;
 - frozen APIs, state enums, reason codes, and event envelopes from A0 and feature agents;
 - authentication/session contract from A1;
 - accessibility and responsive-design requirements adopted by the project.
 
 **Required access**
 
-- integrated preview API environment containing synthetic, non-secret test data;
+- integrated preview API environment containing real data or visibly labelled synthetic, non-secret test data;
 - wallet and SIWE test accounts;
 - design tokens/assets approved for the submission;
 - browser test environment with desktop and mobile viewports.
 
 **Deliverables and exit criteria**
 
-- marketplace search, filters, results, compare, and agent detail flows;
+- a W0 public shell with browse/detail and explicit loading, empty, error, fixture, and unavailable states;
+- W1 marketplace search, filters, results, compare, and agent detail flows;
 - clear ownership, claim, verification, runtime, authority, and listing state presentation;
-- Creator configuration/deployment flow and deployment status timeline;
-- ERC-8183 job and X402/B402 payment status/receipt views that keep the rails distinct;
-- Greenfield/IPFS verification view with honest pending, failed, and verified states;
+- Creator configuration/deployment flow only when the Creator + Altana gate is enabled;
+- ERC-8183 job and X402/B402 payment status/receipt views only for enabled rails, keeping their states distinct;
+- Greenfield/IPFS verification view only when Evidence Publication is enabled, with honest pending, failed, and verified states;
 - responsive and keyboard-accessible critical flows;
 - browser E2E tests using the integrated API, plus explicit empty/error/degraded states;
 - no production fallback to fixture data or fake success responses.
@@ -557,8 +564,8 @@ Implement the real browser experience for discovery, comparison, identity/claim 
 ### A10 — Infrastructure, Security Controls, and Operations
 
 - **Branch:** `codex/infra-operations`
-- **Base gate:** A2 custody choice accepted; A5 and A6 runtime/network contracts frozen
-- **Wave:** 3
+- **Base gate:** contracts for the features selected for deployment are frozen; Creator-specific infrastructure additionally requires A2 custody acceptance
+- **Wave:** Post-W1 QA + Deployment + Submission vertical
 
 **Goal**
 
@@ -602,8 +609,8 @@ Create reproducible least-privilege infrastructure for the web, deployer, gatewa
 ### A11 — Integration QA, Security, and Release Verification
 
 - **Branch:** `codex/qa-release`
-- **Base gate:** Test harness may start after A1; final verification starts after Waves 1–3 merge
-- **Wave:** 3 for harnesses, 4 for release sign-off
+- **Base gate:** Slice-level harness begins in W0; final verification starts when the included feature set is frozen
+- **Wave:** W0 onward; release sign-off after selected gates merge
 
 **Goal**
 
@@ -648,7 +655,7 @@ Feature defects found by A11 are fixed on the owning feature branch or a new sco
 
 - **Branch:** `codex/hackathon-evidence`
 - **Base gate:** Integrated release candidate available
-- **Wave:** 4
+- **Wave:** Post-W1 release
 - **Requiredness:** Conditional for bounty-specific work; the core submission evidence index is required
 
 **Goal**
@@ -687,29 +694,29 @@ Assemble reproducible judging evidence and implement only those bounty-specific 
 
 ## 8. Dependency waves and merge gates
 
-The waves are designed to keep no more than three implementation agents active beside A0.
+The immediate waves are marketplace-first and keep no more than three implementation agents active beside A0. Feature gates replace the former all-or-nothing dependency chain.
 
 | Wave | Parallel workstreams | Start condition | Merge gate |
 |---|---|---|---|
-| 0 | A1 Foundation, A2 Altana spike; A0 baseline/contracts | Architecture baseline committed | Buildable foundation, accepted custody/bootstrap ADR, standards lock skeleton |
-| 1 | A3 Identity, A5 Commerce, A8 Evidence | A1 foundation merged; applicable shared contracts frozen | Reorg-safe identity ingestion, testable commerce rails, sealed/readback evidence |
-| 2 | A4 Marketplace, A6 Creator, A7 Strategies | Wave 1 interfaces merged; A2 bootstrap accepted | Search/matching, one Creator path, minimum data/strategy coverage pass integration tests |
-| 3 | A9 Web, A10 Infrastructure, A11 QA harness | Backend/API contracts frozen | Integrated preview deploys and critical browser/API paths are testable |
-| 4 | A11 final verification, A12 submission evidence; A0 stabilization | All required feature work merged | Release report passes, chain/track gate resolved, submission claims evidenced |
+| W0 Marketplace runway | A0 minimum contracts, A1 foundation gap fixes, A9 web shell, A11 smoke harness | Clean green integration base and documentation-read evidence | Runnable database/API/web slice; browse and detail work with honest empty/fixture/degraded states; no Altana/commerce/evidence prerequisite |
+| W1 Useful marketplace | A3 ingestion slice, A4 deterministic retrieval, A9 category/search/filter/compare/detail, A11 integrated checks | W0 merged; minimum read contracts frozen | At least one real read-only/manual-import path; useful public marketplace with four first-class category views; truthful activation availability; browser-to-API-to-database evidence |
+| Post-W1 verticals | Up to three of the four consolidated verticals, coordinated by A0 | W1 remains green; only each vertical's own contracts and access are required | The vertical's feature gate passes or the incomplete capability remains disabled without regressing Core Marketplace |
+| Release | QA + Deployment + Submission with owning-vertical fixes | Included feature gates selected and integration green | Core Marketplace and QA/Deployment/Submission gates pass; every optional claim has its own passing gate |
 
 An agent may begin fixtures, interface review, or test-harness scaffolding early, but must not implement against guessed contracts. A0 records every gate decision and the integration SHA that satisfied it.
 
+Altana acceptance is not a W0 or W1 start/merge condition. It blocks only implementation or enablement of the Creator + Altana feature gate.
+
 ## 9. Expected merge order
 
-1. A0 architecture baseline and initial governance.
-2. A1 foundation/domain.
-3. A2 custody/bootstrap spike and accepted ADR.
-4. A3 identity/discovery, A5 commerce, and A8 evidence in the order their migration/API conflicts permit.
-5. A4 marketplace, A6 Creator, and A7 data/strategies.
-6. A9 web product and A10 infrastructure.
-7. A11 test-only additions, followed by fixes on the owning branches.
-8. A12 evidence/submission package.
-9. A0 release-candidate stabilization and promotion to `main` after A11 approval.
+1. A0 records the clean architecture/integration base and freezes the minimum marketplace contracts.
+2. W0 foundation gaps and the first A9 web/API vertical slice merge together or in the smallest conflict-safe sequence.
+3. W1 A3 ingestion, A4 marketplace retrieval, A9 integrated web, and A11 slice verification merge in contract-first order.
+4. Marketplace Data + Web continues improving supply and UX while the selected post-W1 verticals proceed behind independent flags.
+5. Activation + Commerce merges when one rail passes its specific gate; a second rail is additive and does not delay the first.
+6. Creator + Altana + Reference Agent merges only after the Core Marketplace and Altana bootstrap prerequisites pass.
+7. Evidence publication and optional bounty work merge only for claims selected for the submission.
+8. QA + Deployment + Submission stabilizes the included feature set, then A0 promotes the release candidate after A11 approval.
 
 Parallel branches must not allocate migration numbers independently without A0 assigning a range or filename prefix. Shared API/schema changes merge before their consumers. Incomplete features remain disabled by default behind documented feature flags.
 
@@ -745,6 +752,12 @@ Worktree:
 Base integration SHA:
 Head SHA:
 
+Documentation read (exact paths):
+Assigned wave/vertical:
+Feature gate:
+Risk tier:
+Relevant unresolved lock entries:
+
 Goal completed:
 Owned paths changed:
 Shared contracts changed:
@@ -766,19 +779,25 @@ The handoff must distinguish automated test evidence, simulated/fork evidence, t
 
 ## 12. Common definition of done
 
-A workstream is complete only when:
+Every task declares the highest applicable risk tier before implementation. Higher tiers include the lower-tier checks that remain relevant.
 
-- its implementation stays within the assigned scope and owned paths;
-- all consumed shared contracts are current and no duplicate local variants exist;
-- lint, typecheck, unit, integration, and relevant browser/onchain tests pass;
-- migrations apply cleanly from an empty database and from the previous integration state;
-- errors, retries, idempotency, and degraded states are covered proportionately to risk;
-- logs and evidence have been inspected for secrets and sensitive data;
-- documentation describes actual behavior and operational recovery;
-- live or testnet claims have reproducible evidence at the appropriate boundary;
-- the branch has incorporated the latest accepted integration changes;
-- the handoff template is complete and reviewed by A0;
-- A11 can verify the result without relying on the implementing agent's private local state.
+| Tier | Typical work | Required definition of done |
+|---|---|---|
+| R0 — Static/read-only | Copy, styles, pure components, read-only formatting, documentation | Focused lint/typecheck/unit checks; visual or rendered inspection where user-visible; no broken route/build; accurate labels and links |
+| R1 — Stateful application | API/read models, ingestion, search, auth/session use, database repositories and migrations | R0 plus integration tests, empty/upgrade migration checks when schema changes, authorization/error/degraded-state tests, idempotency/retry coverage where state can repeat, and browser/API verification for the changed flow |
+| R2 — Privileged/value-bearing | Custody, session delegation, payments, settlement, onchain writes, secret handling, deployment/infrastructure | R1 plus pinned standards verification, least-privilege review, testnet/sandbox canary, correlation and receipt evidence, revoke/deny/rollback or compensation tests, secret/log inspection, and independent end-to-end reproduction |
+
+All tiers also require:
+
+- implementation stays within assigned scope and owned paths;
+- consumed shared contracts are current and no duplicate local variants exist;
+- documentation-read evidence is recorded before edits;
+- documentation describes actual behavior and limitations;
+- fixtures, simulations, testnet evidence, and production evidence are labelled distinctly;
+- relevant feature flags fail closed and have a disable/rollback procedure;
+- the handoff is complete and A11 can verify the result without private local state.
+
+Do not require R2 custody/payment ceremony for an R0 marketplace component. Conversely, a passing build or HTTP 200 cannot satisfy an R1 or R2 end-to-end claim.
 
 ## 13. Stop conditions and escalation
 
@@ -788,7 +807,7 @@ A subagent must stop and escalate to A0 when any of the following occurs:
 - work would require a mainnet write, production credential, paid resource, DNS change, or irreversible action not already authorized;
 - a shared domain/API/event contract must change;
 - donor license or provenance is unclear;
-- custody behavior cannot be reproduced with scoped Altana authority;
+- Creator or Altana work cannot reproduce custody behavior with scoped Altana authority; this stops that feature gate, not W0/W1 marketplace work;
 - a payment recipient, asset, network, or settlement path cannot be pinned and verified;
 - Greenfield seal/readback semantics differ from the accepted evidence model;
 - an external service requires storing a root key or exposing a credential beyond the agreed boundary;
@@ -799,17 +818,20 @@ The agent should include the exact failing evidence and at least one safe option
 
 ## 14. Release promotion checklist
 
-A0 may propose merging `codex/platform-integration` to `main` only when:
+A0 may propose merging `codex/platform-integration` to `main` when the mandatory gates pass:
 
-- the BNB Chain 56/97 main-track decision is resolved and recorded;
-- one external agent is discovered, verified, and searchable without BNBEra redeployment;
-- one thin Creator agent completes the approved Altana and Studio deployment path;
-- one ERC-8183 lifecycle and one paid X402/B402 path have complete correlated evidence;
-- one Greenfield artifact is sealed, read back, and hash verified;
-- browser flows expose real integrated state and honest degraded states;
-- pause, revoke, retry, reconciliation, and destroy/recovery paths have been exercised;
-- A11 reports no unresolved P0/P1 defects;
+- Core Marketplace is publicly accessible and its browse/search/filter/compare/detail path uses real or explicitly labelled data with honest degraded states;
+- the BNB Chain 56/97 decision is resolved for any main-track chain claim made in the submission;
+- QA + Deployment + Submission verifies the enabled browser/API/database paths and reports no unresolved P0/P1 defects;
 - A12's submission evidence index contains no unsupported claim;
-- rollback, feature-disable, and credential-revocation procedures are documented and tested.
+- rollback and feature-disable procedures are documented and tested;
+- no disabled optional capability is presented as usable.
 
-This is the minimum credible path to a complete hackathon platform. Optional bounty integrations, additional strategies, extra protocols, and polish may proceed only after these gates remain green.
+Additional gates apply only when enabled or claimed:
+
+- Activation + Commerce: at least one complete activation/hire path has correlated end-to-end evidence; ERC-8183 and X402/B402 are verified independently.
+- Creator + Altana: the browser-to-Studio bootstrap, bounded action, revoke/deny path, ownership, and one thin Creator lifecycle pass.
+- Evidence Publication: every claimed Greenfield object is sealed, read back, and hash verified; IPFS agreement is verified where claimed.
+- Optional bounty/performance: the exact bounty requirement, methodology, result, risk, cost, and limitation evidence is complete.
+
+Optional integrations, additional strategies, extra protocols, and polish may proceed only while the Core Marketplace gate remains green.
