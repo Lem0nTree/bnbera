@@ -67,6 +67,8 @@ export const scoreComponentsSchema = z.object({
   price: z.number().min(0).max(5)
 });
 
+export type ScoreComponents = z.infer<typeof scoreComponentsSchema>;
+
 export const marketplaceEligibilityResultSchema = z.object({
   eligible: z.boolean(),
   score: z.number().min(0).max(100).nullable(),

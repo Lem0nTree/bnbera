@@ -1,0 +1,26 @@
+{
+  "name": "@bnbera/marketplace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only BNBEra marketplace source, eligibility, search, comparison, and detail contracts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "Remove-Item -Recurse -Force dist -ErrorAction SilentlyContinue",
+    "lint": "eslint src --max-warnings 0",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@bnbera/agent-ingestion": "workspace:*",
+    "@bnbera/config": "workspace:*",
+    "@bnbera/domain": "workspace:*",
+    "zod": "3.24.1"
+  }
+}
