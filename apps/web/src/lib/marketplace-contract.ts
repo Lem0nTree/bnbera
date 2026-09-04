@@ -2,6 +2,8 @@ import { AppError, errorEnvelopeSchema, type ErrorEnvelope } from "@bnbera/confi
 import {
   InMemoryMarketplaceSource,
   MarketplaceReadService,
+  marketplaceRetrievalModes,
+  marketplaceSourceKinds,
   marketplaceScoreExplanationSchema,
   type MarketplaceAgentCard as CoreMarketplaceAgentCard,
   type MarketplaceAgentDetail as CoreMarketplaceAgentDetail,
@@ -12,6 +14,7 @@ import {
   agentStateAxesSchema,
   advertisedServiceSchema,
   capabilityManifestSchema,
+  discoverySources,
   erc8004IdentitySchema,
   evmAddressSchema,
   marketplaceEligibilityResultSchema,
@@ -101,11 +104,62 @@ const activationSummarySchema = z.object({
   nextAction: z.string().trim().min(1).max(160)
 });
 
-const dataProvenanceSchema = z.object({
+const provenanceSourceSchema = z.object({
+  source: z.enum(discoverySources),
+  sourceReference: z.string().trim().min(1).max(500),
+  firstObservedAt: z.string().datetime({ offset: true }),
+  lastObservedAt: z.string().datetime({ offset: true }),
+  rawResponseDigest: z.string().regex(/^[0-9a-fA-F]{64}$/u).nullable(),
+  normalizedIngestionVersion: z.string().trim().min(1).max(64)
+});
+
+const identityReadProvenanceSchema = z
+  .object({
+    observedBlock: z.number().int().nonnegative().nullable(),
+    observedBlockHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/u).nullable(),
+    readConsistency: z.enum(["finalized", "provisional"]).nullable(),
+    observedAt: z.string().datetime({ offset: true })
+  })
+  .superRefine((value, context) => {
+    const present = [value.observedBlock, value.observedBlockHash, value.readConsistency]
+      .filter((entry) => entry !== null).length;
+    if (present !== 0 && present !== 3) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Identity read provenance must contain all or none of block, hash, and consistency"
+      });
+    }
+  });
+
+/**
+ * Public provenance is deliberately copied from the core listing instead of
+ * being inferred from the response mode. This keeps the complete source
+ * references and exact-block identity read visible to API consumers.
+ */
+export const marketplaceDataProvenanceSchema = z.object({
   mode: z.enum(["fixture", "live", "degraded"]),
   label: z.string().trim().min(1).max(160),
-  details: z.string().trim().min(1).max(500)
+  details: z.string().trim().min(1).max(500),
+  sourceKind: z.enum(marketplaceSourceKinds),
+  sources: z.array(provenanceSourceSchema).max(128),
+  identityRead: identityReadProvenanceSchema,
+  refreshedAt: z.string().datetime({ offset: true }).nullable()
 });
+
+export type MarketplaceDataProvenance = z.infer<typeof marketplaceDataProvenanceSchema>;
+
+export const marketplaceReadSourceMetaSchema = z.object({
+  sourceStatus: z.enum(["healthy", "degraded", "empty"]),
+  sourceName: z.string().trim().min(1).max(160),
+  sourceKind: z.enum(marketplaceSourceKinds).nullable(),
+  warning: z.string().trim().min(1).max(500).nullable(),
+  refreshedAt: z.string().datetime({ offset: true }).nullable(),
+  fixtureCount: z.number().int().nonnegative(),
+  retrievalMode: z.enum(marketplaceRetrievalModes),
+  semanticModelVersion: z.string().trim().min(1).max(128).nullable()
+});
+
+export type MarketplaceReadSourceMeta = z.infer<typeof marketplaceReadSourceMetaSchema>;
 
 export const marketplaceAgentReadModelSchema = z.object({
   id: z.string().trim().min(1).max(400),
@@ -129,7 +183,7 @@ export const marketplaceAgentReadModelSchema = z.object({
   evidence: evidenceSummarySchema,
   activation: activationSummarySchema,
   scoreExplanation: marketplaceScoreExplanationSchema,
-  dataProvenance: dataProvenanceSchema
+  dataProvenance: marketplaceDataProvenanceSchema
 });
 
 export type MarketplaceAgentReadModel = z.infer<typeof marketplaceAgentReadModelSchema>;
@@ -188,6 +242,8 @@ export const marketplaceSearchResponseSchema = z.object({
   excluded: z.array(marketplaceExcludedReadModelSchema),
   total: z.number().int().nonnegative(),
   selection: searchSelectionSchema,
+  /** Source and retrieval status are available even when no cards qualify. */
+  meta: marketplaceReadSourceMetaSchema.nullable(),
   error: errorEnvelopeSchema.nullable()
 });
 
@@ -199,6 +255,8 @@ export const marketplaceAgentReadResponseSchema = z.object({
   mode: z.enum(marketplaceDataModes),
   dataLabel: z.string().trim().min(1).max(160),
   notice: z.string().trim().min(1).max(500),
+  /** Source metadata remains available for empty/degraded detail responses. */
+  meta: marketplaceReadSourceMetaSchema.nullable(),
   agent: marketplaceAgentReadModelSchema.nullable(),
   error: errorEnvelopeSchema.nullable()
 });
@@ -257,6 +315,32 @@ function createStateError(options: {
 function sourceMode(mode: Extract<MarketplaceDataMode, "fixture" | "live" | "degraded" | "empty">):
   Extract<MarketplaceDataMode, "fixture" | "live" | "degraded"> {
   return mode === "empty" ? "live" : mode;
+}
+
+function modeFromSourceMeta(
+  meta: CoreMarketplaceSearchResponse["meta"],
+  configuredMode: Extract<MarketplaceDataMode, "fixture" | "live" | "degraded" | "empty">
+): Extract<MarketplaceDataMode, "fixture" | "live" | "degraded" | "empty"> {
+  if (meta.sourceStatus === "degraded" || (meta.sourceStatus === "empty" && meta.warning !== null)) {
+    return "degraded";
+  }
+  if (meta.sourceStatus === "empty") {
+    return "empty";
+  }
+  return configuredMode;
+}
+
+function mapSourceMeta(meta: CoreMarketplaceSearchResponse["meta"]): MarketplaceReadSourceMeta {
+  return marketplaceReadSourceMetaSchema.parse({
+    sourceStatus: meta.sourceStatus,
+    sourceName: meta.sourceName,
+    sourceKind: meta.sourceKind,
+    warning: meta.warning,
+    refreshedAt: meta.refreshedAt,
+    fixtureCount: meta.fixtureCount,
+    retrievalMode: meta.retrievalMode,
+    semanticModelVersion: meta.semanticModelVersion
+  });
 }
 
 function coreTagline(description: string): string {
@@ -376,32 +460,43 @@ function mapActivation(card: CoreMarketplaceAgentCard): MarketplaceAgentReadMode
 
 function mapProvenance(
   card: CoreMarketplaceAgentCard,
-  mode: Extract<MarketplaceDataMode, "fixture" | "live" | "degraded">
+  mode: Extract<MarketplaceDataMode, "fixture" | "live" | "degraded">,
+  refreshedAt: string | null = null
 ): MarketplaceAgentReadModel["dataProvenance"] {
+  const observedProvenance = {
+    sourceKind: card.provenance.sourceKind,
+    sources: card.provenance.sources,
+    identityRead: card.provenance.identityRead,
+    refreshedAt
+  };
   if (card.fixture !== null || card.provenance.fixture !== null) {
     return {
       mode: "fixture",
       label: card.fixture?.label ?? card.provenance.fixture?.label ?? "Development fixture",
-      details: "Synthetic records are present for interface verification only; registry, endpoint, health, execution, payment, and evidence proof are not claimed."
+      details: "Synthetic records are present for interface verification only; registry, endpoint, health, execution, payment, and evidence proof are not claimed.",
+      ...observedProvenance
     };
   }
   if (mode === "degraded") {
     return {
       mode,
       label: "Degraded upstream read",
-      details: "The upstream read model is degraded. Fields are shown for inspection and must not be treated as live proof."
+      details: "The upstream read model is degraded. Fields are shown for inspection and must not be treated as live proof.",
+      ...observedProvenance
     };
   }
   return {
     mode: "live",
     label: "Connected read model",
-    details: "This record came through the configured marketplace read-model source. Inspect each independent state and provenance field before acting."
+    details: "This record came through the configured marketplace read-model source. Inspect each independent state and provenance field before acting.",
+    ...observedProvenance
   };
 }
 
 function mapCard(
   card: CoreMarketplaceAgentCard,
-  mode: Extract<MarketplaceDataMode, "fixture" | "live" | "degraded">
+  mode: Extract<MarketplaceDataMode, "fixture" | "live" | "degraded">,
+  refreshedAt: string | null = null
 ): MarketplaceAgentReadModel {
   const freshnessStatus = card.dataFreshness.status;
   return marketplaceAgentReadModelSchema.parse({
@@ -438,15 +533,16 @@ function mapCard(
     },
     evidence: mapEvidence(card),
     activation: mapActivation(card),
-    dataProvenance: mapProvenance(card, mode)
+    dataProvenance: mapProvenance(card, mode, refreshedAt)
   });
 }
 
-function mapDetail(
+export function mapMarketplaceDetailResponse(
   detail: CoreMarketplaceAgentDetail,
-  mode: Extract<MarketplaceDataMode, "fixture" | "live" | "degraded">
+  mode: Extract<MarketplaceDataMode, "fixture" | "live" | "degraded">,
+  refreshedAt: string | null = null
 ): MarketplaceAgentReadModel {
-  return mapCard(detail, mode);
+  return mapCard(detail, mode, refreshedAt);
 }
 
 function selectionMatches(agent: MarketplaceAgentReadModel, input: MarketplaceSearchInput): boolean {
@@ -508,25 +604,26 @@ function sortAgents(agents: MarketplaceAgentReadModel[], input: MarketplaceSearc
   return sorted;
 }
 
-function localNotice(mode: MarketplaceDataMode, total: number, excluded = 0): string {
+function localNotice(mode: MarketplaceDataMode, total: number, excluded = 0, warning: string | null = null): string {
+  const appendWarning = (notice: string): string => warning === null ? notice : `${notice} ${warning}`.slice(0, 500);
   if (mode === "fixture") {
-    return "Bounded development records are shown for interface verification. They are not registry, endpoint, health, execution, payment, or evidence proof.";
+    return appendWarning("Bounded development records are shown for interface verification. They are not registry, endpoint, health, execution, payment, or evidence proof.");
   }
   if (mode === "degraded") {
-    return "The upstream read model is degraded. Records remain visible with a degraded label; no live claim is made.";
+    return appendWarning("The upstream read model is degraded. Records remain visible with a degraded label; no live claim is made.");
   }
   if (mode === "empty" && total === 0) {
-    return excluded > 0
+    return appendWarning(excluded > 0
       ? "No eligible records match this view. Candidates excluded by hard eligibility are shown below with their reasons."
-      : "No marketplace records are available yet. Fixture data is disabled unless explicitly selected in a non-production environment.";
+      : "No marketplace records are available yet. Fixture data is disabled unless explicitly selected in a non-production environment.");
   }
   if (total === 0 && excluded > 0) {
-    return "No eligible records match the current filters. Candidates excluded before ranking are shown below with their reasons.";
+    return appendWarning("No eligible records match the current filters. Candidates excluded before ranking are shown below with their reasons.");
   }
-  return total === 0 ? "No records match the current filters." : "The connected marketplace read model returned these records.";
+  return appendWarning(total === 0 ? "No records match the current filters." : "The connected marketplace read model returned these records.");
 }
 
-function responseError(
+export function marketplaceSearchErrorResponse(
   input: MarketplaceSearchInput,
   error: ErrorEnvelope,
   notice = "The marketplace read model returned a structured error."
@@ -541,11 +638,12 @@ function responseError(
     excluded: [],
     total: 0,
     selection: querySelection(input),
+    meta: null,
     error
   });
 }
 
-function detailError(
+export function marketplaceDetailErrorResponse(
   error: ErrorEnvelope,
   notice = "The agent detail read returned a structured error."
 ): MarketplaceAgentReadResponse {
@@ -555,6 +653,7 @@ function detailError(
     mode: "error",
     dataLabel: dataLabel("error"),
     notice,
+    meta: null,
     agent: null,
     error
   });
@@ -592,11 +691,11 @@ async function localSearch(
       ...(input.freshness === "fresh" ? { requireFreshData: true } : {})
     });
     if (!result.ok) {
-      return responseError(input, result.error, "The marketplace source could not be read safely.");
+      return marketplaceSearchErrorResponse(input, result.error, "The marketplace source could not be read safely.");
     }
-    return mapSearchResponse(input, result.value, mode);
+    return mapMarketplaceSearchResponse(input, result.value, mode);
   } catch (_error) {
-    return responseError(input, createStateError({
+    return marketplaceSearchErrorResponse(input, createStateError({
       code: "MARKETPLACE_SOURCE_UNAVAILABLE",
       message: "The marketplace source could not be read safely.",
       retriable: true,
@@ -605,13 +704,18 @@ async function localSearch(
   }
 }
 
-function mapSearchResponse(
+export function mapMarketplaceSearchResponse(
   input: MarketplaceSearchInput,
   coreResponse: CoreMarketplaceSearchResponse,
   configuredMode: Extract<MarketplaceDataMode, "fixture" | "live" | "degraded" | "empty">
 ): MarketplaceSearchResponse {
+  // The core service reports an all-withheld projection as `empty` because it
+  // has no records to return. Preserve the source warning so the web contract
+  // does not turn malformed ingestion rows into an apparently healthy empty
+  // database.
+  const effectiveMode = modeFromSourceMeta(coreResponse.meta, configuredMode);
   const mapped = coreResponse.results
-    .map((card) => mapCard(card, sourceMode(configuredMode)))
+    .map((card) => mapCard(card, sourceMode(effectiveMode), coreResponse.meta.refreshedAt))
     .filter((agent) => selectionMatches(agent, input));
   // Origin/verification/runtime/freshness are web-side presentation filters;
   // the core exclusion shape does not include those axes, so do not surface
@@ -628,22 +732,23 @@ function mapSearchResponse(
     : [];
   const sorted = sortAgents(mapped, input);
   const agents = sorted.slice(0, input.limit ?? 12);
-  const status: MarketplaceReadStatus = configuredMode === "degraded" || coreResponse.meta.sourceStatus === "degraded"
+  const status: MarketplaceReadStatus = effectiveMode === "degraded"
     ? "degraded"
     : agents.length > 0 || excluded.length > 0
       ? "ready"
       : "empty";
-  const mode: MarketplaceDataMode = coreResponse.meta.sourceStatus === "empty" ? "empty" : configuredMode;
+  const mode = effectiveMode;
   return marketplaceSearchResponseSchema.parse({
     contractVersion: marketplaceReadContractVersion,
     status,
     mode,
     dataLabel: dataLabel(mode),
-    notice: localNotice(mode, agents.length, excluded.length),
+    notice: localNotice(mode, agents.length, excluded.length, coreResponse.meta.warning),
     agents,
     excluded,
     total: sorted.length,
     selection: querySelection(input),
+    meta: mapSourceMeta(coreResponse.meta),
     error: null
   });
 }
@@ -660,6 +765,7 @@ function previewResponse(input: MarketplaceSearchInput, preview: MarketplacePrev
       excluded: [],
       total: 0,
       selection: querySelection(input),
+      meta: null,
       error: null
     }));
   }
@@ -669,7 +775,7 @@ function previewResponse(input: MarketplaceSearchInput, preview: MarketplacePrev
   if (preview === "degraded") {
     return localSearch(input, "degraded");
   }
-  return Promise.resolve(responseError(input, createStateError({
+  return Promise.resolve(marketplaceSearchErrorResponse(input, createStateError({
     code: "MARKETPLACE_READ_UNAVAILABLE",
     message: "The marketplace read model is unavailable in this state preview.",
     retriable: true,
@@ -677,7 +783,7 @@ function previewResponse(input: MarketplaceSearchInput, preview: MarketplacePrev
   }), "The marketplace read model returned a structured error. No HTML error page is parsed as data."));
 }
 
-function configuredMode(): MarketplaceDataMode {
+export function configuredMarketplaceDataMode(): MarketplaceDataMode {
   const configured = process.env.MARKETPLACE_DATA_MODE?.trim().toLowerCase();
   if (configured && (marketplaceDataModes as readonly string[]).includes(configured)) {
     if (process.env.NODE_ENV === "production" && (configured === "fixture" || configured === "degraded")) {
@@ -695,7 +801,7 @@ function configuredMode(): MarketplaceDataMode {
 }
 
 function invalidConfigurationResponse(input: MarketplaceSearchInput): MarketplaceSearchResponse {
-  return responseError(input, createStateError({
+  return marketplaceSearchErrorResponse(input, createStateError({
     code: "MARKETPLACE_CONFIGURATION_INVALID",
     message: "Marketplace read mode is invalid; configure a supported read-model mode.",
     nextAction: "check_configuration"
@@ -795,7 +901,7 @@ async function remoteSearch(input: MarketplaceSearchInput): Promise<MarketplaceS
           nextAction: "check_read_model",
           cause: error
         });
-    return responseError(input, appError.toEnvelope(), "The read model response could not be validated against the web adapter boundary.");
+    return marketplaceSearchErrorResponse(input, appError.toEnvelope(), "The read model response could not be validated against the web adapter boundary.");
   }
 }
 
@@ -813,7 +919,7 @@ async function remoteAgent(slug: string): Promise<MarketplaceAgentReadResponse> 
           nextAction: "check_read_model",
           cause: error
         });
-    return detailError(appError.toEnvelope(), "The agent detail response could not be validated against the web adapter boundary.");
+    return marketplaceDetailErrorResponse(appError.toEnvelope(), "The agent detail response could not be validated against the web adapter boundary.");
   }
 }
 
@@ -823,7 +929,7 @@ export async function readMarketplace(input: Partial<MarketplaceSearchInput> = {
     return previewResponse(parsedInput, parsedInput.preview);
   }
 
-  const mode = configuredMode();
+  const mode = configuredMarketplaceDataMode();
   if (mode === "live") {
     return remoteSearch(parsedInput);
   }
@@ -842,12 +948,20 @@ export async function readMarketplaceApi(input: Partial<MarketplaceSearchInput> 
   if (parsedInput.preview && process.env.NODE_ENV !== "production") {
     return previewResponse(parsedInput, parsedInput.preview);
   }
-  const mode = configuredMode();
+  const mode = configuredMarketplaceDataMode();
   if (mode === "error") {
     return invalidConfigurationResponse(parsedInput);
   }
-  if (mode === "live" || mode === "empty") {
-    return localSearch(parsedInput, process.env.NODE_ENV === "production" ? "empty" : mode === "live" ? "fixture" : "empty");
+  if (mode === "live") {
+    return marketplaceSearchErrorResponse(parsedInput, createStateError({
+      code: "MARKETPLACE_LIVE_SOURCE_UNAVAILABLE",
+      message: "The configured live marketplace source is not available to this adapter; no fixture fallback is permitted.",
+      retriable: true,
+      nextAction: "check_read_model"
+    }), "The configured live marketplace source could not be read. No development fixtures were substituted.");
+  }
+  if (mode === "empty") {
+    return localSearch(parsedInput, "empty");
   }
   return localSearch(parsedInput, mode);
 }
@@ -858,14 +972,35 @@ async function localAgent(
 ): Promise<MarketplaceAgentReadResponse> {
   try {
     const service = await localService(mode);
-    const result = await service.getAgent(slug);
-    const agent = mapDetail(result.agent, sourceMode(mode));
+    const result = await service.readAgent(slug);
+    const effectiveMode = modeFromSourceMeta(result.meta, mode);
+    const mappedMeta = mapSourceMeta(result.meta);
+    if (result.agent === null) {
+      return marketplaceAgentReadResponseSchema.parse({
+        contractVersion: marketplaceReadContractVersion,
+        status: effectiveMode === "degraded" ? "degraded" : "empty",
+        mode: effectiveMode,
+        dataLabel: dataLabel(effectiveMode),
+        notice: effectiveMode === "degraded"
+          ? localNotice("degraded", 0, 0, result.meta.warning)
+          : "This agent is not present in the current marketplace read model.",
+        meta: mappedMeta,
+        agent: null,
+        error: null
+      });
+    }
+    const agent = mapMarketplaceDetailResponse(
+      result.agent.agent,
+      sourceMode(effectiveMode),
+      result.meta.refreshedAt
+    );
     return marketplaceAgentReadResponseSchema.parse({
       contractVersion: marketplaceReadContractVersion,
-      status: mode === "degraded" ? "degraded" : "ready",
-      mode,
-      dataLabel: dataLabel(mode),
-      notice: localNotice(mode, 1),
+      status: effectiveMode === "degraded" ? "degraded" : "ready",
+      mode: effectiveMode,
+      dataLabel: dataLabel(effectiveMode),
+      notice: localNotice(effectiveMode, 1, 0, result.meta.warning),
+      meta: mappedMeta,
       agent,
       error: null
     });
@@ -880,18 +1015,7 @@ async function localAgent(
           nextAction: "retry_read",
           cause: error
         });
-    if (appError.code === "MARKETPLACE_AGENT_NOT_FOUND") {
-      return marketplaceAgentReadResponseSchema.parse({
-        contractVersion: marketplaceReadContractVersion,
-        status: "empty",
-        mode,
-        dataLabel: dataLabel(mode),
-        notice: "This agent is not present in the current marketplace read model.",
-        agent: null,
-        error: null
-      });
-    }
-    return detailError(appError.toEnvelope(), "The marketplace agent detail could not be read safely.");
+    return marketplaceDetailErrorResponse(appError.toEnvelope(), "The marketplace agent detail could not be read safely.");
   }
 }
 
@@ -909,12 +1033,13 @@ export async function readMarketplaceAgent(
         mode: "fixture",
         dataLabel: "Loading state preview",
         notice: "The detail panel is waiting for the marketplace read model.",
+        meta: null,
         agent: null,
         error: null
       });
     }
     if (preview === "error") {
-      return detailError(createStateError({
+      return marketplaceDetailErrorResponse(createStateError({
         code: "MARKETPLACE_DETAIL_UNAVAILABLE",
         message: "This detail state is unavailable in the preview.",
         retriable: true,
@@ -928,6 +1053,7 @@ export async function readMarketplaceAgent(
         mode: "empty",
         dataLabel: "Empty state preview",
         notice: "No agent detail is available in this state preview.",
+        meta: null,
         agent: null,
         error: null
       });
@@ -935,12 +1061,12 @@ export async function readMarketplaceAgent(
     return localAgent(normalizedSlug, "degraded");
   }
 
-  const mode = configuredMode();
+  const mode = configuredMarketplaceDataMode();
   if (mode === "live") {
     return remoteAgent(normalizedSlug);
   }
   if (mode === "error") {
-    return detailError(createStateError({
+    return marketplaceDetailErrorResponse(createStateError({
       code: "MARKETPLACE_CONFIGURATION_INVALID",
       message: "Marketplace read mode is invalid; configure a supported read-model mode.",
       nextAction: "check_configuration"
@@ -960,9 +1086,17 @@ export async function readMarketplaceAgentApi(
   if (input.preview && process.env.NODE_ENV !== "production") {
     return readMarketplaceAgent(normalizedSlug, input);
   }
-  const mode = configuredMode();
+  const mode = configuredMarketplaceDataMode();
+  if (mode === "live") {
+    return marketplaceDetailErrorResponse(createStateError({
+      code: "MARKETPLACE_LIVE_SOURCE_UNAVAILABLE",
+      message: "The configured live marketplace source is not available to this adapter; no fixture fallback is permitted.",
+      retriable: true,
+      nextAction: "check_read_model"
+    }), "The configured live marketplace source could not be read. No development fixtures were substituted.");
+  }
   if (mode === "error") {
-    return detailError(createStateError({
+    return marketplaceDetailErrorResponse(createStateError({
       code: "MARKETPLACE_CONFIGURATION_INVALID",
       message: "Marketplace read mode is invalid; configure a supported read-model mode.",
       nextAction: "check_configuration"
@@ -971,9 +1105,7 @@ export async function readMarketplaceAgentApi(
   const localMode: Extract<MarketplaceDataMode, "fixture" | "degraded" | "empty"> =
     mode === "empty" || process.env.NODE_ENV === "production"
       ? "empty"
-      : mode === "live"
-        ? "fixture"
-        : mode;
+      : mode;
   return localAgent(normalizedSlug, localMode);
 }
 
@@ -1026,27 +1158,10 @@ export function statusAxisLabel(value: string): string {
   return value.replaceAll("_", " ").replace(/(^|\s)\S/gu, (letter) => letter.toUpperCase());
 }
 
-export function categoryLabel(category: AgentCategory): string {
-  const labels: Record<AgentCategory, string> = {
-    rebalancing: "LP rebalancing",
-    "grid-trading": "Grid trading",
-    "yield-optimisation": "Yield optimisation",
-    "health-factor": "Health factor",
-    uncategorized: "Uncategorized"
-  };
-  return labels[category];
-}
-
-export function categoryDescription(category: AgentCategory): string {
-  const descriptions: Record<AgentCategory, string> = {
-    rebalancing: "Range-aware liquidity operators with explicit protocol and risk boundaries.",
-    "grid-trading": "Bounded price-band strategies that disclose inventory and turnover limits.",
-    "yield-optimisation": "Structured venue comparisons with current-data provenance and assumptions.",
-    "health-factor": "Lending risk monitors that explain thresholds, data freshness, and authority.",
-    uncategorized: "Records that still need enough structured capability evidence for classification."
-  };
-  return descriptions[category];
-}
+// Keep the historical contract import path available to server callers while
+// keeping presentation helpers in a client-safe module. Client components
+// must not traverse this module because it also owns the server read adapter.
+export { categoryDescription, categoryLabel } from "./presentation";
 
 export type MarketplaceStateFilters = {
   readonly verification?: VerificationStatus;

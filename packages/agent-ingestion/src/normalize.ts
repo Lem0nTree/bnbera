@@ -569,7 +569,7 @@ function normalizeNullableUri(value: string | null | undefined): string | null {
 }
 
 function normalizeServiceUrl(value: unknown): string {
-  if (typeof value !== "string") {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2_048 || /[\u0000-\u001f\u007f]/u.test(value)) {
     throw ingestionError("SERVICE_INVALID", "The advertised service URL is invalid.", "review_service");
   }
   let parsed: URL;
@@ -589,6 +589,15 @@ function normalizeServiceUrl(value: unknown): string {
       "Service URLs must be HTTP(S) URLs without credentials or fragments.",
       "review_service"
     );
+  }
+  for (const key of parsed.searchParams.keys()) {
+    if (/(?:api[_-]?key|access[_-]?token|authorization|credential|password|private[_-]?key|secret|token)/iu.test(key)) {
+      throw ingestionError(
+        "SERVICE_INVALID",
+        "Service URLs must not carry credentials in query parameters.",
+        "remove_service_credentials"
+      );
+    }
   }
   return parsed.toString();
 }

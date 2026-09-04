@@ -3,12 +3,26 @@ import {
   marketplaceAgentReadResponseSchema,
   marketplaceSearchResponseSchema,
   readMarketplace,
-  readMarketplaceAgent
+  readMarketplaceAgent,
+  readMarketplaceAgentApi,
+  readMarketplaceApi
 } from "../../apps/web/src/lib/marketplace-contract";
 import { GET as getMarketplace } from "../../apps/web/app/api/marketplace/route";
 import { GET as getMarketplaceAgent } from "../../apps/web/app/api/marketplace/[slug]/route";
 
-const environmentKeys = ["NODE_ENV", "MARKETPLACE_DATA_MODE", "MARKETPLACE_API_URL"] as const;
+const environmentKeys = [
+  "NODE_ENV",
+  "MARKETPLACE_DATA_MODE",
+  "MARKETPLACE_API_URL",
+  "DATABASE_URL",
+  "DATABASE_SSL",
+  "MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED",
+  "ERC8004_EMBEDDING_PROVIDER",
+  "ERC8004_EMBEDDING_MODEL",
+  "ERC8004_EMBEDDING_MODEL_VERSION",
+  "ERC8004_EMBEDDING_DIMENSION",
+  "ERC8004_EMBEDDING_SECRET_REFERENCE"
+] as const;
 const originalEnvironment = Object.fromEntries(
   environmentKeys.map((key) => [key, process.env[key]])
 ) as Record<(typeof environmentKeys)[number], string | undefined>;
@@ -53,6 +67,28 @@ describe("web marketplace read contract", () => {
       "health-factor"
     ]));
     expect(response.agents.every((agent) => agent.dataProvenance.mode === "fixture")).toBe(true);
+    expect(response.meta).toMatchObject({
+      sourceStatus: "healthy",
+      sourceName: "development-fixtures",
+      sourceKind: "fixture",
+      fixtureCount: 4,
+      retrievalMode: "deterministic",
+      semanticModelVersion: null
+    });
+    expect(response.agents[0]?.dataProvenance).toMatchObject({
+      sourceKind: "fixture",
+      refreshedAt: null,
+      identityRead: {
+        observedBlock: expect.any(Number),
+        observedBlockHash: expect.stringMatching(/^0x[0-9a-f]{64}$/i),
+        readConsistency: "finalized"
+      },
+      sources: [{
+        source: "manual",
+        sourceReference: expect.stringContaining("fixture:"),
+        normalizedIngestionVersion: "fixture-v1"
+      }]
+    });
     expect(response.agents.every((agent) => agent.activation.enabled === false)).toBe(true);
     expect(response.agents.every((agent) => agent.activation.availability === "unavailable")).toBe(true);
     expect(response.notice).toMatch(/not .*proof|not .*live/i);
@@ -235,6 +271,33 @@ describe("web marketplace read contract", () => {
       }
     });
     expect(JSON.stringify(invalidBody)).not.toMatch(/stack|cause|password|token/i);
+  });
+
+  it("does not substitute development fixtures when the API route is explicitly live", async () => {
+    configureEnvironment({ NODE_ENV: "development", MARKETPLACE_DATA_MODE: "live" });
+
+    const response = await getMarketplace(new Request("https://bnbera.example/api/marketplace"));
+    const body = marketplaceSearchResponseSchema.parse(await response.json());
+
+    expect(response.status).toBe(503);
+    expect(body.status).toBe("error");
+    expect(body.mode).toBe("error");
+    expect(body.agents).toEqual([]);
+    expect(body.error?.error.code).toBe("MARKETPLACE_CONFIGURATION_INVALID");
+    expect(JSON.stringify(body)).not.toMatch(/fixture-lp-rebalancer|password|token/i);
+  });
+
+  it("does not substitute fixtures in the shared API adapter when live mode is configured", async () => {
+    configureEnvironment({ NODE_ENV: "development", MARKETPLACE_DATA_MODE: "live" });
+
+    const search = await readMarketplaceApi();
+    const detail = await readMarketplaceAgentApi("fixture-lp-rebalancer");
+
+    expect(search).toMatchObject({ status: "error", mode: "error", agents: [] });
+    expect(search.error?.error.code).toBe("MARKETPLACE_LIVE_SOURCE_UNAVAILABLE");
+    expect(detail).toMatchObject({ status: "error", mode: "error", agent: null });
+    expect(detail.error?.error.code).toBe("MARKETPLACE_LIVE_SOURCE_UNAVAILABLE");
+    expect(JSON.stringify({ search, detail })).not.toMatch(/fixture-lp-rebalancer|DEVELOPMENT FIXTURE — NOT LIVE OR DISCOVERED DATA/i);
   });
 
   it("serves detail as JSON and reports a missing slug without HTML", async () => {

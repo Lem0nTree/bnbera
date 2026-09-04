@@ -2,8 +2,7 @@ import Link from "next/link";
 import type { CSSProperties } from "react";
 import { DataModeBadge, EmptyState, StateAxisGrid, StatusBadge } from "@bnbera/ui";
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
-import { categoryLabel } from "@/lib/marketplace-contract";
-import { compactAddress, joinOrFallback, statusTone, titleCase } from "@/lib/presentation";
+import { categoryLabel, compactAddress, joinOrFallback, statusTone, titleCase } from "@/lib/presentation";
 import { ActivationPanel } from "./activation-panel";
 
 export function CompareTable({ agents }: { readonly agents: readonly MarketplaceAgentReadModel[] }) {

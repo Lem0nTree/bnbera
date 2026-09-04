@@ -1,0 +1,70 @@
+{
+  "task": "Task 10 browser and API verification",
+  "capturedAt": "2026-09-04T13:45:18Z",
+  "checkout": "/home/ubuntu/bnbera-w0-w1",
+  "branch": "codex/erc8004-pipeline",
+  "headSha": "adfe8e1c52ca714cf6ba7f0171a90083b0f217aa",
+  "environment": {
+    "baseUrl": "http://localhost:3000",
+    "nodeEnv": "development",
+    "marketplaceDataMode": "fixture",
+    "fixtureLabel": "DEVELOPMENT FIXTURE — NOT LIVE OR DISCOVERED DATA",
+    "browser": "agent-browser via isolated Chromium CDP on localhost:9223",
+    "optionalIntegrations": "disabled"
+  },
+  "browserChecks": [
+    { "name": "marketplace list", "result": "pass", "evidence": "task10-marketplace-fixture.png", "cards": 4 },
+    { "name": "search Venus", "result": "pass", "evidence": "task10-marketplace-search-venus.png", "eligible": 2, "excludedBeforeRanking": true },
+    { "name": "chain 56 empty filter", "result": "pass", "evidence": "task10-filter-chain56-empty.png", "eligible": 0, "excludedBeforeRanking": true },
+    { "name": "protocol and freshness filter", "result": "pass", "evidence": "task10-filter-protocol-freshness.png", "eligible": 1 },
+    { "name": "category routes", "result": "pass", "evidence": ["task10-category-rebalancing.png", "task10-category-grid-trading.png", "task10-category-yield-optimisation.png", "task10-category-health-factor.png"] },
+    { "name": "fixture detail", "result": "pass", "evidence": "task10-detail-fixture.png", "identityTuple": true, "stateAxes": 6, "activation": "unavailable" },
+    { "name": "missing detail", "result": "pass", "evidence": "task10-detail-missing.png", "httpPage": "empty state" },
+    { "name": "degraded detail preview", "result": "pass", "evidence": "task10-detail-degraded.png", "liveClaim": false },
+    { "name": "error detail preview", "result": "pass", "evidence": "task10-detail-error.png", "structuredError": "MARKETPLACE_DETAIL_UNAVAILABLE" },
+    { "name": "compare three", "result": "pass", "evidence": "task10-compare-three.png", "columns": 3 },
+    { "name": "compare empty", "result": "pass", "evidence": "task10-compare-empty.png", "columns": 0 },
+    { "name": "compare missing record", "result": "pass", "evidence": "task10-compare-missing.png", "columns": 1 },
+    { "name": "compare max selection", "result": "pass", "evidence": "task10-compare-max-selection.png", "selected": 3, "fourthToggleDisabled": true },
+    { "name": "loading/empty/degraded/error previews", "result": "pass", "evidence": ["task10-state-loading.png", "task10-state-empty.png", "task10-state-degraded.png", "task10-state-error.png"] },
+    { "name": "responsive marketplace and detail", "result": "pass", "evidence": ["task10-mobile-marketplace.png", "task10-mobile-detail.png"], "viewport": "390x844", "horizontalOverflow": false },
+    { "name": "fresh isolated browser error check", "result": "pass", "consoleErrors": 0, "pageErrors": 0, "frameworkOverlay": false }
+  ],
+  "apiChecks": [
+    { "path": "/api/marketplace", "status": 200, "mode": "fixture", "total": 4 },
+    { "path": "/api/marketplace?q=Venus", "status": 200, "total": 2, "slugs": ["fixture-health-guard", "fixture-yield-router"] },
+    { "path": "/api/marketplace?chainId=56", "status": 200, "total": 0 },
+    { "path": "/api/marketplace?preview=empty", "status": 200, "mode": "empty", "total": 0 },
+    { "path": "/api/marketplace?preview=degraded", "status": 200, "mode": "degraded", "total": 4 },
+    { "path": "/api/marketplace?preview=error", "status": 503, "errorCode": "MARKETPLACE_READ_UNAVAILABLE" },
+    { "path": "/api/marketplace?chainId=not-a-number", "status": 400, "errorCode": "MARKETPLACE_QUERY_INVALID" },
+    { "path": "/api/marketplace/fixture-lp-rebalancer", "status": 200, "slug": "fixture-lp-rebalancer" },
+    { "path": "/api/marketplace/does-not-exist", "status": 404, "empty": true }
+  ],
+  "liveModeProbe": {
+    "configuration": "MARKETPLACE_DATA_MODE=live, no DATABASE_URL supplied",
+    "listStatus": 503,
+    "detailStatus": 503,
+    "errorCode": "MARKETPLACE_CONFIGURATION_INVALID",
+    "evidence": "task10-live-mode-unavailable.png",
+    "interpretation": "fail-closed configuration check only; no DB, chain, service, or live marketplace status is claimed"
+  },
+  "taskOwnedFixes": [
+    "Client marketplace components import presentation helpers from the client-safe presentation module so the server-only database/vector graph is not bundled into the browser.",
+    "Mobile card and detail provenance badges stack/wrap at narrow widths to prevent horizontal overflow."
+  ],
+  "knownLimitations": [
+    "All successful records and screenshots are explicitly labelled development fixtures.",
+    "No database credentials, wallet, signing, payment, Creator, Altana, Greenfield, chain, or external service call was used.",
+    "Axe reports the inherited compact BrandMark aria-label issue and the marketplace page's level-2-only heading; no broad accessibility refactor was made."
+  ],
+  "featureFlags": {
+    "coreMarketplace": "read-only enabled",
+    "marketplaceDataMode": "fixture",
+    "activationCommerce": "disabled",
+    "creatorAltana": "disabled",
+    "evidencePublication": "disabled",
+    "walletsSigningPayments": "not exercised"
+  },
+  "rollback": "Revert only the Task 10 presentation-import changes and narrow mobile rules in the listed web files; keep optional integration gates disabled. No commit was created."
+}

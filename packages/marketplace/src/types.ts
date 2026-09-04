@@ -33,6 +33,10 @@ export type MarketplaceSourceStatus = (typeof marketplaceSourceStatuses)[number]
 export const marketplaceResponseStatuses = ["healthy", "degraded", "empty"] as const;
 export type MarketplaceResponseStatus = (typeof marketplaceResponseStatuses)[number];
 
+/** How the read model assembled the returned candidate set. */
+export const marketplaceRetrievalModes = ["deterministic", "hybrid", "fallback"] as const;
+export type MarketplaceRetrievalMode = (typeof marketplaceRetrievalModes)[number];
+
 export const marketplaceSourceKinds = ["ingestion", "fixture"] as const;
 export type MarketplaceSourceKind = (typeof marketplaceSourceKinds)[number];
 
@@ -353,9 +357,14 @@ export const marketplaceResponseMetaSchema = z.object({
   requestId: z.string().trim().min(1).max(160),
   sourceStatus: z.enum(marketplaceResponseStatuses),
   sourceName: z.string().trim().min(1).max(160),
+  /** Null means the source had no records (or contained mixed source kinds). */
+  sourceKind: z.enum(marketplaceSourceKinds).nullable().default(null),
   warning: z.string().trim().min(1).max(500).nullable(),
   returnedAt: isoDateSchema,
-  fixtureCount: z.number().int().nonnegative()
+  refreshedAt: isoDateSchema.nullable().default(null),
+  fixtureCount: z.number().int().nonnegative(),
+  retrievalMode: z.enum(marketplaceRetrievalModes).default("deterministic"),
+  semanticModelVersion: z.string().trim().min(1).max(128).nullable().default(null)
 });
 
 export type MarketplaceResponseMeta = z.infer<typeof marketplaceResponseMetaSchema>;

@@ -83,6 +83,10 @@ export class InMemoryMarketplaceMetadataSource implements MarketplaceMetadataSou
 export type IngestionMarketplaceSourceOptions = {
   readonly sourceName?: string;
   readonly now?: () => Date;
+  /** A disabled or lagging synchronization gate can keep reads available
+   * while explicitly marking the projection degraded. */
+  readonly status?: Extract<MarketplaceSourceSnapshot["status"], "healthy" | "degraded">;
+  readonly warning?: string | null;
 };
 
 /**
@@ -113,6 +117,7 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
     }
     const records: MarketplaceListingInput[] = [];
     let skipped = 0;
+    const now = this.options.now?.() ?? new Date();
 
     for (const identityRecord of identities) {
       const identityKey = erc8004IdentityKey(identityRecord.identity);
@@ -145,8 +150,7 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
       }
 
       try {
-        const latestProbe = latestProbeResult(probes);
-        const health = healthFromProbe(latestProbe);
+        const health = healthFromProbes(probes, now);
         const parsedServices = services.map((service) => advertisedServiceSchema.parse(service));
         const listing = parseMarketplaceListing({
           ...presentation,
@@ -189,13 +193,16 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
       }
     }
 
-    const now = this.options.now?.() ?? new Date();
-    const warning = skipped > 0
+    const projectionWarning = skipped > 0
       ? `${skipped} indexed identity record${skipped === 1 ? "" : "s"} lacked complete marketplace metadata and was withheld.`
       : null;
+    const warning = [this.options.warning, projectionWarning]
+      .filter((value): value is string => value !== null && value !== undefined && value.length > 0)
+      .join(" ")
+      .slice(0, 500) || null;
     return parseMarketplaceSourceSnapshot({
       records,
-      status: skipped > 0 ? "degraded" : "healthy",
+      status: this.options.status === "degraded" || skipped > 0 ? "degraded" : "healthy",
       sourceName: this.options.sourceName ?? "ingestion-read-model",
       warning,
       refreshedAt: now.toISOString()
@@ -225,18 +232,35 @@ function capabilityManifest(observation: CapabilityObservation): CapabilityManif
   }
 }
 
-function latestProbeResult(probes: readonly ServiceProbeRecord[]): ServiceProbeRecord | null {
-  return [...probes]
-    .sort((a, b) =>
-      a.observedAt.getTime() - b.observedAt.getTime() ||
-      compareStrings(a.kind, b.kind) ||
-      compareStrings(a.url, b.url)
-    )
-    .at(-1) ?? null;
+function latestProbeForService(
+  left: ServiceProbeRecord,
+  right: ServiceProbeRecord
+): ServiceProbeRecord {
+  return left.observedAt.getTime() > right.observedAt.getTime() ||
+    (left.observedAt.getTime() === right.observedAt.getTime() &&
+      (compareStrings(left.kind, right.kind) > 0 ||
+        (left.kind === right.kind && compareStrings(left.url, right.url) > 0)))
+    ? left
+    : right;
 }
 
-function healthFromProbe(probe: ServiceProbeRecord | null): MarketplaceHealth {
-  if (probe === null) {
+/**
+ * A listing may advertise several independent transports. Collapse history
+ * per kind+URL first, then let one currently healthy transport keep the
+ * listing healthy; an unrelated newer failure must not mask it. If every
+ * current transport is degraded, expose the newest degraded observation.
+ */
+const endpointHealthMaxAgeMs = 60_000;
+
+function healthFromProbes(probes: readonly ServiceProbeRecord[], now: Date): MarketplaceHealth {
+  const latestByService = new Map<string, ServiceProbeRecord>();
+  for (const probe of probes) {
+    const key = `${probe.kind}\u0000${probe.url}`;
+    const previous = latestByService.get(key);
+    latestByService.set(key, previous === undefined ? probe : latestProbeForService(previous, probe));
+  }
+  const current = [...latestByService.values()];
+  if (current.length === 0) {
     return marketplaceHealthSchema.parse({
       endpointStatus: "unknown",
       observedAt: null,
@@ -244,8 +268,17 @@ function healthFromProbe(probe: ServiceProbeRecord | null): MarketplaceHealth {
       source: null
     });
   }
+  const observedNow = now.getTime();
+  const fresh = current.filter((probe) => {
+    const observedAt = probe.observedAt.getTime();
+    const ageMs = observedNow - observedAt;
+    return Number.isFinite(observedAt) && Number.isFinite(observedNow) && ageMs >= 0 && ageMs <= endpointHealthMaxAgeMs;
+  });
+  const healthy = fresh.filter((probe) => probe.validationStatus === "healthy");
+  const candidates = healthy.length > 0 ? healthy : fresh.length > 0 ? fresh : current;
+  const probe = candidates.reduce((latest, candidate) => latestProbeForService(latest, candidate));
   return marketplaceHealthSchema.parse({
-    endpointStatus: probe.validationStatus === "healthy" ? "healthy" : "unhealthy",
+    endpointStatus: healthy.length > 0 ? "healthy" : fresh.length > 0 ? "unhealthy" : "unknown",
     observedAt: probe.observedAt.toISOString(),
     latencyMs: probe.latencyMs,
     source: "agent-ingestion-probe"

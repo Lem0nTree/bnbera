@@ -1397,6 +1397,23 @@ code {
     flex-direction: column;
   }
 
+  .agent-card__topline {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .agent-card__topline .status-badge {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .detail-hero__meta .status-badge {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
   .agent-card__footer {
     align-items: flex-start;
     flex-direction: column;

@@ -12,11 +12,13 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@bnbera/agent-ingestion": "workspace:*",
     "@bnbera/config": "workspace:*",
     "@bnbera/domain": "workspace:*",
     "@bnbera/marketplace": "workspace:*",
     "@bnbera/ui": "workspace:*",
     "next": "16.0.1",
+    "pg": "8.13.1",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "zod": "3.24.1"

@@ -37,6 +37,9 @@ import type {
   IngestionFilter,
   IngestionRepository,
   ReconciliationRecord,
+  ScanDiscoveryCheckpoint,
+  ScanDiscoveryCheckpointWriteCondition,
+  ScanDiscoveryCheckpointRepository,
   ServiceObservation,
   ServiceProbeRecord
 } from "./types.js";
@@ -119,6 +122,23 @@ type CheckpointDbRow = {
   confirmation_threshold: number;
   cursor_version: number;
   last_reconciliation_at: Date | null;
+};
+
+type ScanDiscoveryCheckpointDbRow = {
+  scope: string;
+  query_digest: string;
+  initial_offset: number | string | null;
+  initial_cursor: string | null;
+  next_offset: number | string | null;
+  next_cursor: string | null;
+  page_size: number;
+  total: number | string | null;
+  pages_processed: number;
+  candidates_processed: number;
+  last_page_digest: string | null;
+  cursor_version: number;
+  completed_at: Date | null;
+  updated_at: Date;
 };
 
 function keyFor(identity: IdentityKey): string {
@@ -248,8 +268,39 @@ function mapCheckpoint(row: CheckpointDbRow): ChainCheckpoint {
   });
 }
 
+function mapScanDiscoveryCheckpoint(row: ScanDiscoveryCheckpointDbRow): ScanDiscoveryCheckpoint {
+  return {
+    scope: row.scope,
+    queryDigest: row.query_digest,
+    initialOffset: row.initial_offset === null ? null : safeInteger(row.initial_offset, "scan initial offset"),
+    initialCursor: row.initial_cursor,
+    nextOffset: row.next_offset === null ? null : safeInteger(row.next_offset, "scan next offset"),
+    nextCursor: row.next_cursor,
+    pageSize: safeInteger(row.page_size, "scan page size"),
+    total: row.total === null ? null : safeInteger(row.total, "scan total"),
+    pagesProcessed: safeInteger(row.pages_processed, "scan pages processed"),
+    candidatesProcessed: safeInteger(row.candidates_processed, "scan candidates processed"),
+    lastPageDigest: row.last_page_digest,
+    cursorVersion: safeInteger(row.cursor_version, "scan cursor version"),
+    completedAt: dateOrNull(row.completed_at, "scan completed timestamp"),
+    updatedAt: dateOrNull(row.updated_at, "scan updated timestamp") ?? new Date(0)
+  };
+}
+
 function conflict(message: string, details?: unknown): never {
   throw ingestionError("CHECKPOINT_CONFLICT", message, "reconcile_chain", details);
+}
+
+function scanScope(scope: string): string {
+  const normalized = scope.trim();
+  if (normalized.length === 0 || normalized.length > 160 || /[\u0000-\u001f\u007f]/u.test(normalized)) {
+    throw ingestionError("SCAN_JOB_CONFIG_INVALID", "The 8004scan job scope is invalid.", "fix_scan_configuration");
+  }
+  return normalized;
+}
+
+function scanConflict(message: string, details: unknown): never {
+  throw ingestionError("SCAN_JOB_CHECKPOINT_CONFLICT", message, "reload_scan_checkpoint", details);
 }
 
 function sameHash(left: string | null, right: string | null): boolean {
@@ -287,6 +338,7 @@ function identitySelect(): string {
 
 export type PostgresIngestionRepositoryOptions = {
   readonly now?: () => Date;
+  readonly ssl?: boolean;
 };
 
 /**
@@ -298,7 +350,7 @@ export type PostgresIngestionRepositoryOptions = {
  * `withTransaction` around ingestion, reconciliation, or claim mutations;
  * direct reads remain safe and are useful for health checks.
  */
-export class PostgresIngestionRepository implements IngestionRepository {
+export class PostgresIngestionRepository implements IngestionRepository, ScanDiscoveryCheckpointRepository {
   private readonly pool: PgPool | null;
   private readonly client: PgClient | null;
   private readonly queryable: Queryable;
@@ -307,7 +359,10 @@ export class PostgresIngestionRepository implements IngestionRepository {
   constructor(connection: string | PgPool | PgClient, options: PostgresIngestionRepositoryOptions = {}) {
     this.options = options;
     if (typeof connection === "string") {
-      this.pool = new Pool({ connectionString: connection });
+      this.pool = new Pool({
+        connectionString: connection,
+        ssl: options.ssl === true ? { rejectUnauthorized: true } : undefined
+      });
       this.client = null;
       this.queryable = this.pool;
     } else if ("release" in connection) {
@@ -348,7 +403,14 @@ export class PostgresIngestionRepository implements IngestionRepository {
       await client.query("COMMIT");
       return result;
     } catch (error) {
-      await client.query("ROLLBACK");
+      // Preserve the original application/constraint error if the connection
+      // has already failed while rolling back. A rollback failure must never
+      // hide the reason the unit of work was rejected.
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // The pool will discard an unusable client when it is released.
+      }
       throw error;
     } finally {
       client.release();
@@ -508,26 +570,46 @@ export class PostgresIngestionRepository implements IngestionRepository {
   async appendObservation(input: ChainObservation): Promise<ChainObservation> {
     const row = observationToRow(input);
     const identity = await this.identityId(row.identityKey);
-    const prior = await this.query<ObservationDbRow>(`${observationSelect()} WHERE o.transaction_hash=$1 AND o.log_index=$2`, [row.transactionHash, row.logIndex]);
-    if (prior.rows[0] !== undefined) {
-      const existing = mapObservation(prior.rows[0]);
-      if (existing.blockHash !== row.blockHash || existing.identityKey !== row.identityKey || existing.eventType !== row.eventType || existing.payloadDigest !== row.payloadDigest || existing.observedFields.join(",") !== row.observedFields.join(",")) {
-        throw ingestionError("DUPLICATE_CHAIN_LOG_CONFLICT", "A chain log position was observed with conflicting data.", "reconcile_chain", { existing, input });
-      }
-      return existing;
-    }
+    // The read-before-write check used by the original adapter was safe for
+    // sequential replays but could race two workers. Let PostgreSQL arbitrate
+    // the unique log position, then compare the canonical row below so a
+    // duplicate replay is idempotent while conflicting payloads fail closed.
     await this.query(
       `INSERT INTO erc8004_chain_observations
        (id, identity_id, event_type, transaction_hash, log_index, block_number, block_hash, confirmation_state,
         normalized_owner, normalized_agent_uri, normalized_agent_wallet, normalized_content_digest,
         observed_fields, first_observed_at, canonicalized_at, orphaned_at, payload_digest)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+       ON CONFLICT (transaction_hash, log_index) DO NOTHING`,
       [randomUUID(), identity.id, row.eventType, row.transactionHash, row.logIndex, row.blockNumber, row.blockHash,
         row.confirmationState, row.normalizedOwner, row.normalizedAgentUri, row.normalizedAgentWallet,
         row.normalizedContentDigest, JSON.stringify(row.observedFields), row.firstObservedAt, row.canonicalizedAt,
         row.orphanedAt, row.payloadDigest]
     );
-    return input;
+    const stored = await this.query<ObservationDbRow>(
+      `${observationSelect()} WHERE o.transaction_hash=$1 AND o.log_index=$2`,
+      [row.transactionHash, row.logIndex]
+    );
+    const existingRow = stored.rows[0];
+    if (existingRow === undefined) {
+      throw ingestionError("REPOSITORY_FAILURE", "The chain observation was not readable after persistence.", "retry_repository");
+    }
+    const existing = mapObservation(existingRow);
+    if (
+      existing.blockHash !== row.blockHash ||
+      existing.identityKey !== row.identityKey ||
+      existing.eventType !== row.eventType ||
+      existing.payloadDigest !== row.payloadDigest ||
+      existing.observedFields.join(",") !== row.observedFields.join(",")
+    ) {
+      throw ingestionError(
+        "DUPLICATE_CHAIN_LOG_CONFLICT",
+        "A chain log position was observed with conflicting data.",
+        "reconcile_chain",
+        { existing, input }
+      );
+    }
+    return existing;
   }
 
   async findObservation(transactionHash: string, logIndex: number): Promise<ChainObservation | null> {
@@ -600,16 +682,27 @@ export class PostgresIngestionRepository implements IngestionRepository {
       if (condition.expectedCursorVersion !== null || condition.expectedLastScannedBlockHash !== null || normalized.cursorVersion < 1) {
         conflict("The checkpoint create condition does not match an empty cursor.", { condition, input: normalized });
       }
-      await this.query(
+      const inserted = await this.query<{ id: string }>(
         `INSERT INTO chain_ingestion_checkpoints (id, chain_id, identity_registry, indexer_version,
           last_scanned_block, last_scanned_block_hash, last_finalized_block, last_finalized_block_hash,
           confirmation_threshold, cursor_version, last_reconciliation_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         ON CONFLICT (chain_id, identity_registry) DO NOTHING
+         RETURNING id`,
         [randomUUID(), normalized.chainId, normalized.identityRegistry, normalized.indexerVersion,
           normalized.lastScannedBlock, normalized.lastScannedBlockHash, normalized.lastFinalizedBlock,
           normalized.lastFinalizedBlockHash, normalized.confirmationThreshold, normalized.cursorVersion,
           normalized.lastReconciliationAt]
       );
+      if (inserted.rowCount !== 1) {
+        // Another worker created this cursor after our initial read. Report a
+        // structured CAS conflict instead of leaking a raw unique violation.
+        conflict("The ingestion checkpoint changed before this update completed.", {
+          input: normalized,
+          condition,
+          concurrentCreate: true
+        });
+      }
       return normalized;
     }
     if (condition.expectedCursorVersion !== existing.cursorVersion || !sameHash(condition.expectedLastScannedBlockHash, existing.lastScannedBlockHash)) conflict("The ingestion checkpoint changed before this update completed.", { existing, input: normalized, condition });
@@ -635,6 +728,180 @@ export class PostgresIngestionRepository implements IngestionRepository {
     );
     if (result.rowCount !== 1) conflict("The ingestion checkpoint changed before this update completed.", { existing, input: normalized });
     return normalized;
+  }
+
+  async getScanDiscoveryCheckpoint(scope: string): Promise<ScanDiscoveryCheckpoint | null> {
+    const normalizedScope = scanScope(scope);
+    const result = await this.query<ScanDiscoveryCheckpointDbRow>(
+      `SELECT scope, query_digest, initial_offset, initial_cursor, next_offset, next_cursor,
+              page_size, total, pages_processed, candidates_processed, last_page_digest,
+              cursor_version, completed_at, "updatedAt" AS updated_at
+         FROM scan_discovery_checkpoints
+        WHERE scope=$1`,
+      [normalizedScope]
+    );
+    return result.rows[0] === undefined ? null : mapScanDiscoveryCheckpoint(result.rows[0]);
+  }
+
+  async saveScanDiscoveryCheckpoint(
+    input: ScanDiscoveryCheckpoint,
+    condition: ScanDiscoveryCheckpointWriteCondition
+  ): Promise<ScanDiscoveryCheckpoint> {
+    const normalizedScope = scanScope(input.scope);
+    if (
+      normalizedScope !== input.scope ||
+      !/^[0-9A-Fa-f]{64}$/u.test(input.queryDigest) ||
+      (input.initialOffset !== null && input.initialCursor !== null) ||
+      (input.nextOffset !== null && input.nextCursor !== null) ||
+      !Number.isSafeInteger(input.pageSize) ||
+      input.pageSize <= 0 ||
+      !Number.isSafeInteger(input.pagesProcessed) ||
+      input.pagesProcessed < 0 ||
+      !Number.isSafeInteger(input.candidatesProcessed) ||
+      input.candidatesProcessed < 0 ||
+      !Number.isSafeInteger(input.cursorVersion) ||
+      input.cursorVersion <= 0 ||
+      (input.lastPageDigest !== null && !/^[0-9A-Fa-f]{64}$/u.test(input.lastPageDigest)) ||
+      (input.completedAt === null) !== (input.nextOffset !== null || input.nextCursor !== null)
+    ) {
+      scanConflict("The 8004scan checkpoint shape is invalid.", { input });
+    }
+    const existing = await this.getScanDiscoveryCheckpoint(normalizedScope);
+    if (existing === null) {
+      if (
+        condition.expectedCursorVersion !== null ||
+        condition.expectedQueryDigest !== input.queryDigest ||
+        condition.expectedInitialOffset !== input.initialOffset ||
+        condition.expectedInitialCursor !== input.initialCursor ||
+        input.cursorVersion !== 1
+      ) {
+        scanConflict("The scan checkpoint create condition does not match an empty cursor.", { condition, input });
+      }
+      const inserted = await this.query<{ scope: string }>(
+        `INSERT INTO scan_discovery_checkpoints
+          (id, scope, query_digest, initial_offset, initial_cursor, next_offset, next_cursor,
+           page_size, total, pages_processed, candidates_processed, last_page_digest,
+           cursor_version, completed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+         ON CONFLICT (scope) DO NOTHING
+         RETURNING scope`,
+        [randomUUID(), normalizedScope, input.queryDigest, input.initialOffset, input.initialCursor,
+          input.nextOffset, input.nextCursor, input.pageSize, input.total, input.pagesProcessed,
+          input.candidatesProcessed, input.lastPageDigest, input.cursorVersion, input.completedAt]
+      );
+      if (inserted.rowCount !== 1) {
+        scanConflict("The 8004scan checkpoint changed before this page completed.", {
+          condition,
+          input,
+          concurrentCreate: true
+        });
+      }
+      return input;
+    }
+    if (
+      condition.expectedCursorVersion !== existing.cursorVersion ||
+      condition.expectedQueryDigest !== existing.queryDigest ||
+      condition.expectedInitialOffset !== existing.initialOffset ||
+      condition.expectedInitialCursor !== existing.initialCursor
+    ) {
+      scanConflict("The 8004scan checkpoint changed before this page completed.", { existing, input, condition });
+    }
+    if (input.cursorVersion !== existing.cursorVersion + 1) {
+      scanConflict("The 8004scan checkpoint cursor must advance exactly once.", { existing, input });
+    }
+    if (existing.completedAt !== null) {
+      scanConflict("A completed 8004scan checkpoint cannot be advanced.", { existing, input });
+    }
+    if (input.scope !== existing.scope || input.queryDigest !== existing.queryDigest) {
+      scanConflict("The 8004scan checkpoint query scope is immutable.", { existing, input });
+    }
+    if (input.initialOffset !== existing.initialOffset || input.initialCursor !== existing.initialCursor) {
+      scanConflict("The 8004scan checkpoint start position is immutable.", { existing, input });
+    }
+    if (input.pageSize !== existing.pageSize) {
+      scanConflict("The 8004scan checkpoint page size is immutable.", { existing, input });
+    }
+    if (input.pagesProcessed !== existing.pagesProcessed + 1 || input.candidatesProcessed < existing.candidatesProcessed) {
+      scanConflict("The 8004scan checkpoint counters must advance monotonically.", { existing, input });
+    }
+    if (existing.total !== null && input.total !== null && input.total !== existing.total) {
+      scanConflict("The 8004scan total changed within one query stream.", { existing, input });
+    }
+    if (
+      (existing.nextOffset !== null && input.nextCursor !== null) ||
+      (existing.nextCursor !== null && input.nextOffset !== null)
+    ) {
+      scanConflict("The 8004scan pagination mode changed within one query stream.", { existing, input });
+    }
+    if (existing.nextOffset !== null && input.nextOffset !== null && input.nextOffset <= existing.nextOffset) {
+      scanConflict("The 8004scan offset must advance monotonically.", { existing, input });
+    }
+    if (existing.nextCursor !== null && input.nextCursor !== null && input.nextCursor === existing.nextCursor) {
+      scanConflict("The 8004scan cursor must advance monotonically.", { existing, input });
+    }
+    const result = await this.query(
+      `UPDATE scan_discovery_checkpoints SET
+          query_digest=$1, initial_offset=$2, initial_cursor=$3, next_offset=$4, next_cursor=$5,
+          page_size=$6, total=$7, pages_processed=$8, candidates_processed=$9,
+          last_page_digest=$10, cursor_version=$11, completed_at=$12, "updatedAt"=now()
+        WHERE scope=$13 AND cursor_version=$14`,
+      [input.queryDigest, input.initialOffset, input.initialCursor, input.nextOffset, input.nextCursor,
+        input.pageSize, input.total, input.pagesProcessed, input.candidatesProcessed,
+        input.lastPageDigest, input.cursorVersion, input.completedAt, normalizedScope, existing.cursorVersion]
+    );
+    if (result.rowCount !== 1) scanConflict("The 8004scan checkpoint changed before this page completed.", { existing, input });
+    return input;
+  }
+
+  async withScanDiscoveryRunLock<T>(scope: string, work: () => Promise<T>): Promise<T> {
+    const normalizedScope = scanScope(scope);
+    if (this.client !== null) {
+      const lock = await this.query<{ locked: boolean }>(
+        "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS locked",
+        [normalizedScope]
+      );
+      if (lock.rows[0]?.locked !== true) {
+        throw ingestionError(
+          "SCAN_JOB_ALREADY_RUNNING",
+          "An 8004scan discovery run is already active for this scope.",
+          "wait_for_scan_run",
+          undefined,
+          true
+        );
+      }
+      return work();
+    }
+    if (this.pool === null) throw new Error("Postgres ingestion repository has no connection");
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const lock = await client.query<{ locked: boolean }>(
+        "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS locked",
+        [normalizedScope]
+      );
+      if (lock.rows[0]?.locked !== true) {
+        await client.query("ROLLBACK");
+        throw ingestionError(
+          "SCAN_JOB_ALREADY_RUNNING",
+          "An 8004scan discovery run is already active for this scope.",
+          "wait_for_scan_run",
+          undefined,
+          true
+        );
+      }
+      const result = await work();
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Preserve the original job error and let the pool discard a failed client.
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async getClaim(identityKey: IdentityKey): Promise<ClaimRecord | null> {

@@ -1,7 +1,30 @@
 import type { StatusTone } from "@bnbera/ui";
+import type { AgentCategory } from "@bnbera/domain";
 
 export function titleCase(value: string): string {
   return value.replaceAll("_", " ").replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
+}
+
+export function categoryLabel(category: AgentCategory): string {
+  const labels: Record<AgentCategory, string> = {
+    rebalancing: "LP rebalancing",
+    "grid-trading": "Grid trading",
+    "yield-optimisation": "Yield optimisation",
+    "health-factor": "Health factor",
+    uncategorized: "Uncategorized"
+  };
+  return labels[category];
+}
+
+export function categoryDescription(category: AgentCategory): string {
+  const descriptions: Record<AgentCategory, string> = {
+    rebalancing: "Range-aware liquidity operators with explicit protocol and risk boundaries.",
+    "grid-trading": "Bounded price-band strategies that disclose inventory and turnover limits.",
+    "yield-optimisation": "Structured venue comparisons with current-data provenance and assumptions.",
+    "health-factor": "Lending risk monitors that explain thresholds, data freshness, and authority.",
+    uncategorized: "Records that still need enough structured capability evidence for classification."
+  };
+  return descriptions[category];
 }
 
 export function compactAddress(address: string | null): string {

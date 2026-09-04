@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { Callout, DataModeBadge, StateAxisGrid, StatusBadge } from "@bnbera/ui";
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
-import { categoryLabel } from "@/lib/marketplace-contract";
-import { compactAddress, formatObservedAt, joinOrFallback, statusTone, titleCase } from "@/lib/presentation";
+import { categoryLabel, compactAddress, formatObservedAt, joinOrFallback, statusTone, titleCase } from "@/lib/presentation";
 import { ActivationPanel } from "./activation-panel";
 import { CompareToggle } from "./compare-toggle";
 

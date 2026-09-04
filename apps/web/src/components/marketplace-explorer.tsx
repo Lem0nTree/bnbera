@@ -4,8 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Callout, DataModeBadge, EmptyState, LoadingState, StatusBadge } from "@bnbera/ui";
 import type { MarketplaceSearchResponse } from "@/lib/marketplace-contract";
-import { categoryDescription, categoryLabel } from "@/lib/marketplace-contract";
-import { titleCase } from "@/lib/presentation";
+import { categoryDescription, categoryLabel, titleCase } from "@/lib/presentation";
 import { AgentCard } from "./agent-card";
 
 const categories = [

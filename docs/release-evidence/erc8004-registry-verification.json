@@ -1,0 +1,185 @@
+{
+  "evidenceType": "live-read-only",
+  "checkedAt": "2026-09-04T10:30:41.106Z",
+  "source": {
+    "erc8004Spec": {
+      "url": "https://github.com/ethereum/ERCs",
+      "commit": "503591a6e80e6e1affdd6403341e25269141f046",
+      "path": "ERCS/erc-8004.md",
+      "blob": "7653a80922c0bf0243669f30e7a2d4aabfe006aa",
+      "sha256": "249dc3d96ad7bbe4afd25cacd14be942eb87751abcf1608bab19a610f3c3f8a9",
+      "retrievedAt": "2026-09-04T10:26:37Z"
+    },
+    "erc8004Contracts": {
+      "url": "https://github.com/erc-8004/erc-8004-contracts",
+      "commit": "b9e466c250744a7e06b13dff9d3c2844ed64f825",
+      "retrievedAt": "2026-09-04T10:26:37Z",
+      "readmePath": "README.md",
+      "readmeBlob": "d44087fd501689730ad1e5fd69ad8c5a83b67ede",
+      "deploymentPath": "scripts/addresses.ts",
+      "deploymentBlob": "7e98fdcceee3abd391643a0e51a890686257c342",
+      "compiler": {
+        "solidity": "0.8.24",
+        "evmVersion": "shanghai",
+        "optimizer": true,
+        "optimizerRuns": 200,
+        "viaIR": true,
+        "openzeppelinContracts": "5.4.0",
+        "openzeppelinContractsUpgradeable": "5.4.0"
+      },
+      "abiHashAlgorithm": "sha256(JSON.stringify(JSON.parse(abiBytes)))",
+      "abiArtifacts": {
+        "identityRegistry": {
+          "path": "abis/IdentityRegistry.json",
+          "blob": "ea5ccdf359405a24b9540bb67e22f3583fe67267",
+          "rawSha256": "cdb8e30f41a56ed53421126dab87551ff2a178b8463646f69f75bc5dc9620564",
+          "sha256": "6d5974b564d266507a53f65951adcd0ab288904d5a716a354ea237176ece8f83"
+        },
+        "reputationRegistry": {
+          "path": "abis/ReputationRegistry.json",
+          "blob": "c7d8affbc3628fcf09d4e2dbf3e05812ab3e81e0",
+          "rawSha256": "867b7975a5f2f9fee38c4a148a84471b141f4de91409ccc0c6bebe3df4f04001",
+          "sha256": "867b7975a5f2f9fee38c4a148a84471b141f4de91409ccc0c6bebe3df4f04001"
+        }
+      },
+      "sourceBlobs": {
+        "identityRegistry": "134b93126ae856548b5f3b09935c7b25336f01f3",
+        "reputationRegistry": "6d5ad6b1a8ccd78e2c36990b0fa9b74b68b9ea35",
+        "proxy": "30b6a155de08046aad766d740f405d26b38d134e",
+        "minimalUups": "edbc321e8525e581a877a6461f9161a083189e8e",
+        "minimalUupsMainnet": "993c931b5645367cf5789d032107f66da46b2293",
+        "hardhatConfig": "6fa88a76cd26bfc00c628d964ffee5fec2afeb98"
+      }
+    }
+  },
+  "abi": {
+    "hashAlgorithm": "sha256(JSON.stringify(JSON.parse(abiBytes)))",
+    "canonicalSha256": {
+      "identityRegistry": "6d5974b564d266507a53f65951adcd0ab288904d5a716a354ea237176ece8f83",
+      "reputationRegistry": "867b7975a5f2f9fee38c4a148a84471b141f4de91409ccc0c6bebe3df4f04001"
+    },
+    "functionSelectors": {
+      "identityRegistry": {
+        "ownerOf(uint256)": "0x6352211e",
+        "getAgentWallet(uint256)": "0x00339509",
+        "tokenURI(uint256)": "0xc87b56dd",
+        "getMetadata(uint256,string)": "0xcb4799f2",
+        "getVersion()": "0x0d8e6e2c"
+      },
+      "reputationRegistry": {
+        "getIdentityRegistry()": "0xbc4d861b",
+        "getSummary(uint256,address[],string,string)": "0x81bbba58",
+        "readFeedback(uint256,address,uint64)": "0x232b0810",
+        "readAllFeedback(uint256,address[],string,string,bool)": "0xd9d84224"
+      }
+    },
+    "eventTopics": {
+      "identityRegistry": {
+        "Registered(uint256,string,address)": "0xca52e62c367d81bb2e328eb795f7c7ba24afb478408a26c0e201d155c449bc4a",
+        "URIUpdated(uint256,string,address)": "0x3a2c7fffc2cba7582c690e3b82c453ea02a308326a98a3ad7576c606336409fb",
+        "MetadataSet(uint256,string,string,bytes)": "0x2c149ed548c6d2993cd73efe187df6eccabe4538091b33adbd25fafdb8a1468b"
+      },
+      "reputationRegistry": {
+        "NewFeedback(uint256,address,uint64,int128,uint8,string,string,string,string,string,bytes32)": "0x6a4a61743519c9d648a14e6493f47dbe3ff1aa29e7785c96c8326a205e58febc",
+        "FeedbackRevoked(uint256,address,uint64)": "0x25156fd3288212246d8b008d5921fde376c71ed14ac2e072a506eb06fde6d09d",
+        "ResponseAppended(uint256,address,uint64,address,string,bytes32)": "0xb1c6be0b5b8aef6539e2fac0fd131a2faa7b49edf8e505b5eb0ad487d56051d4"
+      }
+    }
+  },
+  "networks": [
+    {
+      "networkId": 56,
+      "name": "bsc-mainnet",
+      "environment": "mainnet",
+      "endpoint": "https://bsc-dataseed.bnbchain.org",
+      "observedChainId": 56,
+      "latestBlock": 119902962,
+      "latestBlockHash": "0xce3c39c257d8d965f0f13b18f042ad322b811e0020f9cfc27e273b1848556668",
+      "verificationAgentId": "333061",
+      "identityRead": {
+        "owner": "0x697a8125af2cc8489d8219664b023d441034608d",
+        "agentWallet": "0x697a8125af2cc8489d8219664b023d441034608d",
+        "tokenUriScheme": "https",
+        "tokenUriSha256": "0e6c72ed26cd206922fb293e1b18445602ad84b9add7b17cb0b4fd27082597ed"
+      },
+      "contracts": [
+        {
+          "name": "identityRegistry",
+          "address": "0x8004a169fb4a3325136eb29fa0ceb6d2e539a432",
+          "proxyBytecodeLength": 130,
+          "proxySha256": "e3b1c1b4c04b34f90557a867aaef6bf2d57c5674e7a9f24994ae498ffd0f6f85",
+          "implementation": "0x7274e874ca62410a93bd8bf61c69d8045e399c02",
+          "implementationBytecodeLength": 14474,
+          "implementationSha256": "201b7634af2de088c58868052856922ea8534c47e2837f19529460e2fafb4ff1",
+          "implementationSlot": "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+        },
+        {
+          "name": "reputationRegistry",
+          "address": "0x8004baa17c55a88189ae136b182e5fda19de9b63",
+          "proxyBytecodeLength": 130,
+          "proxySha256": "e3b1c1b4c04b34f90557a867aaef6bf2d57c5674e7a9f24994ae498ffd0f6f85",
+          "implementation": "0x16e0fa7f7c56b9a767e34b192b51f921be31da34",
+          "implementationBytecodeLength": 10491,
+          "implementationSha256": "0d8bb97bb04ab481bb3344859621be50eb219ffa37dfe8ee3907ae166e21e523",
+          "implementationSlot": "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+        }
+      ],
+      "providerComparison": {
+        "providers": [
+          "https://bsc-dataseed.bnbchain.org",
+          "https://bsc-dataseed1.bnbchain.org"
+        ],
+        "sameChainAndBytecode": true,
+        "secondaryLatestBlock": 119902962,
+        "secondaryLatestBlockHash": "0xce3c39c257d8d965f0f13b18f042ad322b811e0020f9cfc27e273b1848556668"
+      }
+    },
+    {
+      "networkId": 97,
+      "name": "bsc-testnet",
+      "environment": "testnet",
+      "endpoint": "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
+      "observedChainId": 97,
+      "latestBlock": 129047401,
+      "latestBlockHash": "0x51347b814e1777823b46102d44e5fc8bf0c0e26df0530d6e11153f328e4fa460",
+      "verificationAgentId": "1",
+      "identityRead": {
+        "owner": "0x80de10e23b7a4c424d0af8ecbcf9d460a073967c",
+        "agentWallet": "0x80de10e23b7a4c424d0af8ecbcf9d460a073967c",
+        "tokenUriScheme": "data",
+        "tokenUriSha256": "4ef7b7b2909dfc40a1fa748c7d62bf009fb7d625f77d27e4a755a53288e0b9dd"
+      },
+      "contracts": [
+        {
+          "name": "identityRegistry",
+          "address": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+          "proxyBytecodeLength": 130,
+          "proxySha256": "e3b1c1b4c04b34f90557a867aaef6bf2d57c5674e7a9f24994ae498ffd0f6f85",
+          "implementation": "0x7274e874ca62410a93bd8bf61c69d8045e399c02",
+          "implementationBytecodeLength": 14474,
+          "implementationSha256": "201b7634af2de088c58868052856922ea8534c47e2837f19529460e2fafb4ff1",
+          "implementationSlot": "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+        },
+        {
+          "name": "reputationRegistry",
+          "address": "0x8004b663056a597dffe9eccc1965a193b7388713",
+          "proxyBytecodeLength": 130,
+          "proxySha256": "e3b1c1b4c04b34f90557a867aaef6bf2d57c5674e7a9f24994ae498ffd0f6f85",
+          "implementation": "0x16e0fa7f7c56b9a767e34b192b51f921be31da34",
+          "implementationBytecodeLength": 10491,
+          "implementationSha256": "0d8bb97bb04ab481bb3344859621be50eb219ffa37dfe8ee3907ae166e21e523",
+          "implementationSlot": "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+        }
+      ],
+      "providerComparison": {
+        "providers": [
+          "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
+          "https://data-seed-prebsc-2-s1.bnbchain.org:8545"
+        ],
+        "sameChainAndBytecode": true,
+        "secondaryLatestBlock": 129047401,
+        "secondaryLatestBlockHash": "0x51347b814e1777823b46102d44e5fc8bf0c0e26df0530d6e11153f328e4fa460"
+      }
+    }
+  ]
+}

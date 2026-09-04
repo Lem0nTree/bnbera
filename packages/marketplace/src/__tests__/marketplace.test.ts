@@ -31,9 +31,28 @@ describe("MarketplaceReadService", () => {
     const response = await service(new InMemoryMarketplaceSource()).browse();
 
     expect(response.meta.sourceStatus).toBe("empty");
+    expect(response.meta.sourceKind).toBeNull();
+    expect(response.meta.refreshedAt).toBeNull();
     expect(response.meta.fixtureCount).toBe(0);
     expect(response.results).toEqual([]);
     expect(response.excluded).toEqual([]);
+  });
+
+  it("retains degraded source metadata when a requested detail is absent", async () => {
+    const read = await service(new InMemoryMarketplaceSource([], {
+      status: "degraded",
+      sourceName: "postgres-ingestion-read-model",
+      warning: "The indexed projection is stale."
+    })).readAgent("missing-agent");
+
+    expect(read.agent).toBeNull();
+    expect(read.meta).toMatchObject({
+      sourceStatus: "degraded",
+      sourceName: "postgres-ingestion-read-model",
+      warning: "The indexed projection is stale.",
+      sourceKind: null,
+      retrievalMode: "deterministic"
+    });
   });
 
   it("supports category, text, protocol, and atomic-price filters", async () => {
@@ -181,6 +200,8 @@ describe("MarketplaceReadService", () => {
     ).search();
 
     expect(response.meta.sourceStatus).toBe("degraded");
+    expect(response.meta.sourceKind).toBe("fixture");
+    expect(response.meta.retrievalMode).toBe("deterministic");
     expect(response.meta.warning).toBe("One optional enrichment source is unavailable.");
     expect(response.meta.fixtureCount).toBe(4);
     expect(response.results.every((agent) => agent.fixture?.label.includes("NOT LIVE") === true)).toBe(true);
@@ -364,20 +385,59 @@ describe("MarketplaceReadService", () => {
       errorCode: null,
       observedAt
     });
+    const alternateService = {
+      ...advertised,
+      kind: "mcp" as const,
+      url: "https://fixture.invalid/alternate/mcp",
+      protocolVersion: "fixture-mcp-v1"
+    };
+    await repository.upsertService({
+      ...alternateService,
+      identityKey: fixture.identityKey,
+      capabilityManifestDigest: canonicalSha256Hex(fixture.capabilities)
+    });
+    await repository.appendProbeResult({
+      identityKey: fixture.identityKey,
+      kind: advertised.kind,
+      url: advertised.url,
+      validationStatus: "unhealthy",
+      statusCode: 503,
+      latencyMs: 80,
+      safeCapabilityProbe: null,
+      errorCode: "SERVICE_UPSTREAM_UNAVAILABLE",
+      observedAt: new Date(observedAt.getTime() + 30_000)
+    });
+    await repository.appendProbeResult({
+      identityKey: fixture.identityKey,
+      kind: alternateService.kind,
+      url: alternateService.url,
+      validationStatus: "healthy",
+      statusCode: 405,
+      latencyMs: 25,
+      safeCapabilityProbe: { protocol: "mcp" },
+      errorCode: null,
+      observedAt: new Date(observedAt.getTime() + 5_000)
+    });
 
     const metadata = {
       ...metadataFromFixture(fixture),
       fixture: null
     };
+    let sourceNow = now;
     const source = new IngestionMarketplaceSource(
       repository,
       new InMemoryMarketplaceMetadataSource([metadata]),
-      { now: () => now }
+      { now: () => sourceNow }
     );
     const snapshot = await source.read();
     expect(snapshot.records[0]?.identityKey).toBe(fixture.identityKey);
     expect(snapshot.records[0]?.provenance.sourceKind).toBe("ingestion");
     expect(snapshot.records[0]?.fixture).toBeNull();
+    expect(snapshot.records[0]?.health).toMatchObject({
+      endpointStatus: "healthy",
+      latencyMs: 25,
+      source: "agent-ingestion-probe"
+    });
 
     const response = await service(source).search();
 
@@ -388,6 +448,13 @@ describe("MarketplaceReadService", () => {
       "LISTING_NOT_PUBLISHED",
       "VERIFICATION_PENDING"
     ]);
+
+    sourceNow = new Date("2026-09-02T12:01:31.000Z");
+    const staleSnapshot = await source.read();
+    expect(staleSnapshot.records[0]?.health).toMatchObject({
+      endpointStatus: "unknown",
+      source: "agent-ingestion-probe"
+    });
   });
 });
 

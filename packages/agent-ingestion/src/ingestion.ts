@@ -176,12 +176,25 @@ export class AgentIngestionService {
 
   async ingestCandidates(inputs: readonly IdentityCandidate[]): Promise<readonly CandidateIngestionResult[]> {
     return this.repository.withTransaction(async (unitOfWork) => {
-      const results: CandidateIngestionResult[] = [];
-      for (const input of inputs) {
-        results.push(await this.ingestCandidateInTransaction(unitOfWork, input));
-      }
-      return results;
+      return this.ingestCandidatesWithinTransaction(unitOfWork, inputs);
     });
+  }
+
+  /**
+   * Apply a page to an already-open repository transaction. The resumable
+   * 8004scan job uses this to commit candidates and its provider checkpoint as
+   * one unit; callers outside an existing transaction should use
+   * `ingestCandidates` instead.
+   */
+  async ingestCandidatesWithinTransaction(
+    repository: IngestionRepository,
+    inputs: readonly IdentityCandidate[]
+  ): Promise<readonly CandidateIngestionResult[]> {
+    const results: CandidateIngestionResult[] = [];
+    for (const input of inputs) {
+      results.push(await this.ingestCandidateInTransaction(repository, input));
+    }
+    return results;
   }
 
   async ingestRegistryEvents(

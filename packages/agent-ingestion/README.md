@@ -80,3 +80,50 @@ credential rejection, dynamic service normalization, bounded probes, owner
 claim verification, NFT-owner/`agentWallet` separation, stale and revoked
 claims, finality promotion, checkpointing, reorg rewind, orphan exclusion,
 and replacement-chain replay.
+
+## Resumable 8004scan discovery job
+
+`Erc8004ScanJob` is the bounded server-side page runner for the reviewed
+8004scan list endpoint. It requires both `ERC8004_INGESTION_ENABLED` and
+`ERC8004SCAN_DISCOVERY_ENABLED`; when either flag is absent or false it returns
+an explicit disabled result without reading the provider or database.
+
+Each stable query scope stores its offset/cursor, query digest, page size,
+progress counters, and completion state in `scan_discovery_checkpoints`.
+Candidates and their checkpoint commit in one repository transaction, so a
+failed page is replay-safe. PostgreSQL takes a transaction-scoped advisory
+lock per scope (`InMemoryIngestionRepository` has an equivalent test guard),
+and a compare-and-set checkpoint rejects bypassed or overlapping writers.
+
+Use `pnpm ops:erc8004scan` for the server-only CLI. It reads `EIGHTSCAN_API_KEY`
+through `EightHundredFourScanHttpClient.fromEnvironment`, emits sanitized
+metrics only, and never runs registry verification or marketplace publication.
+Disable `ERC8004SCAN_DISCOVERY_ENABLED` to stop provider calls while retaining
+the last checkpoint and normalized records; disable
+`ERC8004_INGESTION_ENABLED` to stop all new synchronization.
+
+## Deterministic category and semantic backfill
+
+`classifyAgent` and `DeterministicCategoryClassifier` combine verified public
+metadata, OASF skills/domains, A2A Agent Cards, MCP capability descriptors,
+protocols, and actions. The ruleset is versioned as
+`deterministic-rules-v1`, records bounded evidence and a digest, and leaves
+description-only or ambiguous records as `uncategorized`. `PgCategoryPredictionSink`
+persists append-only predictions idempotently and only refreshes the current
+agent-version projection.
+
+`EmbeddingBackfillJob` reads verified agent versions in stable UUID order,
+builds the allow-listed `bnbera-agent-semantic-v1` document, calls the injected
+provider, writes pgvector provenance, and advances a compare-and-set cursor
+only after the vector write succeeds. Run limits, retries, cancellation,
+configuration/model/dimension checks, and an advisory scope lock make restarts
+bounded and replay-safe. `PgEmbeddingBackfillRepository` exposes the reviewed
+checkpoint DDL as `embeddingBackfillCheckpointTableSql`; apply it through a
+database migration before enabling the worker.
+
+Both embedding gates (`ERC8004_INGESTION_ENABLED` and
+`MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED`) are false by default. Keep semantic
+retrieval disabled until the provider/model/version/dimension is accepted in
+the standards lock and the pgvector migration and live read-only evidence are
+available. Disable `MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED` to fall back to
+structured/full-text retrieval without deleting vectors or checkpoints.

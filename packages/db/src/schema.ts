@@ -405,6 +405,39 @@ export const chainIngestionCheckpoints = pgTable(
   ]
 );
 
+/**
+ * Provider pagination is deliberately separate from chain block checkpoints.
+ * An 8004scan offset/cursor carries no finality semantics and must not be
+ * consumed by the registry indexer as a block position.
+ */
+export const scanDiscoveryCheckpoints = pgTable(
+  "scan_discovery_checkpoints",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    scope: varchar("scope", { length: 160 }).notNull(),
+    queryDigest: varchar("query_digest", { length: 64 }).notNull(),
+    initialOffset: bigint("initial_offset", { mode: "number" }),
+    initialCursor: varchar("initial_cursor", { length: 256 }),
+    nextOffset: bigint("next_offset", { mode: "number" }),
+    nextCursor: varchar("next_cursor", { length: 256 }),
+    pageSize: integer("page_size").notNull(),
+    total: bigint("total", { mode: "number" }),
+    pagesProcessed: integer("pages_processed").notNull().default(0),
+    candidatesProcessed: integer("candidates_processed").notNull().default(0),
+    lastPageDigest: varchar("last_page_digest", { length: 64 }),
+    cursorVersion: integer("cursor_version").notNull().default(1),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    updatedAt: now()
+  },
+  (table) => [
+    uniqueIndex("scan_discovery_checkpoint_scope_unique").on(table.scope),
+    index("scan_discovery_checkpoint_updated_idx").on(table.updatedAt),
+    check("scan_discovery_checkpoint_query_digest_check", sql`${table.queryDigest} ~ '^[0-9A-Fa-f]{64}$'`),
+    check("scan_discovery_checkpoint_cursor_check", sql`(${table.nextOffset} IS NULL OR ${table.nextCursor} IS NULL)`),
+    check("scan_discovery_checkpoint_counters_check", sql`${table.pageSize} > 0 AND ${table.pagesProcessed} >= 0 AND ${table.candidatesProcessed} >= 0 AND ${table.cursorVersion} > 0`)
+  ]
+);
+
 export const agentClaimEvents = pgTable(
   "agent_claim_events",
   {
@@ -1346,6 +1379,7 @@ export const schemaTables = {
   agentCapabilityObservations,
   erc8004ChainObservations,
   chainIngestionCheckpoints,
+  scanDiscoveryCheckpoints,
   agentClaimEvents,
   agentReorgReconciliations,
   agentTemplates,

@@ -1,11 +1,12 @@
 import { AppError } from "@bnbera/config";
 import {
   marketplaceSearchResponseSchema,
-  parseMarketplaceSearchParams,
-  readMarketplaceApi
+  parseMarketplaceSearchParams
 } from "@/lib/marketplace-contract";
+import { readMarketplaceApi } from "@/lib/marketplace-server";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 export async function GET(request: Request): Promise<Response> {
   try {

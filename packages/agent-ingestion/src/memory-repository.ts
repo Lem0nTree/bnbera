@@ -27,6 +27,9 @@ import type {
   IngestionFilter,
   IngestionRepository,
   ReconciliationRecord,
+  ScanDiscoveryCheckpoint,
+  ScanDiscoveryCheckpointWriteCondition,
+  ScanDiscoveryCheckpointRepository,
   ServiceObservation,
   ServiceProbeRecord
 } from "./types.js";
@@ -58,11 +61,28 @@ function serviceKey(identityKey: IdentityKey, kind: string, url: string): string
   return `${identityKey}:${kind}:${url}`;
 }
 
+function scanCheckpointKey(scope: string): string {
+  const normalized = scope.trim();
+  if (
+    normalized.length === 0 ||
+    normalized.length > 160 ||
+    /[\u0000-\u001f\u007f]/u.test(normalized)
+  ) {
+    throw ingestionError(
+      "SCAN_JOB_CONFIG_INVALID",
+      "The 8004scan job scope is invalid.",
+      "fix_scan_configuration"
+    );
+  }
+  return normalized;
+}
+
 type RepositorySnapshot = {
   readonly identities: Map<IdentityKey, IdentityRecord>;
   readonly sources: Map<string, DiscoverySourceRecord>;
   readonly observations: Map<string, ChainObservation>;
   readonly checkpoints: Map<string, ChainCheckpoint>;
+  readonly scanCheckpoints: Map<string, ScanDiscoveryCheckpoint>;
   readonly claims: Map<IdentityKey, ClaimRecord>;
   readonly claimEvents: Map<IdentityKey, ClaimEvent[]>;
   readonly services: Map<string, ServiceObservation>;
@@ -77,11 +97,12 @@ type RepositorySnapshot = {
  * It intentionally models uniqueness and transaction boundaries so tests do
  * not accidentally bless duplicate ingestion or partial reorg updates.
  */
-export class InMemoryIngestionRepository implements IngestionRepository {
+export class InMemoryIngestionRepository implements IngestionRepository, ScanDiscoveryCheckpointRepository {
   private identities = new Map<IdentityKey, IdentityRecord>();
   private sources = new Map<string, DiscoverySourceRecord>();
   private observations = new Map<string, ChainObservation>();
   private checkpoints = new Map<string, ChainCheckpoint>();
+  private scanCheckpoints = new Map<string, ScanDiscoveryCheckpoint>();
   private claims = new Map<IdentityKey, ClaimRecord>();
   private claimEvents = new Map<IdentityKey, ClaimEvent[]>();
   private services = new Map<string, ServiceObservation>();
@@ -89,6 +110,7 @@ export class InMemoryIngestionRepository implements IngestionRepository {
   private probeResults: ServiceProbeRecord[] = [];
   private reconciliations: ReconciliationRecord[] = [];
   private transactionQueue: Promise<void> = Promise.resolve();
+  private activeScanScopes = new Set<string>();
 
   async withTransaction<T>(work: (repository: IngestionRepository) => Promise<T>): Promise<T> {
     let release: (() => void) | undefined;
@@ -119,6 +141,7 @@ export class InMemoryIngestionRepository implements IngestionRepository {
       sources: new Map(this.sources),
       observations: new Map(this.observations),
       checkpoints: new Map(this.checkpoints),
+      scanCheckpoints: new Map(this.scanCheckpoints),
       claims: new Map(this.claims),
       claimEvents: new Map([...this.claimEvents].map(([key, events]) => [key, [...events]])),
       services: new Map(this.services),
@@ -133,6 +156,7 @@ export class InMemoryIngestionRepository implements IngestionRepository {
     this.sources = snapshot.sources;
     this.observations = snapshot.observations;
     this.checkpoints = snapshot.checkpoints;
+    this.scanCheckpoints = snapshot.scanCheckpoints;
     this.claims = snapshot.claims;
     this.claimEvents = snapshot.claimEvents;
     this.services = snapshot.services;
@@ -472,6 +496,121 @@ export class InMemoryIngestionRepository implements IngestionRepository {
     return normalized;
   }
 
+  async getScanDiscoveryCheckpoint(scope: string): Promise<ScanDiscoveryCheckpoint | null> {
+    return this.scanCheckpoints.get(scanCheckpointKey(scope)) ?? null;
+  }
+
+  async saveScanDiscoveryCheckpoint(
+    input: ScanDiscoveryCheckpoint,
+    condition: ScanDiscoveryCheckpointWriteCondition
+  ): Promise<ScanDiscoveryCheckpoint> {
+    const normalizedScope = scanCheckpointKey(input.scope);
+    if (
+      normalizedScope !== input.scope ||
+      !/^[0-9A-Fa-f]{64}$/u.test(input.queryDigest) ||
+      (input.initialOffset !== null && input.initialCursor !== null) ||
+      (input.nextOffset !== null && input.nextCursor !== null) ||
+      !Number.isSafeInteger(input.pageSize) ||
+      input.pageSize <= 0 ||
+      !Number.isSafeInteger(input.pagesProcessed) ||
+      input.pagesProcessed < 0 ||
+      !Number.isSafeInteger(input.candidatesProcessed) ||
+      input.candidatesProcessed < 0 ||
+      !Number.isSafeInteger(input.cursorVersion) ||
+      input.cursorVersion <= 0 ||
+      (input.lastPageDigest !== null && !/^[0-9A-Fa-f]{64}$/u.test(input.lastPageDigest)) ||
+      (input.completedAt === null) !== (input.nextOffset !== null || input.nextCursor !== null)
+    ) {
+      throw scanCheckpointConflict("The 8004scan checkpoint shape is invalid.", { input });
+    }
+    const key = normalizedScope;
+    const existing = this.scanCheckpoints.get(key);
+    if (existing === undefined) {
+      if (
+        condition.expectedCursorVersion !== null ||
+        condition.expectedQueryDigest !== input.queryDigest ||
+        condition.expectedInitialOffset !== input.initialOffset ||
+        condition.expectedInitialCursor !== input.initialCursor
+      ) {
+        throw scanCheckpointConflict("The scan checkpoint create condition does not match an empty cursor.", {
+          condition,
+          input
+        });
+      }
+      if (input.cursorVersion !== 1) {
+        throw scanCheckpointConflict("The initial scan checkpoint version is invalid.", { input });
+      }
+      this.scanCheckpoints.set(key, input);
+      return input;
+    }
+    if (
+      condition.expectedCursorVersion !== existing.cursorVersion ||
+      condition.expectedQueryDigest !== existing.queryDigest ||
+      condition.expectedInitialOffset !== existing.initialOffset ||
+      condition.expectedInitialCursor !== existing.initialCursor
+    ) {
+      throw scanCheckpointConflict("The 8004scan checkpoint changed before this page completed.", {
+        existing,
+        input,
+        condition
+      });
+    }
+    if (input.cursorVersion !== existing.cursorVersion + 1) {
+      throw scanCheckpointConflict("The 8004scan checkpoint cursor must advance exactly once.", { existing, input });
+    }
+    if (existing.completedAt !== null) {
+      throw scanCheckpointConflict("A completed 8004scan checkpoint cannot be advanced.", { existing, input });
+    }
+    if (input.scope !== existing.scope || input.queryDigest !== existing.queryDigest) {
+      throw scanCheckpointConflict("The 8004scan checkpoint query scope is immutable.", { existing, input });
+    }
+    if (input.initialOffset !== existing.initialOffset || input.initialCursor !== existing.initialCursor) {
+      throw scanCheckpointConflict("The 8004scan checkpoint start position is immutable.", { existing, input });
+    }
+    if (input.pageSize !== existing.pageSize) {
+      throw scanCheckpointConflict("The 8004scan checkpoint page size is immutable.", { existing, input });
+    }
+    if (input.pagesProcessed !== existing.pagesProcessed + 1 || input.candidatesProcessed < existing.candidatesProcessed) {
+      throw scanCheckpointConflict("The 8004scan checkpoint counters must advance monotonically.", { existing, input });
+    }
+    if (existing.total !== null && input.total !== null && input.total !== existing.total) {
+      throw scanCheckpointConflict("The 8004scan total changed within one query stream.", { existing, input });
+    }
+    if (
+      (existing.nextOffset !== null && input.nextCursor !== null) ||
+      (existing.nextCursor !== null && input.nextOffset !== null)
+    ) {
+      throw scanCheckpointConflict("The 8004scan pagination mode changed within one query stream.", { existing, input });
+    }
+    if (existing.nextOffset !== null && input.nextOffset !== null && input.nextOffset <= existing.nextOffset) {
+      throw scanCheckpointConflict("The 8004scan offset must advance monotonically.", { existing, input });
+    }
+    if (existing.nextCursor !== null && input.nextCursor !== null && input.nextCursor === existing.nextCursor) {
+      throw scanCheckpointConflict("The 8004scan cursor must advance monotonically.", { existing, input });
+    }
+    this.scanCheckpoints.set(key, input);
+    return input;
+  }
+
+  async withScanDiscoveryRunLock<T>(scope: string, work: () => Promise<T>): Promise<T> {
+    const key = scanCheckpointKey(scope);
+    if (this.activeScanScopes.has(key)) {
+      throw ingestionError(
+        "SCAN_JOB_ALREADY_RUNNING",
+        "An 8004scan discovery run is already active for this scope.",
+        "wait_for_scan_run",
+        undefined,
+        true
+      );
+    }
+    this.activeScanScopes.add(key);
+    try {
+      return await work();
+    } finally {
+      this.activeScanScopes.delete(key);
+    }
+  }
+
   async getClaim(identityKey: IdentityKey): Promise<ClaimRecord | null> {
     return this.claims.get(identityKey) ?? null;
   }
@@ -644,6 +783,10 @@ function sameNullableHash(a: string | null, b: string | null): boolean {
 
 function checkpointConflict(message: string, details: unknown): ReturnType<typeof ingestionError> {
   return ingestionError("CHECKPOINT_CONFLICT", message, "reconcile_chain", details);
+}
+
+function scanCheckpointConflict(message: string, details: unknown): ReturnType<typeof ingestionError> {
+  return ingestionError("SCAN_JOB_CHECKPOINT_CONFLICT", message, "reload_scan_checkpoint", details);
 }
 
 function normalizeNullableAddress(value: string | null): string | null {

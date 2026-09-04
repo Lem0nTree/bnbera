@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { AppError, type ErrorEnvelope } from "@bnbera/config";
 import type { AgentCategory } from "@bnbera/domain";
 import {
@@ -27,17 +26,39 @@ import {
   type MarketplaceSourceSnapshot
 } from "./types.js";
 import type { MarketplaceSource } from "./source.js";
+import type { MarketplaceSemanticHit, MarketplaceSemanticRetriever } from "./hybrid.js";
+
+export type MarketplaceAgentRead = {
+  readonly agent: MarketplaceDetailResponse | null;
+  /**
+   * Preserve source metadata even when the requested identifier is absent.
+   * This lets an API distinguish a genuinely empty source from an all-
+   * withheld/degraded projection instead of returning an apparently healthy
+   * 404 for both cases.
+   */
+  readonly meta: MarketplaceResponseMeta;
+};
 
 export type MarketplaceReadServiceOptions = {
   readonly requestId?: () => string;
   readonly now?: () => Date;
   readonly allowedChainIds?: readonly number[];
+  /** Optional, explicitly enabled semantic ranker after hard eligibility. */
+  readonly semanticRetriever?: MarketplaceSemanticRetriever;
+  readonly semanticRetrievalEnabled?: boolean;
 };
 
 type EvaluatedListing = {
   readonly listing: MarketplaceListingInput;
   readonly evaluation: ReturnType<typeof evaluateListing>;
 };
+
+let requestSequence = 0;
+
+function createRequestId(): string {
+  requestSequence = requestSequence >= 1_000_000_000 ? 1 : requestSequence + 1;
+  return `req-marketplace-${Date.now().toString(36)}-${requestSequence.toString(36)}`;
+}
 
 /**
  * Read-only application seam for marketplace routes and tRPC/HTTP adapters.
@@ -48,6 +69,8 @@ export class MarketplaceReadService {
   private readonly policy: EligibilityPolicy;
   private readonly requestId: () => string;
   private readonly now: () => Date;
+  private readonly semanticRetriever: MarketplaceSemanticRetriever | undefined;
+  private readonly semanticRetrievalEnabled: boolean;
 
   public constructor(
     private readonly source: MarketplaceSource,
@@ -56,8 +79,10 @@ export class MarketplaceReadService {
     this.policy = {
       allowedChainIds: options.allowedChainIds ?? defaultReadChainIds
     };
-    this.requestId = options.requestId ?? randomUUID;
+    this.requestId = options.requestId ?? createRequestId;
     this.now = options.now ?? (() => new Date());
+    this.semanticRetriever = options.semanticRetriever;
+    this.semanticRetrievalEnabled = options.semanticRetrievalEnabled === true;
   }
 
   public async browse(input: unknown = {}): Promise<MarketplaceSearchResponse> {
@@ -89,9 +114,59 @@ export class MarketplaceReadService {
       listing,
       evaluation: evaluateListing(listing, request, evaluatedAt, this.policy)
     }));
-    const eligible = evaluated
+    let eligible = evaluated
       .filter((entry) => entry.evaluation.eligible)
       .sort(compareEvaluatedListings);
+    let semanticWarning: string | null = null;
+    let retrievalMode: MarketplaceResponseMeta["retrievalMode"] = "deterministic";
+    let semanticModelVersion: string | null = null;
+    if (this.semanticRetrievalEnabled && this.semanticRetriever !== undefined && request.query.trim().length > 0 && eligible.length > 0) {
+      try {
+        const rawHits = await this.semanticRetriever.search({
+          request,
+          candidateIdentityKeys: eligible.map((entry) => entry.listing.identityKey)
+        });
+        if (!Array.isArray(rawHits)) throw new Error("semantic retrieval returned an invalid hit set");
+        const hits = normalizeSemanticHits(rawHits, new Set(eligible.map((entry) => entry.listing.identityKey)));
+        const modelVersions = [...new Set(hits.map((hit) => hit.modelVersion))];
+        if (hits.length === 0) {
+          // A missing or incompatible vector index is not a semantic result.
+          // Preserve the hard-filtered deterministic order and label the
+          // response degraded instead of claiming a hybrid ranking.
+          semanticWarning = "Semantic retrieval returned no compatible embeddings; deterministic hard-filter and full-text ranking is active.";
+          retrievalMode = "fallback";
+        } else if (modelVersions.length > 1) {
+          // A mixed model result cannot be honestly represented as one hybrid
+          // index. Keep the deterministic ordering and identify the fallback.
+          semanticWarning = "Semantic retrieval returned mixed model versions; deterministic ranking is active.";
+          retrievalMode = "fallback";
+        } else {
+          retrievalMode = "hybrid";
+          semanticModelVersion = modelVersions[0] ?? null;
+          if (hits.length < eligible.length) {
+            semanticWarning = "Semantic retrieval is incomplete; deterministic ranking is retained for listings without compatible embeddings.";
+          }
+        }
+        const byIdentity = new Map(hits.map((hit) => [hit.identityKey, hit]));
+        if (retrievalMode === "hybrid") {
+          eligible = eligible
+            .map((entry, index) => ({ entry, index, hit: byIdentity.get(entry.listing.identityKey) }))
+            .sort((a, b) => {
+              if (a.hit !== undefined && b.hit !== undefined && a.hit.similarity !== b.hit.similarity) return b.hit.similarity - a.hit.similarity;
+              if (a.hit !== undefined && b.hit === undefined) return -1;
+              if (a.hit === undefined && b.hit !== undefined) return 1;
+              return compareEvaluatedListings(a.entry, b.entry) || a.index - b.index;
+            })
+            .map((item) => item.entry);
+        }
+      } catch {
+        semanticWarning = "Semantic retrieval degraded; deterministic hard-filter and full-text ranking is active.";
+        retrievalMode = "fallback";
+      }
+    } else if (this.semanticRetrievalEnabled && this.semanticRetriever === undefined && request.query.trim().length > 0 && eligible.length > 0) {
+      semanticWarning = "Semantic retrieval is enabled but no compatible index is configured; deterministic ranking is active.";
+      retrievalMode = "fallback";
+    }
     const excluded = evaluated
       .filter((entry) => !entry.evaluation.eligible)
       .sort(compareExcludedListings)
@@ -106,12 +181,18 @@ export class MarketplaceReadService {
       request,
       results: eligible.map((entry) => this.toCard(entry)),
       excluded,
-      meta: this.meta(snapshot, requestId, evaluatedAt)
+      meta: this.meta(snapshot, requestId, evaluatedAt, semanticWarning, retrievalMode, semanticModelVersion)
     };
     return marketplaceSearchResponseSchema.parse(response);
   }
 
-  public async getAgent(identifier: string): Promise<MarketplaceDetailResponse> {
+  /**
+   * Read one listing while retaining the source metadata for a missing
+   * identifier. `getAgent` below keeps its historical throwing contract for
+   * callers that need an AppError, while HTTP adapters can use this method to
+   * render truthful empty/degraded detail states.
+   */
+  public async readAgent(identifier: string): Promise<MarketplaceAgentRead> {
     const requestId = this.requestId();
     if (typeof identifier !== "string" || identifier.trim().length === 0) {
       throw marketplaceError(
@@ -123,23 +204,18 @@ export class MarketplaceReadService {
     }
     const snapshot = await this.readSnapshot(requestId);
     const normalizedIdentifier = identifier.trim();
+    const evaluatedAt = this.now();
+    const meta = this.meta(snapshot, requestId, evaluatedAt);
     const listing = snapshot.records.find(
       (candidate) =>
         candidate.slug === normalizedIdentifier || candidate.identityKey === normalizedIdentifier
     );
     if (listing === undefined) {
-      throw marketplaceError(
-        "MARKETPLACE_AGENT_NOT_FOUND",
-        "The requested marketplace agent was not found.",
-        requestId,
-        "choose another_agent"
-      );
+      return { agent: null, meta };
     }
-    const request = parseMarketplaceSearchRequest({});
-    const evaluatedAt = this.now();
     const evaluated: EvaluatedListing = {
       listing,
-      evaluation: evaluateListing(listing, request, evaluatedAt, this.policy)
+      evaluation: evaluateListing(listing, parseMarketplaceSearchRequest({}), evaluatedAt, this.policy)
     };
     const card = this.toCard(evaluated);
     const detail: MarketplaceAgentDetail = marketplaceAgentDetailSchema.parse({
@@ -154,10 +230,23 @@ export class MarketplaceReadService {
         latestExecution: listing.executionEvidence
       }
     });
-    return marketplaceDetailResponseSchema.parse({
-      agent: detail,
-      meta: this.meta(snapshot, requestId, evaluatedAt)
-    });
+    return {
+      agent: marketplaceDetailResponseSchema.parse({ agent: detail, meta }),
+      meta
+    };
+  }
+
+  public async getAgent(identifier: string): Promise<MarketplaceDetailResponse> {
+    const result = await this.readAgent(identifier);
+    if (result.agent !== null) return result.agent;
+    // `readAgent` deliberately returns null for a missing slug so the API can
+    // preserve source status. Keep the direct method's existing error shape.
+    throw marketplaceError(
+      "MARKETPLACE_AGENT_NOT_FOUND",
+      "The requested marketplace agent was not found.",
+      result.meta.requestId,
+      "choose another_agent"
+    );
   }
 
   public async compare(
@@ -312,16 +401,39 @@ export class MarketplaceReadService {
   private meta(
     snapshot: MarketplaceSourceSnapshot,
     requestId: string,
-    returnedAt: Date = this.now()
+    returnedAt: Date = this.now(),
+    warningOverride: string | null = null,
+    retrievalMode: MarketplaceResponseMeta["retrievalMode"] = "deterministic",
+    semanticModelVersion: string | null = null
   ): MarketplaceResponseMeta {
-    const sourceStatus = snapshot.records.length === 0 ? "empty" : snapshot.status;
+    const warning = [snapshot.warning, warningOverride]
+      .filter((warning): warning is string => warning !== null && warning !== undefined && warning.length > 0)
+      .join(" ")
+      .slice(0, 500) || null;
+    const sourceStatus = snapshot.status === "degraded" || warning !== null
+      ? "degraded"
+      : snapshot.records.length === 0
+        ? "empty"
+        : "healthy";
+    const fixtureCount = snapshot.records.filter((listing) => listing.fixture !== null).length;
+    const sourceKind = snapshot.records.length === 0
+      ? null
+      : fixtureCount === snapshot.records.length
+        ? "fixture"
+        : fixtureCount === 0
+          ? "ingestion"
+          : null;
     return {
       requestId,
       sourceStatus,
       sourceName: snapshot.sourceName,
-      warning: snapshot.warning,
+      sourceKind,
+      warning,
       returnedAt: returnedAt.toISOString(),
-      fixtureCount: snapshot.records.filter((listing) => listing.fixture !== null).length
+      refreshedAt: snapshot.refreshedAt,
+      fixtureCount,
+      retrievalMode,
+      semanticModelVersion
     };
   }
 
@@ -338,6 +450,34 @@ export class MarketplaceReadService {
       error
     ).toEnvelope();
   }
+}
+
+function normalizeSemanticHits(
+  hits: readonly MarketplaceSemanticHit[],
+  candidateKeys: ReadonlySet<string>
+): readonly MarketplaceSemanticHit[] {
+  const byIdentity = new Map<string, MarketplaceSemanticHit>();
+  for (const hit of hits) {
+    if (
+      typeof hit !== "object" ||
+      hit === null ||
+      typeof hit.identityKey !== "string" ||
+      typeof hit.modelVersion !== "string" ||
+      typeof hit.similarity !== "number" ||
+      !Number.isFinite(hit.similarity)
+    ) continue;
+    const identityKey = hit.identityKey.trim();
+    const modelVersion = hit.modelVersion.trim();
+    if (identityKey.length === 0 || modelVersion.length === 0 || !candidateKeys.has(identityKey)) continue;
+    const normalized: MarketplaceSemanticHit = {
+      identityKey,
+      modelVersion,
+      similarity: Math.max(-1, Math.min(1, hit.similarity))
+    };
+    const previous = byIdentity.get(identityKey);
+    if (previous === undefined || normalized.similarity > previous.similarity) byIdentity.set(identityKey, normalized);
+  }
+  return [...byIdentity.values()].sort((a, b) => b.similarity - a.similarity || compareStrings(a.identityKey, b.identityKey));
 }
 
 function compareEvaluatedListings(a: EvaluatedListing, b: EvaluatedListing): number {

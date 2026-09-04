@@ -1,0 +1,26 @@
+{
+  "evidenceType": "contract-only",
+  "provider": "8004scan",
+  "reviewedAt": "2026-09-04",
+  "openApiUrl": "https://api.8004scan.io/openapi.json",
+  "baseUrl": "https://api.8004scan.io/api/v1",
+  "openApiVersion": "0.4.363",
+  "openApiCanonicalSha256": "a9686ae41d7a4d2c52c8e67fca193db643fe6dcd16a14bbfb6f35435f69a15ea",
+  "openApiResponseSha256": "984ab5d6621c4ae555f30fb11fb831678a1355b68216f8edd2eed1f1e9c26eb1",
+  "endpoints": {
+    "list": "GET /api/v1/agents?limit={limit}&offset={offset}",
+    "semanticSearch": "GET /api/v1/agents/search/semantic?q={q}&limit={limit}&offset={offset}",
+    "detail": "GET /api/v1/agents/{chain_id}/{token_id}",
+    "fullIdentityDetail": "GET /api/v1/agents/{chain_id}/{registry_address}/{token_id}",
+    "chains": "GET /api/v1/chains"
+  },
+  "authentication": "X-API-Key (server-only EIGHTSCAN_API_KEY reference)",
+  "pagination": "offset",
+  "pageLimitMaximum": 100,
+  "status": "not-a-live-canary",
+  "limitations": [
+    "No credential or raw provider payload is stored in release evidence.",
+    "Registry ABI hashes and deployed-bytecode verification remain standards-lock prerequisites.",
+    "Embedding provider/model/version/dimension remain unaccepted; semantic retrieval stays disabled."
+  ]
+}
