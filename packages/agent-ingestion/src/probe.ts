@@ -318,11 +318,29 @@ function validateA2AAgentCard(
   if (body.skills.length > safeSummaryArrayLimit) {
     throw protocolError("SERVICE_A2A_AGENT_CARD_INVALID", "The A2A Agent Card has too many skills.", "reduce_agent_card");
   }
+  const skillSummaries: Readonly<Record<string, unknown>>[] = [];
   for (const skill of body.skills) {
     const value = plainObject(skill);
     if (value === null || publicString(value.id, 160) === null || publicString(value.name, 160) === null || publicString(value.description, 2_000) === null || !Array.isArray(value.tags)) {
       throw protocolError("SERVICE_A2A_AGENT_CARD_INVALID", "The A2A Agent Card contains an invalid skill.", "repair_agent_card");
     }
+    const tags = value.tags.map((tag) => publicString(tag, 128));
+    if (tags.length > safeSummaryArrayLimit || tags.some((tag) => tag === null)) {
+      throw protocolError("SERVICE_A2A_AGENT_CARD_INVALID", "The A2A Agent Card contains invalid skill tags.", "repair_agent_card");
+    }
+    const inputModes = Array.isArray(value.inputModes) ? value.inputModes.map((mode) => publicString(mode, 128)) : [];
+    const outputModes = Array.isArray(value.outputModes) ? value.outputModes.map((mode) => publicString(mode, 128)) : [];
+    if (inputModes.length > safeSummaryArrayLimit || outputModes.length > safeSummaryArrayLimit || inputModes.some((mode) => mode === null) || outputModes.some((mode) => mode === null)) {
+      throw protocolError("SERVICE_A2A_AGENT_CARD_INVALID", "The A2A Agent Card contains invalid skill modes.", "repair_agent_card");
+    }
+    skillSummaries.push({
+      id: publicString(value.id, 160)!,
+      name: publicString(value.name, 160)!,
+      description: publicString(value.description, 2_000)!,
+      tags,
+      inputModes,
+      outputModes
+    });
   }
 
   const securitySchemes = plainObject(body.securitySchemes);
@@ -342,6 +360,7 @@ function validateA2AAgentCard(
     protocolVersion,
     interfaceCount,
     skillCount: body.skills.length,
+    skills: skillSummaries,
     authenticationRequired: securityRequired,
     signatureCount: signatures,
     signatureValidation: signatures > 0 ? "not-performed" : "not-present"

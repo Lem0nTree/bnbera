@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { loadRuntimeConfig } from "@bnbera/config";
 import {
   BoundedMetadataResolver,
+  BoundedServiceProbe,
   buildSemanticDocument,
   classifyAgent,
   embedSemanticDocument,
@@ -36,6 +37,74 @@ describe("bounded ERC-8004 metadata resolution", () => {
     expect(resolution.contentType).toBe("application/json");
     expect(resolution.digestMatches).toBeNull();
     expect(resolver.parseRegistration(resolution).warnings).toContain("REGISTRATION_TYPE_MISSING");
+  });
+
+  it("maps ERC-8004 registration service name, endpoint, and version fields", async () => {
+    const metadata = encodeURIComponent(JSON.stringify({
+      type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+      name: "Health agent",
+      description: "Monitors liquidation health factor",
+      services: [{ name: "A2A", endpoint: "https://agent.example/a2a", version: "0.3.0" }]
+    }));
+    const candidate = {
+      identity,
+      source: "8004scan" as const,
+      sourceReference: "agent:97:0x1111111111111111111111111111111111111111:900719925474099312345",
+      observedAt: new Date("2026-09-02T00:00:00.000Z"),
+      normalizedIngestionVersion: "8004scan-test-v1",
+      metadata: {}
+    };
+    const blockHash = `0x${"ab".repeat(32)}`;
+    const pipeline = new Erc8004Pipeline({
+      repository: new InMemoryIngestionRepository(),
+      registryReader: {
+        getLatestBlock: vi.fn(async () => 100),
+        getTrustedBlockHash: vi.fn(async () => blockHash),
+        readIdentity: vi.fn(async () => ({
+          ownerAddress: "0x2222222222222222222222222222222222222222",
+          agentWallet: null,
+          agentUri: `data:application/json,${metadata}`,
+          contentDigest: null,
+          observedBlock: 100,
+          observedBlockHash: blockHash,
+          readConsistency: "provisional" as const,
+          ownerObservedBlock: 100,
+          agentWalletObservedBlock: 100,
+          agentUriObservedBlock: 100,
+          contentDigestObservedBlock: null
+        }))
+      } as never,
+      metadataResolver: new BoundedMetadataResolver(),
+      serviceProbe: new BoundedServiceProbe({
+        async probe() {
+          return {
+            statusCode: 200,
+            latencyMs: 12,
+            safeCapabilityProbe: {
+              protocol: "a2a",
+              valid: true,
+              protocolVersion: "0.3.0",
+              skills: [{ id: "health", description: "Monitor liquidation health factor" }]
+            }
+          };
+        }
+      }),
+      gates: { ERC8004_INGESTION_ENABLED: true, ERC8004SCAN_DISCOVERY_ENABLED: true }
+    });
+
+    const result = await pipeline.processCandidate(candidate);
+
+    expect(result.services).toHaveLength(1);
+    expect(result.services[0]).toMatchObject({
+      kind: "a2a",
+      url: "https://agent.example/a2a",
+      protocolVersion: "0.3.0"
+    });
+    expect(result.warnings).not.toContain("SERVICE_OBSERVATIONS_REJECTED");
+    expect(result.capabilityManifest).toMatchObject({
+      schemaVersion: "a2a-agent-card-0.3.0-adapter-v1",
+      capabilities: [{ id: "health", requiredProtocols: ["A2A/0.3.0"], allowedActions: ["message/send"] }]
+    });
   });
 
   it("blocks private targets and validates redirects and MIME", async () => {

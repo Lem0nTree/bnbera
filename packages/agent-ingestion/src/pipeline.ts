@@ -150,9 +150,14 @@ function publicRecord(value: unknown): Readonly<Record<string, unknown>> | null 
 function registrationServiceInput(value: unknown): unknown {
   const record = publicRecord(value);
   if (record === null) return value;
+  const advertisedKind = record.kind ?? record.type ?? record.name;
+  const normalizedKind = typeof advertisedKind === "string"
+    ? advertisedKind.trim().toLowerCase()
+    : advertisedKind;
   return {
     ...record,
-    ...(record.kind === undefined && record.type !== undefined ? { kind: record.type } : {}),
+    ...(record.kind === undefined && advertisedKind !== undefined ? { kind: normalizedKind } : {}),
+    ...(record.url === undefined && record.endpoint !== undefined ? { url: record.endpoint } : {}),
     ...(record.protocolVersion === undefined && record.protocol_version !== undefined
       ? { protocolVersion: record.protocol_version }
       : record.protocolVersion === undefined && record.version !== undefined
@@ -174,6 +179,51 @@ function explicitCapabilityManifest(value: unknown): unknown | undefined {
     return capabilities;
   }
   return undefined;
+}
+
+/**
+ * Adapt validated A2A Agent Card skills into marketplace capabilities. The
+ * schemas describe only the standard A2A protocol envelope; skill-specific
+ * parameters are intentionally not inferred from prose, tags, or examples.
+ */
+function capabilityManifestFromA2AProbes(probes: readonly ServiceProbeResult[]): CapabilityManifest | null {
+  for (const probe of probes) {
+    if (probe.kind !== "a2a" || probe.validationStatus !== "healthy") continue;
+    const summary = publicRecord(probe.safeCapabilityProbe);
+    if (summary?.valid !== true || summary.protocol !== "a2a" || !Array.isArray(summary.skills)) continue;
+    const protocolVersion = typeof summary.protocolVersion === "string" ? summary.protocolVersion.trim() : "";
+    // The reviewed operation and legacy envelope names below are specific to
+    // A2A 0.3. New major/minor versions require their own pinned adapter.
+    if (!/^0\.3(?:\.|$)/u.test(protocolVersion)) continue;
+    const capabilities = summary.skills.flatMap((skill) => {
+      const value = publicRecord(skill);
+      const id = typeof value?.id === "string" ? value.id.trim() : "";
+      const description = typeof value?.description === "string" ? value.description.trim() : "";
+      if (id.length === 0 || description.length === 0) return [];
+      return [{
+        id,
+        description,
+        inputSchema: {
+          $schema: "https://json-schema.org/draft/2020-12/schema",
+          title: "A2A MessageSendParams protocol envelope",
+          type: "object",
+          required: ["message"],
+          properties: {
+            message: { type: "object" }
+          }
+        },
+        outputSchema: {
+          $schema: "https://json-schema.org/draft/2020-12/schema",
+          title: "A2A Task or Message protocol result",
+          type: "object"
+        },
+        requiredProtocols: [`A2A/${protocolVersion}`],
+        allowedActions: ["message/send"]
+      }];
+    });
+    if (capabilities.length > 0) return { schemaVersion: `a2a-agent-card-${protocolVersion}-adapter-v1`, capabilities };
+  }
+  return null;
 }
 
 function identityKey(identity: Erc8004Identity): string {
@@ -389,6 +439,20 @@ export class Erc8004Pipeline {
         probes = await this.serviceProbe.probeManyAndPersist(this.repository, services, this.serviceProbeOptions);
       } catch {
         warnings.push("SERVICE_PROBE_FAILED");
+      }
+    }
+
+    if (capabilityManifest === null) {
+      const adaptedManifest = capabilityManifestFromA2AProbes(probes);
+      if (adaptedManifest !== null) {
+        try {
+          const observation = normalizeCapabilityManifest(key, candidate.source, adaptedManifest, this.now());
+          await this.repository.upsertCapabilities(observation);
+          capabilityManifest = observation.capabilityManifest as CapabilityManifest;
+          capabilityDigest = observation.manifestDigest;
+        } catch {
+          warnings.push("CAPABILITY_OBSERVATION_REJECTED");
+        }
       }
     }
 

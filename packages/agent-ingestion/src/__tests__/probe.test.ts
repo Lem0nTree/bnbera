@@ -94,7 +94,13 @@ describe("bounded advertised-service probes", () => {
     expect(response).toMatchObject({
       statusCode: 200,
       contractStatus: "healthy",
-      safeCapabilityProbe: { protocol: "a2a", contract: "agent-card", skillCount: 1, interfaceCount: 1 }
+      safeCapabilityProbe: {
+        protocol: "a2a",
+        contract: "agent-card",
+        skillCount: 1,
+        interfaceCount: 1,
+        skills: [{ id: "status", name: "Status", description: "Reports status.", tags: ["health"] }]
+      }
     });
 
     const genericJson = new HttpServiceProbeTransport({
