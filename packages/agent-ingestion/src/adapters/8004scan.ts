@@ -19,6 +19,7 @@ export const officialEightHundredFourScanContract = Object.freeze({
   openApiSha256: "a9686ae41d7a4d2c52c8e67fca193db643fe6dcd16a14bbfb6f35435f69a15ea",
   openApiRawSha256: "984ab5d6621c4ae555f30fb11fb831678a1355b68216f8edd2eed1f1e9c26eb1",
   listPath: "/agents",
+  latestPath: "/agents/latest",
   semanticSearchPath: "/agents/search/semantic",
   detailPath: "/agents/{chain_id}/{token_id}",
   fullDetailPath: "/agents/{chain_id}/{registry_address}/{token_id}",
@@ -51,6 +52,8 @@ export type EightHundredFourScanPage = {
   readonly total?: number;
   readonly limit?: number;
   readonly offset?: number;
+  /** Reviewed route used for this response; never contains provider payloads. */
+  readonly route?: "agents" | "agents/latest" | "agents/search/semantic";
 };
 
 export type EightHundredFourScanSemanticQuery = {
@@ -60,6 +63,7 @@ export type EightHundredFourScanSemanticQuery = {
   readonly limit?: number;
   readonly semanticWeight?: number;
   readonly similarityThreshold?: number;
+  readonly signal?: AbortSignal;
 };
 
 export type EightHundredFourScanChainsResponse = Readonly<Record<string, unknown>>;
@@ -70,6 +74,7 @@ export interface EightHundredFourScanClient {
 }
 
 export interface ExtendedEightHundredFourScanClient extends EightHundredFourScanClient {
+  listLatestCandidates(query: EightHundredFourScanQuery): Promise<EightHundredFourScanPage>;
   searchSemantic(query: EightHundredFourScanSemanticQuery): Promise<EightHundredFourScanPage>;
   getCandidate(chainId: number, agentId: string): Promise<unknown>;
   getCandidateByIdentity(identity: { readonly namespace: string; readonly chainId: number; readonly identityRegistry: string; readonly agentId: string }): Promise<unknown>;
@@ -191,6 +196,18 @@ function boundedInteger(value: number | undefined, fallback: number, minimum: nu
   return result;
 }
 
+const latestFallbackErrorCodes = new Set(["SCAN_TIMEOUT", "SCAN_UNAVAILABLE", "SCAN_RATE_LIMITED", "SCAN_CIRCUIT_OPEN"]);
+
+function shouldUseLatestFallback(error: unknown): boolean {
+  return error instanceof AppError
+    ? latestFallbackErrorCodes.has(error.code)
+    : false;
+}
+
+function isExtendedClient(client: EightHundredFourScanClient): client is ExtendedEightHundredFourScanClient {
+  return typeof (client as Partial<ExtendedEightHundredFourScanClient>).listLatestCandidates === "function";
+}
+
 function assertBaseUrl(value: string, allowInsecure: boolean): string {
   let parsed: URL;
   try {
@@ -248,8 +265,8 @@ export class EightHundredFourScanHttpClient implements ExtendedEightHundredFourS
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly cache = new Map<string, CachedResponse>();
   private lastRequestAt = 0;
-  private consecutiveFailures = 0;
-  private circuitOpenedAt: number | null = null;
+  /** Circuits are route-scoped: a failing /agents must not block /agents/latest. */
+  private readonly circuits = new Map<string, { failures: number; openedAt: number | null }>();
 
   public constructor(options: EightHundredFourScanHttpOptions = {}) {
     this.baseUrl = assertBaseUrl(options.baseUrl ?? officialEightHundredFourScanContract.baseUrl, options.allowInsecureBaseUrl === true);
@@ -287,7 +304,23 @@ export class EightHundredFourScanHttpClient implements ExtendedEightHundredFourS
     this.appendParam(params, "supported_protocol", this.boundedText(query.supportedProtocol, 128, "supported protocol"));
     this.appendParam(params, "search", this.boundedText(query.search, 200, "search"));
     const body = await this.getJson(`${officialEightHundredFourScanContract.listPath}?${params.toString()}`, query.signal);
-    return this.mapPage(body, false);
+    return this.mapPage(body, false, "agents");
+  }
+
+  /**
+   * The vendor's latest-agent route has the same bounded page envelope as the
+   * normal list route. It is intentionally a separate transport method so a
+   * degraded `/agents` handler can be bypassed without changing the mapper or
+   * pretending that the latest ordering is marketplace ranking.
+   */
+  public async listLatestCandidates(query: EightHundredFourScanQuery = {}): Promise<EightHundredFourScanPage> {
+    const offset = parseOffset(query);
+    const limit = boundedInteger(query.limit, 20, 1, officialEightHundredFourScanContract.maxPageSize, "page size");
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset), is_registered: "true" });
+    this.appendParam(params, "chain_id", queryNumber(query.chainId, "chain ID", 2_147_483_647));
+    this.appendParam(params, "is_testnet", queryBoolean(query.isTestnet));
+    const body = await this.getJson(`${officialEightHundredFourScanContract.latestPath}?${params.toString()}`, query.signal);
+    return this.mapPage(body, false, "agents/latest");
   }
 
   public async searchSemantic(query: EightHundredFourScanSemanticQuery): Promise<EightHundredFourScanPage> {
@@ -301,8 +334,8 @@ export class EightHundredFourScanHttpClient implements ExtendedEightHundredFourS
     this.appendParam(params, "chain_id", queryNumber(query.chainId, "chain ID", 2_147_483_647));
     if (query.semanticWeight !== undefined) params.set("semantic_weight", this.boundedNumber(query.semanticWeight, 0, 1, "semantic weight"));
     if (query.similarityThreshold !== undefined) params.set("similarity_threshold", this.boundedNumber(query.similarityThreshold, 0, 1, "similarity threshold"));
-    const body = await this.getJson(`${officialEightHundredFourScanContract.semanticSearchPath}?${params.toString()}`);
-    return this.mapPage(body, true);
+    const body = await this.getJson(`${officialEightHundredFourScanContract.semanticSearchPath}?${params.toString()}`, query.signal);
+    return this.mapPage(body, true, "agents/search/semantic");
   }
 
   public async getCandidate(chainId: number, agentId: string): Promise<unknown> {
@@ -335,7 +368,10 @@ export class EightHundredFourScanHttpClient implements ExtendedEightHundredFourS
   }
 
   public circuitState(): { readonly open: boolean; readonly consecutiveFailures: number; readonly openedAt: number | null } {
-    return { open: this.circuitOpenedAt !== null && this.now() - this.circuitOpenedAt < this.circuitCooldownMs, consecutiveFailures: this.consecutiveFailures, openedAt: this.circuitOpenedAt };
+    const states = [...this.circuits.values()];
+    const current = states.reduce((highest, state) => state.failures > highest.failures ? state : highest, { failures: 0, openedAt: null as number | null });
+    const open = states.some((state) => state.openedAt !== null && this.now() - state.openedAt < this.circuitCooldownMs);
+    return { open, consecutiveFailures: current.failures, openedAt: current.openedAt };
   }
 
   private async getJson(path: string, signal?: AbortSignal): Promise<unknown> {
@@ -347,12 +383,14 @@ export class EightHundredFourScanHttpClient implements ExtendedEightHundredFourS
     const now = this.now();
     if (cached !== undefined && cached.expiresAt > now) return cached.value;
     if (cached !== undefined) this.cache.delete(url);
-    if (this.circuitOpenedAt !== null) {
-      if (now - this.circuitOpenedAt < this.circuitCooldownMs) {
+    const circuitKey = this.circuitKey(url);
+    const circuit = this.circuits.get(circuitKey) ?? { failures: 0, openedAt: null };
+    if (circuit.openedAt !== null) {
+      if (now - circuit.openedAt < this.circuitCooldownMs) {
         throw ingestionError("SCAN_CIRCUIT_OPEN", "The 8004scan circuit breaker is open after repeated provider failures.", "wait_for_scan_provider", undefined, true);
       }
-      this.circuitOpenedAt = null;
-      this.consecutiveFailures = 0;
+      circuit.openedAt = null;
+      circuit.failures = 0;
     }
     let lastFailure: HttpFailure | null = null;
     for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
@@ -362,7 +400,9 @@ export class EightHundredFourScanHttpClient implements ExtendedEightHundredFourS
       await this.waitForRateLimit();
       try {
         const value = await this.requestJson(url, contractDocument, signal);
-        this.consecutiveFailures = 0;
+        circuit.failures = 0;
+        circuit.openedAt = null;
+        this.circuits.set(circuitKey, circuit);
         this.cacheValue(url, value);
         return value;
       } catch (cause) {
@@ -375,8 +415,9 @@ export class EightHundredFourScanHttpClient implements ExtendedEightHundredFourS
         await this.sleep(delay);
       }
     }
-    this.consecutiveFailures += 1;
-    if (this.consecutiveFailures >= this.circuitFailureThreshold) this.circuitOpenedAt = this.now();
+    circuit.failures += 1;
+    if (circuit.failures >= this.circuitFailureThreshold) circuit.openedAt = this.now();
+    this.circuits.set(circuitKey, circuit);
     const failure = lastFailure ?? { status: null, retryAfterMs: null, timeout: false, network: true, contract: false };
     const classified = classifyFailure(failure);
     throw ingestionError(classified.code, httpFailureMessage(failure), classified.nextAction, failure.cause, classified.retriable);
@@ -435,7 +476,7 @@ export class EightHundredFourScanHttpClient implements ExtendedEightHundredFourS
     }
   }
 
-  private mapPage(body: unknown, semantic: boolean): EightHundredFourScanPage {
+  private mapPage(body: unknown, semantic: boolean, route: "agents" | "agents/latest" | "agents/search/semantic"): EightHundredFourScanPage {
     const parsed = (semantic ? officialSemanticResponseSchema : officialListResponseSchema).safeParse(body);
     if (!parsed.success) throw ingestionError("SCAN_CONTRACT_INVALID", "The 8004scan page does not match the reviewed OpenAPI response.", "review_scan_contract", parsed.error);
     const page = parsed.data;
@@ -445,8 +486,17 @@ export class EightHundredFourScanHttpClient implements ExtendedEightHundredFourS
       nextOffset: page.offset + page.limit < page.total ? page.offset + page.limit : null,
       total: page.total,
       limit: page.limit,
-      offset: page.offset
+      offset: page.offset,
+      route
     };
+  }
+
+  private circuitKey(url: string): string {
+    try {
+      return new URL(url).pathname;
+    } catch {
+      return "unknown";
+    }
   }
 
   private cacheValue(url: string, value: unknown): void {
@@ -720,14 +770,53 @@ export class EightHundredFourScanAdapter {
   public constructor(private readonly client: EightHundredFourScanClient, private readonly mapper: EightHundredFourScanMapper, private readonly normalizedIngestionVersion: string) {}
 
   async fetchPage(query: EightHundredFourScanQuery = {}): Promise<{ readonly candidates: readonly IdentityCandidate[]; readonly nextCursor: string | null; readonly nextOffset: number | null; readonly total: number | null }> {
-    const page = await this.client.listCandidates(query);
-    if (!Array.isArray(page.items) || page.items.length > (query.limit ?? officialEightHundredFourScanContract.maxPageSize)) throw ingestionError("INGESTION_INPUT_INVALID", "The 8004scan response has no bounded candidate list.", "retry_scan");
+    let page: EightHundredFourScanPage;
+    let fallbackRoute = false;
+    try {
+      page = await this.client.listCandidates(query);
+    } catch (error) {
+      if (!shouldUseLatestFallback(error) || !isExtendedClient(this.client)) throw error;
+      page = await this.client.listLatestCandidates(query);
+      fallbackRoute = true;
+    }
+    return this.normalizePage(page, fallbackRoute ? "agents/latest" : "agents", query.limit ?? officialEightHundredFourScanContract.maxPageSize);
+  }
+
+  /** Fetch one reviewed latest page while reusing the same strict mapper. */
+  async fetchLatestPage(query: EightHundredFourScanQuery = {}): Promise<{ readonly candidates: readonly IdentityCandidate[]; readonly nextCursor: string | null; readonly nextOffset: number | null; readonly total: number | null }> {
+    if (!isExtendedClient(this.client)) {
+      throw ingestionError("SCAN_CONFIG_INVALID", "The latest 8004scan discovery route is not configured.", "configure_scan_adapter");
+    }
+    return this.normalizePage(await this.client.listLatestCandidates(query), "agents/latest", query.limit ?? officialEightHundredFourScanContract.maxPageSize);
+  }
+
+  /** Fetch one semantic page while reusing the same strict mapper. */
+  async fetchSemanticPage(query: EightHundredFourScanSemanticQuery): Promise<{ readonly candidates: readonly IdentityCandidate[]; readonly nextCursor: string | null; readonly nextOffset: number | null; readonly total: number | null }> {
+    if (!isExtendedClient(this.client)) {
+      throw ingestionError("SCAN_CONFIG_INVALID", "The semantic 8004scan discovery route is not configured.", "configure_scan_adapter");
+    }
+    return this.normalizePage(await this.client.searchSemantic(query), "agents/search/semantic", query.limit ?? officialEightHundredFourScanContract.maxPageSize);
+  }
+
+  private normalizePage(
+    page: EightHundredFourScanPage,
+    route: "agents" | "agents/latest" | "agents/search/semantic",
+    requestedLimit: number
+  ): { readonly candidates: readonly IdentityCandidate[]; readonly nextCursor: string | null; readonly nextOffset: number | null; readonly total: number | null } {
+    if (!Array.isArray(page.items) || page.items.length > requestedLimit) throw ingestionError("INGESTION_INPUT_INVALID", "The 8004scan response has no bounded candidate list.", "retry_scan");
     const candidates = page.items.map((raw) => {
       const mapped = this.mapper(raw);
+      const sourceReference = normalizeSourceReference(mapped.sourceReference);
+      // Route provenance is stable, bounded and public. It is deliberately
+      // kept separate from the identity tuple so replay/dedupe remains keyed
+      // by the complete ERC-8004 identity.
+      const routedSourceReference = route === "agents"
+        ? sourceReference
+        : normalizeSourceReference(`${sourceReference}|route=${route}`);
       return normalizeCandidate({
         identity: normalizeIdentity(mapped.identity),
         source: "8004scan",
-        sourceReference: normalizeSourceReference(mapped.sourceReference),
+        sourceReference: routedSourceReference,
         observedAt: mapped.observedAt ?? new Date(),
         normalizedIngestionVersion: this.normalizedIngestionVersion,
         ...(mapped.rawResponseDigest === undefined ? {} : { rawResponseDigest: mapped.rawResponseDigest as string }),

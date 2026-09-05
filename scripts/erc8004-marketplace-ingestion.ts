@@ -4,6 +4,7 @@ import {
   BoundedMetadataResolver,
   BoundedServiceProbe,
   Erc8004MarketplaceCompositionRunner,
+  Erc8004SemanticCandidateCollector,
   Erc8004Pipeline,
   Erc8004ScanJob,
   EightHundredFourScanHttpClient,
@@ -59,6 +60,18 @@ type RegistrySummary = {
   readonly configured: boolean;
   readonly readConsistency: "provisional";
   readonly reason: string | null;
+};
+
+type SemanticDiscoverySummary = {
+  readonly status: "completed" | "degraded";
+  readonly candidates: number;
+  readonly categories: readonly {
+    readonly category: string;
+    readonly status: "completed" | "failed" | "cancelled";
+    readonly candidateCount: number;
+    readonly diagnostic: string | null;
+  }[];
+  readonly diagnostics: readonly string[];
 };
 
 const allowedPersistedSources = new Set<IngestionSource>(["8004scan", "registry_event", "manual"]);
@@ -270,6 +283,20 @@ function sanitizedScan(result: {
   };
 }
 
+function sanitizedSemantic(result: SemanticDiscoverySummary): SemanticDiscoverySummary {
+  return {
+    status: result.status,
+    candidates: result.candidates,
+    categories: result.categories.map((category) => ({
+      category: category.category,
+      status: category.status,
+      candidateCount: category.candidateCount,
+      diagnostic: category.diagnostic
+    })),
+    diagnostics: [...result.diagnostics]
+  };
+}
+
 async function main(): Promise<void> {
   const runtime = loadRuntimeConfig(process.env);
   const gates = readErc8004PipelineGates(process.env);
@@ -296,12 +323,21 @@ async function main(): Promise<void> {
     candidatesCommitted: 0,
     checkpoint: null
   };
+  let semanticSummary: SemanticDiscoverySummary = {
+    status: "completed",
+    candidates: 0,
+    categories: [],
+    diagnostics: []
+  };
   try {
     const scanCandidates: IdentityCandidate[] = [];
+    const semanticCandidates: IdentityCandidate[] = [];
+    let discoveryAdapter: ReturnType<typeof createEightHundredFourScanAdapter> | undefined;
     if (gates.ERC8004SCAN_DISCOVERY_ENABLED) {
       try {
         const client = EightHundredFourScanHttpClient.fromEnvironment(process.env);
         const adapter = createEightHundredFourScanAdapter(client);
+        discoveryAdapter = adapter;
         const job = new Erc8004ScanJob({
           repository,
           adapter,
@@ -328,11 +364,38 @@ async function main(): Promise<void> {
       } catch (error) {
         scanSummary = { ...scanSummary, status: "failed", errorCode: safeErrorCode(error, "SCAN_JOB_FAILED") };
       }
+      if (discoveryAdapter !== undefined) {
+        try {
+          const semantic = await new Erc8004SemanticCandidateCollector({
+            adapter: discoveryAdapter,
+            maxCandidatesPerCategory: boundedNumber("ERC8004SCAN_SEMANTIC_PAGE_SIZE", Math.min(5, maxCandidates), 1, 20),
+            maxCandidates,
+            maxRunMs: boundedNumber("ERC8004SCAN_SEMANTIC_MAX_RUN_MS", 120_000, 250, 600_000)
+          }).collect({ chainId, isTestnet: chainId === 97 });
+          semanticSummary = sanitizedSemantic({
+            status: semantic.status,
+            candidates: semantic.candidates.length,
+            categories: semantic.categories,
+            diagnostics: semantic.diagnostics
+          });
+          for (const candidate of semantic.candidates) semanticCandidates.push(candidate);
+        } catch (error) {
+          semanticSummary = {
+            status: "degraded",
+            candidates: 0,
+            categories: [],
+            diagnostics: [safeErrorCode(error, "SEMANTIC_DISCOVERY_FAILED")]
+          };
+        }
+      }
     }
 
-    const selectedKeys = new Set<string>([...manual, ...scanCandidates].map((candidate) => erc8004IdentityKey(candidate.identity)));
+    const initialCandidates = [...manual, ...scanCandidates];
+    const initialKeys = new Set<string>(initialCandidates.map((candidate) => erc8004IdentityKey(candidate.identity)));
+    const semanticFill = semanticCandidates.filter((candidate) => !initialKeys.has(erc8004IdentityKey(candidate.identity))).slice(0, Math.max(0, maxCandidates - initialKeys.size));
+    const selectedKeys = new Set<string>([...initialCandidates, ...semanticFill].map((candidate) => erc8004IdentityKey(candidate.identity)));
     const persisted = await persistedCandidates(repository, chainId, registry, selectedKeys, Math.max(0, maxCandidates - selectedKeys.size));
-    const candidates = [...manual, ...scanCandidates, ...persisted];
+    const candidates = [...initialCandidates, ...semanticFill, ...persisted];
     const metadataResolver = new BoundedMetadataResolver({
       ipfsGateways: (optionalText("ERC8004_IPFS_GATEWAYS") ?? "").split(",").map((value) => value.trim()).filter((value) => value.length > 0)
     });
@@ -386,6 +449,7 @@ async function main(): Promise<void> {
       status: composition.status,
       registry: registrySummary,
       scan: scanSummary,
+      semanticDiscovery: semanticSummary,
       composition: {
         candidateCount: composition.candidateCount,
         completedCount: composition.completedCount,

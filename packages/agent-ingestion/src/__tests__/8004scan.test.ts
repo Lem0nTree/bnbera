@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   EightHundredFourScanHttpClient,
+  createEightHundredFourScanAdapter,
+  ingestionError,
   mapOfficialEightHundredFourScanCandidate,
   officialEightHundredFourScanContract,
   verifyEightHundredFourScanOpenApi
@@ -74,6 +76,59 @@ describe("reviewed 8004scan contract boundary", () => {
     expect(response.items).toHaveLength(1);
     expect(calls).toBe(2);
     expect(sleeps).toEqual([100]);
+  });
+
+  it("uses the reviewed latest route with the same root page envelope", async () => {
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toContain("/api/v1/agents/latest?limit=1&offset=0&is_registered=true&chain_id=97&is_testnet=true");
+      expect((init?.headers as Record<string, string>)[officialEightHundredFourScanContract.authenticationHeader]).toBe("server-runtime-reference");
+      return page(summary);
+    });
+    const client = new EightHundredFourScanHttpClient({
+      baseUrl: "https://scan.example/api/v1",
+      apiKey: "server-runtime-reference",
+      fetch: fetcher,
+      minRequestIntervalMs: 0
+    });
+    const response = await client.listLatestCandidates({ chainId: 97, isTestnet: true, limit: 1 });
+    expect(response.route).toBe("agents/latest");
+    expect(response.items).toHaveLength(1);
+  });
+
+  it("falls back from a retriable primary list failure and reuses the strict mapper", async () => {
+    const client = {
+      listCandidates: vi.fn(async () => {
+        throw ingestionError("SCAN_UNAVAILABLE", "The 8004scan service could not be reached.", "retry_scan", undefined, true);
+      }),
+      listLatestCandidates: vi.fn(async () => ({ items: [summary], nextCursor: null, nextOffset: null, total: 1 }))
+    };
+    const adapter = createEightHundredFourScanAdapter(client);
+    const response = await adapter.fetchPage({ chainId: 97, limit: 1 });
+    expect(client.listCandidates).toHaveBeenCalledTimes(1);
+    expect(client.listLatestCandidates).toHaveBeenCalledTimes(1);
+    expect(response.candidates[0]?.identity).toEqual({
+      namespace: "eip155",
+      chainId: 97,
+      identityRegistry: address,
+      agentId: "900719925474099312345"
+    });
+    expect(response.candidates[0]?.sourceReference).toContain("route=agents/latest");
+  });
+
+  it("keeps route circuits independent so a failing list route cannot block latest", async () => {
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      if (String(input).includes("/agents/latest")) return page(summary);
+      return new Response("upstream unavailable", { status: 503 });
+    });
+    const client = new EightHundredFourScanHttpClient({
+      baseUrl: "https://scan.example/api/v1",
+      fetch: fetcher,
+      minRequestIntervalMs: 0,
+      maxRetries: 0,
+      circuitFailureThreshold: 1
+    });
+    await expect(client.listCandidates({ chainId: 97, limit: 1 })).rejects.toMatchObject({ code: "SCAN_UNAVAILABLE" });
+    await expect(client.listLatestCandidates({ chainId: 97, limit: 1 })).resolves.toMatchObject({ route: "agents/latest" });
   });
 
   it("retries a bounded 5xx response and stops on contract drift", async () => {
