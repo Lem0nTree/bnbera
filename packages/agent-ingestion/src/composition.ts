@@ -2,6 +2,8 @@ import { erc8004IdentityKey, type Erc8004Identity } from "@bnbera/domain";
 import { ingestionError } from "./errors.js";
 import type { Erc8004Pipeline, PipelineCandidateResult, PipelineCategorySink } from "./pipeline.js";
 import type { IdentityCandidate, IngestionRepository } from "./types.js";
+import { buildSemanticDocument, type EmbeddingProvider } from "./semantic.js";
+import { ensureSemanticVector, type SemanticVectorRepository } from "./vector.js";
 
 /**
  * The composition layer depends on a small structural publication port. The
@@ -68,6 +70,14 @@ export type Erc8004MarketplaceCompositionOptions = {
   readonly publisher: MarketplaceCompositionPublisher;
   /** Called only after publication has returned a real immutable version ID. */
   readonly categorySink?: PipelineCategorySink;
+  /**
+   * Semantic indexing is deliberately owned by composition rather than the
+   * enrichment pipeline. This keeps vectors behind the publication boundary:
+   * only a category-bearing, immutable, published version may be indexed.
+   */
+  readonly semanticEmbeddingEnabled?: boolean;
+  readonly embeddingProvider?: EmbeddingProvider;
+  readonly vectorRepository?: SemanticVectorRepository;
   readonly maxCandidates?: number;
 };
 
@@ -141,7 +151,8 @@ function pipelineSummary(result: PipelineCandidateResult): Pick<PipelineCandidat
  * Run the durable enrichment/publication sequence for a bounded candidate
  * batch. Every candidate is isolated so a metadata, probe, or publication
  * failure remains visible while later candidates can continue. This runner
- * performs no chain writes and never enables semantic embeddings.
+ * performs no chain writes. When explicitly configured, semantic indexing is
+ * performed only after publication and category persistence have succeeded.
  */
 export class Erc8004MarketplaceCompositionRunner {
   private readonly maxCandidates: number;
@@ -246,10 +257,12 @@ export class Erc8004MarketplaceCompositionRunner {
         for (const diagnostic of diagnostics.length > 0 ? diagnostics : ["PUBLICATION_WITHHELD"]) addReason(reasons, diagnostic);
       }
 
+      let categoryPersisted = false;
       if (publication.versionId !== null && pipelineResult.category !== null && this.options.categorySink !== undefined) {
         try {
           await this.options.categorySink.save({ identityKey: key, classification: pipelineResult.category });
           stageCounts = incrementStage(stageCounts, "categoriesPersisted");
+          categoryPersisted = true;
         } catch {
           addReason(reasons, "CATEGORY_WRITE_FAILED");
         }
@@ -257,8 +270,55 @@ export class Erc8004MarketplaceCompositionRunner {
         addReason(reasons, "CATEGORY_VERSION_UNAVAILABLE");
       }
 
+      const semanticEnabled = this.options.semanticEmbeddingEnabled === true;
+      const category = pipelineResult.category;
+      let embeddingDiagnostic: string | null = null;
+      if (publication.status === "published" && publication.versionId !== null && semanticEnabled) {
+        if (this.options.embeddingProvider === undefined || this.options.vectorRepository === undefined) {
+          addReason(reasons, "SEMANTIC_INDEX_NOT_CONFIGURED");
+        } else if (!categoryPersisted || category === null) {
+          // A vector without the versioned category projection would make the
+          // semantic index observably ahead of the marketplace read model.
+          addReason(reasons, "SEMANTIC_CATEGORY_NOT_PERSISTED");
+        } else if (pipelineResult.registry !== "verified" || pipelineResult.metadata !== "resolved" || pipelineResult.publicMetadata === null) {
+          addReason(reasons, "SEMANTIC_REQUIRES_VERIFIED_ENRICHMENT");
+        } else {
+          try {
+            const metadata = pipelineResult.publicMetadata;
+            const valueList = (value: unknown): readonly unknown[] => Array.isArray(value) ? value : [];
+            const semanticDocument = buildSemanticDocument({
+              identity: candidate.identity,
+              category: category.category,
+              ...(typeof metadata.name === "string" ? { name: metadata.name } : {}),
+              ...(typeof metadata.description === "string" ? { description: metadata.description } : {}),
+              ...(pipelineResult.capabilityManifest === null ? {} : { capabilityManifest: pipelineResult.capabilityManifest }),
+              protocols: valueList(metadata.supportedProtocols ?? metadata.supported_protocols ?? metadata.protocols),
+              actions: valueList(metadata.actions ?? metadata.skills),
+              services: pipelineResult.services.map((service) => ({
+                kind: service.kind,
+                url: service.url,
+                protocolVersion: service.protocolVersion
+              })),
+              evidenceSummary: { registry: pipelineResult.registry, metadata: pipelineResult.metadata },
+              classifierVersion: category.classifierVersion
+            });
+            const vector = await ensureSemanticVector({
+              agentVersionId: publication.versionId,
+              document: semanticDocument,
+              classifierVersion: category.classifierVersion,
+              provider: this.options.embeddingProvider
+            }, this.options.vectorRepository);
+            embeddingDiagnostic = vector.generated ? "SEMANTIC_EMBEDDING_GENERATED" : "SEMANTIC_EMBEDDING_REUSED";
+            addReason(reasons, embeddingDiagnostic);
+          } catch {
+            embeddingDiagnostic = "SEMANTIC_EMBEDDING_FAILED";
+            addReason(reasons, embeddingDiagnostic);
+          }
+        }
+      }
+
       if (publication.status === "published") {
-        results.push({ identityKey: key, status: "published", pipeline: pipelineSummary(pipelineResult), versionId: publication.versionId, diagnostics });
+        results.push({ identityKey: key, status: "published", pipeline: pipelineSummary(pipelineResult), versionId: publication.versionId, diagnostics: embeddingDiagnostic === null ? diagnostics : [...diagnostics, embeddingDiagnostic] });
       } else {
         results.push({ identityKey: key, status: "withheld", pipeline: pipelineSummary(pipelineResult), versionId: publication.versionId, diagnostics: diagnostics.length > 0 ? diagnostics : ["PUBLICATION_WITHHELD"] });
       }
@@ -266,8 +326,15 @@ export class Erc8004MarketplaceCompositionRunner {
 
     const failedCount = results.filter((result) => result.status === "failed").length;
     const withheldCount = results.filter((result) => result.status === "withheld").length;
+    const degradedStage = [
+      "CATEGORY_WRITE_FAILED",
+      "SEMANTIC_INDEX_NOT_CONFIGURED",
+      "SEMANTIC_CATEGORY_NOT_PERSISTED",
+      "SEMANTIC_REQUIRES_VERIFIED_ENRICHMENT",
+      "SEMANTIC_EMBEDDING_FAILED"
+    ].some((code) => reasons.has(code));
     return {
-      status: failedCount > 0 || withheldCount > 0 ? "degraded" : "completed",
+      status: failedCount > 0 || withheldCount > 0 || degradedStage ? "degraded" : "completed",
       candidateCount: results.length,
       completedCount: results.filter((result) => result.status !== "failed").length,
       failedCount,

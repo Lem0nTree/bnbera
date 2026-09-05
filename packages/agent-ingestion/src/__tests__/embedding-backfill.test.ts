@@ -3,6 +3,7 @@ import {
   EmbeddingBackfillJob,
   InMemoryEmbeddingBackfillRepository,
   InMemorySemanticVectorRepository,
+  PgEmbeddingBackfillRepository,
   buildBackfillSemanticDocument,
   ensureSemanticVector,
   ingestionError,
@@ -55,6 +56,18 @@ const enabledGates = {
 } as const;
 
 describe("resumable embedding backfill", () => {
+  it("selects only current, live, published versions for PostgreSQL backfill", async () => {
+    const query = vi.fn(async (..._args: unknown[]) => ({ rows: [] }));
+    const repository = new PgEmbeddingBackfillRepository({ query: query as never });
+
+    await repository.listCandidates({ afterAgentVersionId: null, limit: 8 });
+
+    const statement = String(query.mock.calls[0]?.[0]);
+    expect(statement).toMatch(/a\.runtime_status = 'live'/iu);
+    expect(statement).toMatch(/a\.listing_status = 'published'/iu);
+    expect(statement).toMatch(/a\.current_version_id = av\.id/iu);
+  });
+
   it("is disabled by default and does not require a provider or touch the source", async () => {
     const source = {
       listCandidates: vi.fn(async () => [candidate(versions[0], "yield")])

@@ -13,14 +13,19 @@ import {
   JsonRpcRegistryChainReader,
   ManualImportAdapter,
   PgCategoryPredictionSink,
+  PgVectorSemanticRepository,
   PostgresIngestionRepository,
   createEightHundredFourScanAdapter,
   createOfficialErc8004RegistryReadDefinitions,
+  createEmbeddingProviderFromRuntimeConfig,
+  pgVectorStorageDimension,
   readErc8004PipelineGates,
   type IdentityCandidate,
+  type EmbeddingProvider,
   type IngestionSource,
   type MarketplaceCompositionPublicationResult,
-  type RegistryChainReader
+  type RegistryChainReader,
+  type SemanticVectorRepository
 } from "../packages/agent-ingestion/src/index.ts";
 import { PostgresMarketplacePublicationService } from "../packages/marketplace/src/index.ts";
 import { createDb } from "../packages/db/src/client.ts";
@@ -421,13 +426,25 @@ async function main(): Promise<void> {
       gates: {
         ERC8004_INGESTION_ENABLED: true,
         ERC8004SCAN_DISCOVERY_ENABLED: gates.ERC8004SCAN_DISCOVERY_ENABLED,
-        // T2 deliberately does not create embeddings; the semantic gate is
-        // never inherited from runtime env in this bounded command.
+        // Enrichment remains embedding-free. Composition wires the explicit
+        // semantic gate after publication/category persistence below.
         MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED: false
       }
     });
     const publication = new PostgresMarketplacePublicationService(pool);
     const categorySink = new PgCategoryPredictionSink(pool, publication.versionIdForIdentityKey);
+    let embeddingProvider: EmbeddingProvider | undefined;
+    let vectorRepository: SemanticVectorRepository | undefined;
+    if (runtime.marketplaceSemanticRetrievalEnabled && runtime.embedding !== null) {
+      if (runtime.embedding.dimension !== pgVectorStorageDimension) {
+        throw new Error("EMBEDDING_DIMENSION_INCOMPATIBLE_WITH_DATABASE_MIGRATION");
+      }
+      embeddingProvider = createEmbeddingProviderFromRuntimeConfig(
+        runtime,
+        (reference) => process.env[reference]
+      );
+      vectorRepository = new PgVectorSemanticRepository(pool, { storageDimension: pgVectorStorageDimension });
+    }
     const runner = new Erc8004MarketplaceCompositionRunner({
       repository,
       pipeline,
@@ -442,6 +459,9 @@ async function main(): Promise<void> {
         }
       },
       categorySink,
+      semanticEmbeddingEnabled: runtime.marketplaceSemanticRetrievalEnabled,
+      ...(embeddingProvider === undefined ? {} : { embeddingProvider }),
+      ...(vectorRepository === undefined ? {} : { vectorRepository }),
       maxCandidates
     });
     const composition = await runner.run({ candidates });

@@ -5,9 +5,11 @@ import {
   Erc8004MarketplaceCompositionRunner,
   Erc8004Pipeline,
   InMemoryIngestionRepository,
+  InMemorySemanticVectorRepository,
   type MarketplaceCompositionPublicationInput,
   type MarketplaceCompositionPublicationResult,
-  type ServiceProbeTransport
+  type ServiceProbeTransport,
+  type EmbeddingProvider
 } from "../index.js";
 
 const identity = {
@@ -148,6 +150,95 @@ describe("ERC-8004 marketplace composition", () => {
     expect(await repository.listCapabilities("eip155:97:0x1111111111111111111111111111111111111111:7")).toHaveLength(1);
     expect(await repository.listServices("eip155:97:0x1111111111111111111111111111111111111111:7")).toHaveLength(1);
     expect(await repository.listProbeResults("eip155:97:0x1111111111111111111111111111111111111111:7")).toHaveLength(1);
+  });
+
+  it("generates a vector only after the published version and category projection exist", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const events: string[] = [];
+    const vectors = new InMemorySemanticVectorRepository();
+    const embed = vi.fn(async (_text: string) => {
+      events.push("embed");
+      return [1, 0, 0];
+    });
+    const embeddingProvider: EmbeddingProvider = {
+      provider: "test-provider",
+      model: "test-model",
+      modelVersion: "test-v1",
+      dimension: 3,
+      embed
+    };
+    const pipeline = new Erc8004Pipeline({
+      repository,
+      registryReader: registryReader(),
+      metadataResolver: new BoundedMetadataResolver(),
+      serviceProbe: readinessProbe(),
+      serviceProbeOptions: { maxConcurrency: 1, minIntervalMs: 0, maxServices: 4 },
+      gates: { ERC8004_INGESTION_ENABLED: true }
+    });
+    const category = {
+      save: vi.fn(async () => {
+        events.push("category");
+      })
+    };
+    const publication = publisher(events);
+    const runner = new Erc8004MarketplaceCompositionRunner({
+      repository,
+      pipeline,
+      publisher: publication,
+      categorySink: category,
+      semanticEmbeddingEnabled: true,
+      embeddingProvider,
+      vectorRepository: vectors
+    });
+
+    const result = await runner.run({ candidates: [candidate()] });
+
+    expect(result.status).toBe("completed");
+    expect(result.reasons).toMatchObject({ SEMANTIC_EMBEDDING_GENERATED: 1 });
+    expect(result.candidates[0]?.diagnostics).toContain("SEMANTIC_EMBEDDING_GENERATED");
+    expect(events).toEqual(["publish", "category", "embed"]);
+    expect(embed).toHaveBeenCalledTimes(1);
+    expect(await vectors.find("11111111-1111-4111-8111-111111111111", "test-v1")).not.toBeNull();
+  });
+
+  it("does not index withheld versions even when semantic indexing is enabled", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const embed = vi.fn(async () => [1, 0, 0]);
+    const embeddingProvider: EmbeddingProvider = {
+      provider: "test-provider",
+      model: "test-model",
+      modelVersion: "test-v1",
+      dimension: 3,
+      embed
+    };
+    const pipeline = new Erc8004Pipeline({
+      repository,
+      registryReader: registryReader(),
+      metadataResolver: new BoundedMetadataResolver(),
+      gates: { ERC8004_INGESTION_ENABLED: true }
+    });
+    const publication = {
+      publish: vi.fn(async (_input: MarketplaceCompositionPublicationInput): Promise<MarketplaceCompositionPublicationResult> => ({
+        status: "withheld",
+        versionId: "11111111-1111-4111-8111-111111111111",
+        diagnostics: [{ code: "IDENTITY_READ_NOT_FINALIZED" }]
+      }))
+    };
+    const runner = new Erc8004MarketplaceCompositionRunner({
+      repository,
+      pipeline,
+      publisher: publication,
+      semanticEmbeddingEnabled: true,
+      embeddingProvider,
+      vectorRepository: new InMemorySemanticVectorRepository()
+    });
+
+    const result = await runner.run({ candidates: [candidate()] });
+
+    expect(result.status).toBe("degraded");
+    expect(result.candidates[0]?.status).toBe("withheld");
+    expect(embed).not.toHaveBeenCalled();
+    expect(result.reasons).toMatchObject({ IDENTITY_READ_NOT_FINALIZED: 1 });
   });
 
   it("deduplicates a replay batch and never invokes publication before category sequencing", async () => {

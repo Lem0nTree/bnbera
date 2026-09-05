@@ -116,6 +116,18 @@
       "verificationStatus": "installed-on-aws-development-host"
     }
   },
+  "semanticEmbedding": {
+    "provider": "openrouter",
+    "endpoint": "https://openrouter.ai/api/v1/embeddings",
+    "model": "openai/text-embedding-3-small",
+    "modelVersion": "openrouter-openai-text-embedding-3-small-v1",
+    "dimension": 1536,
+    "semanticDocumentSchemaVersion": "bnbera-agent-semantic-v1",
+    "secretReference": "ERC8004_EMBEDDING_API_KEY",
+    "releaseEnabled": false,
+    "verificationStatus": "verified-live-read-only-canary",
+    "verificationNote": "Configured model returned response model text-embedding-3-small with one finite 1536-value vector; upstream model-version provenance remains represented by the configured modelVersion label."
+  },
   "networks": {
     "56": {
       "name": "bsc-mainnet",

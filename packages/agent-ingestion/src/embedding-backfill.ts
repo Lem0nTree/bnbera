@@ -863,6 +863,9 @@ export class PgEmbeddingBackfillRepository implements EmbeddingBackfillRepositor
             LIMIT 1
          ) AS cp ON true
         WHERE a.verification_status = 'verified'
+          AND a.runtime_status = 'live'
+          AND a.listing_status = 'published'
+          AND a.current_version_id = av.id
           AND ($1::uuid IS NULL OR av.id > $1::uuid)
         ORDER BY av.id
         LIMIT $2`,
