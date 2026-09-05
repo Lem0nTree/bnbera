@@ -293,6 +293,7 @@
   justify-content: space-between;
 }
 
+.section-heading h1,
 .section-heading h2 {
   font-size: clamp(1.45rem, 3vw, 2.3rem);
   letter-spacing: -0.05em;

@@ -47,6 +47,7 @@ export default function HomePage() {
 
       <section className="section-block" aria-labelledby="categories-heading">
         <SectionHeading
+          id="categories-heading"
           eyebrow="Four equal lanes"
           title="Browse by job, not by hype."
           description="Each category uses the same read contract, state axes, provenance labels, and unavailable activation treatment."
@@ -65,6 +66,7 @@ export default function HomePage() {
 
       <section className="section-block" aria-labelledby="gate-heading">
         <SectionHeading
+          id="gate-heading"
           eyebrow="Release truth"
           title="Read-only until the rails prove themselves."
           description="Optional capabilities stay independently disabled while the public marketplace remains useful."

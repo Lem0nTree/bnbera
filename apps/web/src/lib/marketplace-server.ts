@@ -1,9 +1,9 @@
 /**
  * Server-only marketplace read wiring.
  *
- * This module is imported by route handlers only. Keep it out of the shared
- * web contract: pg and the ingestion repository must never be reachable from
- * a client component or browser bundle.
+ * This module is imported by route handlers and server components only. Keep
+ * it out of the shared web contract: pg and the ingestion repository must
+ * never be reachable from a client component or browser bundle.
  */
 import { AppError, loadRuntimeConfig } from "@bnbera/config";
 import { createHash } from "node:crypto";
@@ -46,7 +46,10 @@ import {
   marketplaceDetailErrorResponse,
   marketplaceSearchErrorResponse,
   marketplaceReadContractVersion,
+  isSelfReferentialMarketplaceApiUrl,
   marketplaceSearchInputSchema,
+  readMarketplace as readRemoteMarketplace,
+  readMarketplaceAgent as readRemoteMarketplaceAgent,
   readMarketplaceAgentApi as readLocalMarketplaceAgentApi,
   readMarketplaceApi as readLocalMarketplaceApi,
   type MarketplaceAgentReadResponse,
@@ -60,6 +63,16 @@ type PoolCache = {
   readonly key: string;
   readonly pool: DatabasePool;
 };
+
+function shouldReadMarketplaceLocally(): boolean {
+  const configuredUrl = process.env.MARKETPLACE_API_URL?.trim();
+  if (!configuredUrl) return true;
+  // The documented `/api` value is a same-process browser-facing base. A
+  // server component should use the local database reader instead of trying
+  // to resolve a relative URL through fetch.
+  if (/^\/api(?:\/|$)/u.test(configuredUrl)) return true;
+  return isSelfReferentialMarketplaceApiUrl(configuredUrl);
+}
 
 type MarketplaceGlobal = typeof globalThis & {
   __bnberaMarketplacePool?: PoolCache;
@@ -603,6 +616,28 @@ function emptyDetailResponse(
     agent: null,
     error: null
   };
+}
+
+/**
+ * Server-component read seam. In a same-process preview, pages read the
+ * PostgreSQL projection directly. A separately hosted read API can still be
+ * selected with an explicit non-loopback `MARKETPLACE_API_URL`.
+ */
+export async function readMarketplaceForPage(input: Partial<MarketplaceSearchInput> = {}) {
+  if (configuredMarketplaceDataMode() === "live" && shouldReadMarketplaceLocally()) {
+    return readMarketplaceApi(input);
+  }
+  return readRemoteMarketplace(input);
+}
+
+export async function readMarketplaceAgentForPage(
+  slug: string,
+  input: Partial<Pick<MarketplaceSearchInput, "preview">> = {}
+) {
+  if (configuredMarketplaceDataMode() === "live" && shouldReadMarketplaceLocally()) {
+    return readMarketplaceAgentApi(slug, input);
+  }
+  return readRemoteMarketplaceAgent(slug, input);
 }
 
 export async function readMarketplaceApi(input: Partial<MarketplaceSearchInput> = {}) {

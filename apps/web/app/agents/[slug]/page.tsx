@@ -3,7 +3,8 @@ import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { Callout, EmptyState, LoadingState } from "@bnbera/ui";
 import { AgentDetailView } from "@/components/agent-detail-view";
-import { parseMarketplacePageParams, readMarketplaceAgent } from "@/lib/marketplace-contract";
+import { parseMarketplacePageParams } from "@/lib/marketplace-contract";
+import { readMarketplaceAgentForPage } from "@/lib/marketplace-server";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,7 @@ type PageSearchParams = Promise<Readonly<Record<string, string | string[] | unde
 
 export async function generateMetadata({ params }: { readonly params: PageParams }): Promise<Metadata> {
   const { slug } = await params;
-  const response = await readMarketplaceAgent(slug);
+  const response = await readMarketplaceAgentForPage(slug);
   return {
     title: response.agent?.name ?? "Agent detail",
     description: response.agent?.tagline ?? "Marketplace agent detail and state axes."
@@ -28,7 +29,7 @@ export default async function AgentPage({
 }) {
   const { slug } = await params;
   const input = parseMarketplacePageParams(await searchParams);
-  const response = await readMarketplaceAgent(slug, { preview: input.preview });
+  const response = await readMarketplaceAgentForPage(slug, { preview: input.preview });
 
   if (response.status === "ready" && response.agent) {
     return (

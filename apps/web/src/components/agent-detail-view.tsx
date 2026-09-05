@@ -10,6 +10,13 @@ function SchemaPreview({ value }: { readonly value: Record<string, unknown> }) {
 }
 
 export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentReadModel }) {
+  const identityRead = agent.dataProvenance.identityRead;
+  const identityConsistency = identityRead.readConsistency === null
+    ? "Unknown"
+    : titleCase(identityRead.readConsistency);
+  const identityBlock = identityRead.observedBlock === null
+    ? "Not observed"
+    : `${identityRead.observedBlock} · ${identityConsistency}`;
   return (
     <div className="page-shell page-shell--tight">
       <section className="detail-hero">
@@ -25,6 +32,7 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
             <DataModeBadge mode={agent.dataProvenance.mode} label={agent.dataProvenance.label} />
             <StatusBadge value={agent.stateAxes.verificationStatus} tone={statusTone(agent.stateAxes.verificationStatus)} />
             <StatusBadge value={agent.stateAxes.runtimeStatus} tone={statusTone(agent.stateAxes.runtimeStatus)} />
+            <StatusBadge label="Endpoint" value={titleCase(agent.health.endpointStatus)} tone={statusTone(agent.health.endpointStatus)} />
             <StatusBadge value={`BSC ${agent.identity.chainId}`} tone="info" />
           </div>
           <div className="detail-hero__actions">
@@ -53,6 +61,20 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
       </section>
 
       <div className="detail-sections">
+        <section className="detail-section detail-section--wide">
+          <p className="eyebrow">Observed boundaries</p>
+          <h2>Database connectivity is not endpoint health</h2>
+          <p className="detail-section__lede">The connected read model preserves the exact ERC-8004 chain observation and the independent service probe. Neither observation grants authority or guarantees a future response.</p>
+          <div className="detail-section__body detail-section__body--split">
+            <div className="detail-kv"><span>Endpoint health</span><span><StatusBadge value={titleCase(agent.health.endpointStatus)} tone={statusTone(agent.health.endpointStatus)} /></span></div>
+            <div className="detail-kv"><span>Probe observed</span><span>{formatObservedAt(agent.health.observedAt)}{agent.health.latencyMs === null ? "" : ` · ${agent.health.latencyMs} ms`}</span></div>
+            <div className="detail-kv"><span>Probe source</span><span>{agent.health.source ?? "Not observed"}</span></div>
+            <div className="detail-kv"><span>Identity block · consistency</span><span>{identityBlock}</span></div>
+            <div className="detail-kv"><span>Identity read observed</span><span>{formatObservedAt(identityRead.observedAt)}</span></div>
+            <div className="detail-kv"><span>Identity block hash</span><span><code>{identityRead.observedBlockHash ?? "Not observed"}</code></span></div>
+          </div>
+        </section>
+
         <section className="detail-section detail-section--wide">
           <p className="eyebrow">Independent state model</p>
           <h2>Six axes, no overloaded status field</h2>
@@ -145,7 +167,7 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
             <div className="detail-kv"><span>Pricing</span><span>{agent.pricing.label}</span></div>
             <div className="detail-kv"><span>Method</span><span>{titleCase(agent.pricing.activationMethod)}</span></div>
             <p className="detail-section__lede">{agent.pricing.explanation}</p>
-            <ActivationPanel activation={agent.activation} detail />
+            <ActivationPanel activation={agent.activation} detail identifier={agent.slug} />
           </div>
         </section>
 

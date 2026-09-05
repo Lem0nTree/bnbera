@@ -4,11 +4,14 @@ import { statusTone } from "@/lib/presentation";
 
 export function ActivationPanel({
   activation,
-  detail = false
+  detail = false,
+  identifier = "agent"
 }: {
   readonly activation: MarketplaceAgentReadModel["activation"];
   readonly detail?: boolean;
+  readonly identifier?: string;
 }) {
+  const reasonId = `activation-reason-${identifier}`;
   const content = (
     <div className={`activation-panel${detail ? " activation-panel--detail" : ""}`}>
       <div className="activation-panel__header">
@@ -18,12 +21,13 @@ export function ActivationPanel({
         </div>
         <StatusBadge value={activation.availability} tone={statusTone(activation.availability)} />
       </div>
-      <p className="activation-panel__reason">{activation.reason}</p>
+      <p className="activation-panel__reason" id={reasonId}>{activation.reason}</p>
       <button
-        className="button button--disabled"
+        className={`button ${activation.enabled ? "button--primary" : "button--disabled"}`}
         type="button"
         disabled={!activation.enabled}
         aria-disabled={!activation.enabled}
+        aria-describedby={reasonId}
         title={activation.enabled ? "Activation is enabled by its feature gate." : activation.reason}
       >
         {activation.enabled ? "Continue to activation" : "Activation unavailable"}

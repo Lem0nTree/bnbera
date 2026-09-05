@@ -6,9 +6,9 @@ import {
   categoryDescription,
   categoryLabel,
   categoryFromSegment,
-  parseMarketplacePageParams,
-  readMarketplace
+  parseMarketplacePageParams
 } from "@/lib/marketplace-contract";
+import { readMarketplaceForPage } from "@/lib/marketplace-server";
 
 export const dynamic = "force-dynamic";
 
@@ -37,10 +37,11 @@ export default async function CategoryPage({
     notFound();
   }
   const input = parseMarketplacePageParams(await searchParams);
-  const response = await readMarketplace({ ...input, category });
+  const response = await readMarketplaceForPage({ ...input, category });
   return (
     <div className="page-shell">
       <SectionHeading
+        headingLevel={1}
         eyebrow="Marketplace category"
         title={categoryLabel(category)}
         description={categoryDescription(category)}

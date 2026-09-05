@@ -1,7 +1,8 @@
 import { Suspense } from "react";
 import { LoadingState, SectionHeading } from "@bnbera/ui";
 import { MarketplaceExplorer } from "@/components/marketplace-explorer";
-import { parseMarketplacePageParams, readMarketplace } from "@/lib/marketplace-contract";
+import { parseMarketplacePageParams } from "@/lib/marketplace-contract";
+import { readMarketplaceForPage } from "@/lib/marketplace-server";
 
 export const dynamic = "force-dynamic";
 
@@ -9,10 +10,11 @@ type PageSearchParams = Promise<Readonly<Record<string, string | string[] | unde
 
 export default async function MarketplacePage({ searchParams }: { readonly searchParams: PageSearchParams }) {
   const input = parseMarketplacePageParams(await searchParams);
-  const response = await readMarketplace(input);
+  const response = await readMarketplaceForPage(input);
   return (
     <div className="page-shell">
       <SectionHeading
+        headingLevel={1}
         eyebrow="Public marketplace · W0/W1"
         title="Find the evidence before the action."
         description="Search structured capabilities and inspect the six independent state axes. A discovery record is never presented as an execution guarantee."

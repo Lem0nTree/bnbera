@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { DataModeBadge, StateAxisGrid, StatusBadge } from "@bnbera/ui";
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
-import { categoryLabel, compactAddress, joinOrFallback, statusTone, titleCase } from "@/lib/presentation";
+import { categoryLabel, compactAddress, formatObservedAt, joinOrFallback, statusTone, titleCase } from "@/lib/presentation";
 import { ActivationPanel } from "./activation-panel";
 import { CompareToggle } from "./compare-toggle";
 
@@ -34,12 +34,16 @@ export function AgentCard({ agent }: { readonly agent: MarketplaceAgentReadModel
         <span><b>Network</b> BSC {identity.chainId === 97 ? "testnet" : "mainnet"}</span>
         <span><b>Identity</b> {identity.namespace}:{identity.chainId}:{compactAddress(identity.identityRegistry)}:#{identity.agentId}</span>
         <span><b>Protocols</b> {joinOrFallback(agent.protocols, "Not observed")}</span>
+        <span><b>Endpoint probe</b> {titleCase(agent.health.endpointStatus)} · {formatObservedAt(agent.health.observedAt)}{agent.health.latencyMs === null ? "" : ` · ${agent.health.latencyMs} ms`}</span>
       </div>
       <StateAxisGrid axes={agent.stateAxes} compact />
       <div className="agent-card__footer">
         <div className="agent-card__freshness">
-          <span className="muted-label">Freshness</span>
-          <StatusBadge value={agent.freshness.label} tone={statusTone(agent.freshness.status)} />
+          <span className="muted-label">Read observations</span>
+          <div className="agent-card__status-stack">
+            <StatusBadge label="Data" value={agent.freshness.label} tone={statusTone(agent.freshness.status)} />
+            <StatusBadge label="Endpoint" value={titleCase(agent.health.endpointStatus)} tone={statusTone(agent.health.endpointStatus)} />
+          </div>
         </div>
         <div className="agent-card__actions">
           <CompareToggle slug={agent.slug} />
@@ -48,7 +52,7 @@ export function AgentCard({ agent }: { readonly agent: MarketplaceAgentReadModel
           </Link>
         </div>
       </div>
-      <ActivationPanel activation={agent.activation} />
+      <ActivationPanel activation={agent.activation} identifier={agent.slug} />
       <p className="fixture-caption">{titleCase(agent.dataProvenance.label)} · {agent.dataProvenance.details}</p>
     </article>
   );

@@ -9,9 +9,11 @@ import {
 } from "../../apps/web/src/lib/marketplace-contract";
 import { GET as getMarketplace } from "../../apps/web/app/api/marketplace/route";
 import { GET as getMarketplaceAgent } from "../../apps/web/app/api/marketplace/[slug]/route";
+import { readMarketplaceAgentForPage, readMarketplaceForPage } from "../../apps/web/src/lib/marketplace-server";
 
 const environmentKeys = [
   "NODE_ENV",
+  "PORT",
   "MARKETPLACE_DATA_MODE",
   "MARKETPLACE_API_URL",
   "DATABASE_URL",
@@ -88,6 +90,12 @@ describe("web marketplace read contract", () => {
         sourceReference: expect.stringContaining("fixture:"),
         normalizedIngestionVersion: "fixture-v1"
       }]
+    });
+    expect(response.agents[0]?.health).toMatchObject({
+      endpointStatus: "healthy",
+      observedAt: expect.any(String),
+      latencyMs: 42,
+      source: "fixture-probe"
     });
     expect(response.agents.every((agent) => agent.activation.enabled === false)).toBe(true);
     expect(response.agents.every((agent) => agent.activation.availability === "unavailable")).toBe(true);
@@ -223,6 +231,78 @@ describe("web marketplace read contract", () => {
     expect(response.status).toBe("error");
     expect(response.error?.error.code).toBe("MARKETPLACE_RESPONSE_INVALID");
     expect(response.notice).toMatch(/validated|boundary/i);
+  });
+
+  it("fails closed without forwarding to an implicit local API", async () => {
+    configureEnvironment({ NODE_ENV: "production", MARKETPLACE_DATA_MODE: "live" });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await readMarketplace();
+    const detail = await readMarketplaceAgent("fixture-lp-rebalancer");
+
+    expect(response).toMatchObject({
+      status: "error",
+      mode: "error",
+      error: { error: { code: "MARKETPLACE_CONFIGURATION_INVALID", nextAction: "check_configuration" } }
+    });
+    expect(detail.error?.error).toMatchObject({
+      code: "MARKETPLACE_CONFIGURATION_INVALID",
+      nextAction: "check_configuration"
+    });
+    expect(response.error?.error.message).toMatch(/explicit|self-referential|URL/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a loopback forwarding target instead of calling the current app", async () => {
+    configureEnvironment({
+      NODE_ENV: "production",
+      MARKETPLACE_DATA_MODE: "live",
+      MARKETPLACE_API_URL: "http://localhost:3000/api"
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await readMarketplace();
+
+    expect(response.error?.error).toMatchObject({
+      code: "MARKETPLACE_CONFIGURATION_INVALID",
+      nextAction: "check_configuration"
+    });
+    expect(response.notice).toMatch(/validated|boundary/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps same-process page reads on the local seam in non-live mode", async () => {
+    configureEnvironment({ NODE_ENV: "development", MARKETPLACE_DATA_MODE: "fixture" });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const browse = await readMarketplaceForPage({ category: "rebalancing" });
+    const detail = await readMarketplaceAgentForPage("fixture-lp-rebalancer");
+
+    expect(browse.mode).toBe("fixture");
+    expect(detail.agent?.slug).toBe("fixture-lp-rebalancer");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("routes the documented live /api page base to the database reader without self-fetching", async () => {
+    configureEnvironment({
+      NODE_ENV: "production",
+      MARKETPLACE_DATA_MODE: "live",
+      MARKETPLACE_API_URL: "/api"
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const browse = await readMarketplaceForPage();
+    const detail = await readMarketplaceAgentForPage("fixture-lp-rebalancer");
+
+    expect(browse.status).toBe("error");
+    expect(detail.status).toBe("error");
+    expect(browse.error?.error.code).not.toBe("MARKETPLACE_RESPONSE_INVALID");
+    expect(detail.error?.error.code).not.toBe("MARKETPLACE_RESPONSE_INVALID");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("preserves a validated remote read response and query path", async () => {

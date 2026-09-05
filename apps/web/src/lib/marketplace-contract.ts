@@ -86,6 +86,21 @@ const currentDataSchema = z.object({
   ).max(12)
 });
 
+/**
+ * Endpoint probes are observations about an advertised service, not a
+ * guarantee that the connected database or the agent will remain available.
+ * Keeping this separate from freshness makes that distinction explicit in
+ * both API responses and the rendered marketplace cards.
+ */
+export const marketplaceEndpointHealthSchema = z.object({
+  endpointStatus: z.enum(["healthy", "unhealthy", "unknown"]),
+  observedAt: z.string().datetime({ offset: true }).nullable(),
+  latencyMs: z.number().int().nonnegative().max(300_000).nullable(),
+  source: z.string().trim().min(1).max(160).nullable()
+});
+
+export type MarketplaceEndpointHealth = z.infer<typeof marketplaceEndpointHealthSchema>;
+
 const authoritySummarySchema = z.object({
   status: z.enum(["none", "active", "expired", "revoked"]),
   summary: z.string().trim().min(1).max(500),
@@ -180,6 +195,7 @@ export const marketplaceAgentReadModelSchema = z.object({
   pricing: pricingSchema,
   authority: authoritySummarySchema,
   currentData: currentDataSchema,
+  health: marketplaceEndpointHealthSchema,
   evidence: evidenceSummarySchema,
   activation: activationSummarySchema,
   scoreExplanation: marketplaceScoreExplanationSchema,
@@ -294,6 +310,38 @@ function dataLabel(mode: MarketplaceDataMode): string {
       return "Read model empty";
     case "error":
       return "Read model unavailable";
+  }
+}
+
+function configuredRemoteMarketplaceApiUrl(): string {
+  const value = process.env.MARKETPLACE_API_URL?.trim();
+  if (!value) {
+    throw new AppError({
+      code: "MARKETPLACE_CONFIGURATION_INVALID",
+      safeMessage: "Live marketplace page forwarding requires an explicit API URL; refusing a self-referential default.",
+      requestId: "req_web_marketplace_read",
+      retriable: false,
+      nextAction: "check_configuration"
+    });
+  }
+  return value;
+}
+
+/**
+ * The API route is the local database boundary. A page must not call its own
+ * loopback origin through the forwarding adapter: use the server-only local
+ * reader instead. Remote HTTPS read APIs remain valid forwarding targets.
+ */
+export function isSelfReferentialMarketplaceApiUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    if (!["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname)) return false;
+    const configuredPort = process.env.PORT?.trim() || "3000";
+    const defaultPort = url.protocol === "https:" ? "443" : "80";
+    return (url.port || defaultPort) === configuredPort;
+  } catch {
+    return false;
   }
 }
 
@@ -481,14 +529,14 @@ function mapProvenance(
     return {
       mode,
       label: "Degraded upstream read",
-      details: "The upstream read model is degraded. Fields are shown for inspection and must not be treated as live proof.",
+      details: "The upstream read model is degraded. Fields are shown for inspection and must not be treated as live proof; endpoint health remains a separate observation.",
       ...observedProvenance
     };
   }
   return {
     mode: "live",
     label: "Connected read model",
-    details: "This record came through the configured marketplace read-model source. Inspect each independent state and provenance field before acting.",
+    details: "This record came through the configured database/read-model source. Connected read-model mode does not assert that the external agent endpoint is healthy; inspect the endpoint probe, timestamps, and independent state fields before acting.",
     ...observedProvenance
   };
 }
@@ -522,6 +570,7 @@ function mapCard(
       blockNumber: card.provenance.identityRead.observedBlock,
       source: card.dataFreshness.source ?? card.health.source ?? "marketplace read model"
     },
+    health: card.health,
     pricing: mapPricing(card),
     authority: mapAuthority(card),
     currentData: {
@@ -794,7 +843,7 @@ export function configuredMarketplaceDataMode(): MarketplaceDataMode {
   if (configured) {
     return "error";
   }
-  if (process.env.MARKETPLACE_API_URL) {
+  if (process.env.MARKETPLACE_API_URL?.trim()) {
     return "live";
   }
   return process.env.NODE_ENV === "production" ? "empty" : "fixture";
@@ -809,7 +858,46 @@ function invalidConfigurationResponse(input: MarketplaceSearchInput): Marketplac
 }
 
 function marketplaceEndpoint(baseUrl: string, suffix = ""): URL {
-  const url = new URL(baseUrl);
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch (cause) {
+    throw new AppError({
+      code: "MARKETPLACE_CONFIGURATION_INVALID",
+      safeMessage: "The live marketplace API URL must be an absolute HTTP(S) URL.",
+      requestId: "req_web_marketplace_read",
+      retriable: false,
+      nextAction: "check_configuration",
+      cause
+    });
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new AppError({
+      code: "MARKETPLACE_CONFIGURATION_INVALID",
+      safeMessage: "The live marketplace API URL must use HTTP(S).",
+      requestId: "req_web_marketplace_read",
+      retriable: false,
+      nextAction: "check_configuration"
+    });
+  }
+  if (url.username || url.password || url.hash || url.search) {
+    throw new AppError({
+      code: "MARKETPLACE_CONFIGURATION_INVALID",
+      safeMessage: "The live marketplace API URL cannot include credentials, a query, or a fragment.",
+      requestId: "req_web_marketplace_read",
+      retriable: false,
+      nextAction: "check_configuration"
+    });
+  }
+  if (isSelfReferentialMarketplaceApiUrl(baseUrl)) {
+    throw new AppError({
+      code: "MARKETPLACE_CONFIGURATION_INVALID",
+      safeMessage: "The live marketplace API URL points at this application; use the local server reader instead of forwarding.",
+      requestId: "req_web_marketplace_read",
+      retriable: false,
+      nextAction: "check_configuration"
+    });
+  }
   const normalizedPath = url.pathname.replace(/\/+$/u, "");
   if (!normalizedPath.endsWith("/marketplace")) {
     url.pathname = `${normalizedPath}/marketplace`;
@@ -887,9 +975,9 @@ async function remoteJson(url: URL): Promise<unknown> {
 }
 
 async function remoteSearch(input: MarketplaceSearchInput): Promise<MarketplaceSearchResponse> {
-  const url = marketplaceEndpoint(process.env.MARKETPLACE_API_URL ?? "http://localhost:3000/api");
-  appendSearch(url, input);
   try {
+    const url = marketplaceEndpoint(configuredRemoteMarketplaceApiUrl());
+    appendSearch(url, input);
     return marketplaceSearchResponseSchema.parse(await remoteJson(url));
   } catch (error) {
     const appError = error instanceof AppError
@@ -906,8 +994,8 @@ async function remoteSearch(input: MarketplaceSearchInput): Promise<MarketplaceS
 }
 
 async function remoteAgent(slug: string): Promise<MarketplaceAgentReadResponse> {
-  const url = marketplaceEndpoint(process.env.MARKETPLACE_API_URL ?? "http://localhost:3000/api", slug);
   try {
+    const url = marketplaceEndpoint(configuredRemoteMarketplaceApiUrl(), slug);
     return marketplaceAgentReadResponseSchema.parse(await remoteJson(url));
   } catch (error) {
     const appError = error instanceof AppError

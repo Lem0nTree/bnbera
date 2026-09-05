@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Callout, SectionHeading } from "@bnbera/ui";
 import { CompareTable } from "@/components/compare-table";
-import { readMarketplaceAgent } from "@/lib/marketplace-contract";
+import { readMarketplaceAgentForPage } from "@/lib/marketplace-server";
 
 export const dynamic = "force-dynamic";
 
@@ -15,13 +15,14 @@ function parseSlugs(value: string | string[] | undefined): string[] {
 export default async function ComparePage({ searchParams }: { readonly searchParams: PageSearchParams }) {
   const params = await searchParams;
   const slugs = parseSlugs(params.agents);
-  const responses = await Promise.all(slugs.map((slug) => readMarketplaceAgent(slug)));
+  const responses = await Promise.all(slugs.map((slug) => readMarketplaceAgentForPage(slug)));
   const agents = responses.flatMap((response) => response.agent ? [response.agent] : []);
   const errors = responses.flatMap((response) => response.error ? [response.error] : []);
   const missing = slugs.filter((_, index) => responses[index]?.status === "empty");
   return (
     <div className="page-shell page-shell--tight">
       <SectionHeading
+        headingLevel={1}
         eyebrow="Read-only comparison"
         title="Put the state axes side by side."
         description="Compare up to three marketplace records using the same identity, capability, freshness, evidence, and activation contract as browse and detail."

@@ -45,7 +45,7 @@ export default function RootLayout({ children }: { readonly children: ReactNode 
           </header>
           <main id="main-content">{children}</main>
           <footer className="footer">
-            <BrandMark compact /> <strong>BNBEra</strong> · public discovery with provenance in view · activation rails disabled until verified
+            <BrandMark compact /> <span aria-hidden="true"><strong>BNBEra</strong></span> · public discovery with provenance in view · activation rails disabled until verified
           </footer>
         </div>
       </body>

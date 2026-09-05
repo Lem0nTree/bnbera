@@ -56,7 +56,7 @@ export function statusTone(value: string): StatusTone {
   if (["degraded", "stale", "pending", "paused", "claimed"].includes(value)) {
     return "warning";
   }
-  if (["rejected", "revoked", "unavailable", "delisted", "suspended", "expired"].includes(value)) {
+  if (["rejected", "revoked", "unavailable", "unhealthy", "delisted", "suspended", "expired"].includes(value)) {
     return "danger";
   }
   if (["fixture", "created", "discovered", "manual_import"].includes(value)) {

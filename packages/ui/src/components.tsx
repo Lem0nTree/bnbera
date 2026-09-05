@@ -4,7 +4,7 @@ import type { AgentStateAxes } from "@bnbera/domain";
 export type StatusTone = "purple" | "success" | "warning" | "danger" | "neutral" | "info";
 
 const stateAxisMeta: ReadonlyArray<{
-  readonly key: keyof AgentStateAxes;
+  readonly key: Extract<keyof AgentStateAxes, string>;
   readonly label: string;
   readonly icon: string;
 }> = [
@@ -21,8 +21,11 @@ function displayState(value: string): string {
 }
 
 export function BrandMark({ compact = false }: { readonly compact?: boolean }) {
+  const accessibleProps = compact
+    ? { role: "img" as const, "aria-label": "BNBEra" }
+    : {};
   return (
-    <span className={`brand-mark${compact ? " brand-mark--compact" : ""}`} aria-label="BNBEra">
+    <span className={`brand-mark${compact ? " brand-mark--compact" : ""}`} {...accessibleProps}>
       <span className="brand-mark__glyph" aria-hidden="true">
         B
       </span>
@@ -159,18 +162,22 @@ export function SectionHeading({
   eyebrow,
   title,
   description,
-  action
+  action,
+  headingLevel = 2,
+  id
 }: {
   readonly eyebrow?: string;
   readonly title: string;
   readonly description?: string;
   readonly action?: ReactNode;
+  readonly headingLevel?: 1 | 2;
+  readonly id?: string;
 }) {
   return (
     <div className="section-heading">
       <div>
         {eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}
-        <h2>{title}</h2>
+        {headingLevel === 1 ? <h1 id={id}>{title}</h1> : <h2 id={id}>{title}</h2>}
         {description ? <p className="section-heading__description">{description}</p> : null}
       </div>
       {action ? <div className="section-heading__action">{action}</div> : null}

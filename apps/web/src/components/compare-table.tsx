@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { CSSProperties } from "react";
 import { DataModeBadge, EmptyState, StateAxisGrid, StatusBadge } from "@bnbera/ui";
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
-import { categoryLabel, compactAddress, joinOrFallback, statusTone, titleCase } from "@/lib/presentation";
+import { categoryLabel, compactAddress, formatObservedAt, joinOrFallback, statusTone, titleCase } from "@/lib/presentation";
 import { ActivationPanel } from "./activation-panel";
 
 export function CompareTable({ agents }: { readonly agents: readonly MarketplaceAgentReadModel[] }) {
@@ -58,6 +58,7 @@ export function CompareTable({ agents }: { readonly agents: readonly Marketplace
               <span className="compare-label">Provenance</span>
               <p>{titleCase(agent.stateAxes.originType)} · {agent.dataProvenance.details}</p>
               <p><b>Claimant:</b> {compactAddress(agent.ownerAddress)}</p>
+              <p><b>Identity read:</b> {agent.dataProvenance.identityRead.readConsistency ?? "unknown"} · {formatObservedAt(agent.dataProvenance.identityRead.observedAt)}</p>
             </div>
             <div className="compare-cell">
               <span className="compare-label">Protocol & capability</span>
@@ -67,9 +68,10 @@ export function CompareTable({ agents }: { readonly agents: readonly Marketplace
             <div className="compare-cell">
               <span className="compare-label">Freshness & evidence</span>
               <StatusBadge value={agent.freshness.label} tone={statusTone(agent.freshness.status)} />
+              <StatusBadge label="Endpoint" value={titleCase(agent.health.endpointStatus)} tone={statusTone(agent.health.endpointStatus)} />
               <p>{agent.evidence.summary}</p>
             </div>
-            <ActivationPanel activation={agent.activation} detail />
+            <ActivationPanel activation={agent.activation} detail identifier={agent.slug} />
           </article>
         ))}
       </div>
