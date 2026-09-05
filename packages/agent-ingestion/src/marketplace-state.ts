@@ -1,5 +1,8 @@
 import { erc8004IdentityKey, normalizeEvmAddress, type Erc8004Identity } from "@bnbera/domain";
 
+/** Shared bound for discovery and rotating health cursor page configuration. */
+export const MAX_MARKETPLACE_CURSOR_PAGE_SIZE = 500;
+
 export type MarketplaceStateQueryable = {
   query<TRow extends Record<string, unknown> = Record<string, unknown>>(
     text: string,
@@ -184,7 +187,7 @@ export class PostgresMarketplaceIngestionState {
     readonly pageSize: number;
   }): Promise<MarketplaceDiscoveryCursor> {
     const registry = normalizeEvmAddress(input.identityRegistry);
-    if (!Number.isSafeInteger(input.chainId) || input.chainId < 1 || !Number.isSafeInteger(input.pageSize) || input.pageSize < 1 || input.pageSize > 100) {
+    if (!Number.isSafeInteger(input.chainId) || input.chainId < 1 || !Number.isSafeInteger(input.pageSize) || input.pageSize < 1 || input.pageSize > MAX_MARKETPLACE_CURSOR_PAGE_SIZE) {
       throw new Error("MARKETPLACE_CURSOR_CONFIGURATION_INVALID");
     }
     const result = await this.queryable.query<DiscoveryCursorRow>(

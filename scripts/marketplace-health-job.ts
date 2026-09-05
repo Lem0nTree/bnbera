@@ -2,6 +2,7 @@ import { loadRuntimeConfig } from "../packages/config/src/runtime.ts";
 import {
   BoundedServiceProbe,
   HttpServiceProbeTransport,
+  MAX_MARKETPLACE_CURSOR_PAGE_SIZE,
   PostgresIngestionRepository,
   PostgresMarketplaceIngestionState,
   rotateMarketplaceBatch,
@@ -100,7 +101,7 @@ async function main(): Promise<void> {
       scope: cursorScope,
       chainId: runtime.bscChainId,
       identityRegistry: healthCursorRegistry,
-      pageSize: 500
+      pageSize: MAX_MARKETPLACE_CURSOR_PAGE_SIZE
     });
     const result = await withAdvisoryLock(pool, "bnbera:marketplace:health", async () => {
       const identities = (await repository.listIdentities({ chainId: runtime.bscChainId }))

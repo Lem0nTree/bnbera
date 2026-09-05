@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   PostgresMarketplaceIngestionState,
+  MAX_MARKETPLACE_CURSOR_PAGE_SIZE,
   recordMarketplaceRetries,
   rotateMarketplaceBatch,
   type MarketplaceStateQueryable
@@ -9,12 +10,12 @@ import {
 const identityKey = "eip155:97:0x1111111111111111111111111111111111111111:7";
 const observedAt = new Date("2026-09-05T00:00:00.000Z");
 
-function cursorRow(nextOffset = 0) {
+function cursorRow(nextOffset = 0, pageSize = 2, registry = "0x1111111111111111111111111111111111111111") {
   return {
     scope: "marketplace-test",
     chain_id: 97,
-    identity_registry: "0x1111111111111111111111111111111111111111",
-    page_size: 2,
+    identity_registry: registry,
+    page_size: pageSize,
     next_offset: nextOffset,
     total: 4,
     sweep: 0,
@@ -26,9 +27,9 @@ function cursorRow(nextOffset = 0) {
 class FakeStateDatabase implements MarketplaceStateQueryable {
   public readonly statements: string[] = [];
 
-  public async query<TRow extends Record<string, unknown> = Record<string, unknown>>(text: string): Promise<{ readonly rows: readonly TRow[]; readonly rowCount?: number | null }> {
+  public async query<TRow extends Record<string, unknown> = Record<string, unknown>>(text: string, values?: unknown[]): Promise<{ readonly rows: readonly TRow[]; readonly rowCount?: number | null }> {
     this.statements.push(text);
-    if (text.includes("INSERT INTO marketplace_discovery_cursors")) return { rows: [cursorRow() as unknown as TRow] };
+    if (text.includes("INSERT INTO marketplace_discovery_cursors")) return { rows: [cursorRow(0, typeof values?.[3] === "number" ? values[3] : 2, typeof values?.[2] === "string" ? values[2] : undefined) as unknown as TRow] };
     if (text.includes("UPDATE marketplace_discovery_cursors")) return { rows: [cursorRow(2) as unknown as TRow] };
     if (text.includes("FROM marketplace_ingestion_retries r")) return { rows: [] };
     if (text.includes("FROM erc8004_identities")) return { rows: [{ id: "identity-id", identity_key: identityKey } as unknown as TRow] };
@@ -91,6 +92,16 @@ describe("persistent marketplace scheduling state", () => {
       attemptedAt: observedAt
     })).resolves.toMatchObject({ attemptCount: 1, lastErrorCode: "PIPELINE_FAILED" });
     expect(database.statements.filter((statement) => statement.includes("marketplace_discovery_cursors"))).toHaveLength(2);
+  });
+
+  it("accepts the shared rotation bound used by the health job", async () => {
+    const state = new PostgresMarketplaceIngestionState(new FakeStateDatabase());
+    await expect(state.ensureDiscoveryCursor({
+      scope: "marketplace-health:97",
+      chainId: 97,
+      identityRegistry: "0x0000000000000000000000000000000000000000",
+      pageSize: MAX_MARKETPLACE_CURSOR_PAGE_SIZE
+    })).resolves.toMatchObject({ pageSize: MAX_MARKETPLACE_CURSOR_PAGE_SIZE });
   });
 
   it("isolates one retry-write failure from the rest of the bounded batch", async () => {
