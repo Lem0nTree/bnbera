@@ -406,13 +406,22 @@ export class PgVectorSemanticRepository implements SemanticVectorRepository {
       ? "\n         INNER JOIN agent_versions ON agent_versions.id = agent_listing_embeddings.agent_version_id\n         INNER JOIN agents ON agents.id = agent_versions.agent_id"
       : "";
     const result = await this.queryable.query<VectorDbRow & { similarity: number }>(
-      `SELECT agent_version_id, embedding, provider, model, model_version, dimension,
-              source_text_digest, semantic_document_schema_version, classifier_version, "createdAt",
-              1 - (embedding <=> $1::vector) AS similarity
+      `SELECT agent_listing_embeddings.agent_version_id,
+              agent_listing_embeddings.embedding,
+              agent_listing_embeddings.provider,
+              agent_listing_embeddings.model,
+              agent_listing_embeddings.model_version,
+              agent_listing_embeddings.dimension,
+              agent_listing_embeddings.source_text_digest,
+              agent_listing_embeddings.semantic_document_schema_version,
+              agent_listing_embeddings.classifier_version,
+              agent_listing_embeddings."createdAt",
+              1 - (agent_listing_embeddings.embedding <=> $1::vector) AS similarity
          FROM agent_listing_embeddings
          ${publicJoins}
         WHERE ${clauses.join(" AND ")}
-        ORDER BY embedding <=> $1::vector, agent_version_id
+        ORDER BY agent_listing_embeddings.embedding <=> $1::vector,
+                 agent_listing_embeddings.agent_version_id
         LIMIT $${values.length}`,
       values
     );

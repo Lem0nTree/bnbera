@@ -91,14 +91,16 @@ export class PgCategoryPredictionSink {
         INSERT INTO agent_category_predictions
           (id, agent_version_id, predicted_category, structured_score, semantic_score,
            confidence, evidence, method, classifier_version, review_state, "createdAt")
-        SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+        SELECT $1::uuid, $2::uuid, $3::agent_category, $4::numeric, $5::numeric,
+               $6::numeric, $7::jsonb, $8::varchar, $9::varchar, $10::varchar,
+               $11::timestamptz
          WHERE NOT EXISTS (
            SELECT 1
              FROM agent_category_predictions AS existing
             WHERE existing.agent_version_id = $2
-              AND existing.classifier_version = $9
-              AND existing.method = $8
-              AND existing.evidence->>'digest' = $12
+              AND existing.classifier_version = $9::varchar
+              AND existing.method = $8::varchar
+              AND existing.evidence->>'digest' = $12::text
          )
         ON CONFLICT (id) DO NOTHING
         RETURNING agent_version_id, predicted_category

@@ -217,7 +217,6 @@ describe("disposable PostgreSQL ERC-8004 publication pipeline fixture", () => {
       } finally {
         cleanup.release();
       }
-      await repository.close();
     }
   });
 });
