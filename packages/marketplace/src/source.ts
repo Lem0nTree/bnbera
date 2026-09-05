@@ -11,12 +11,16 @@ import type {
 } from "@bnbera/agent-ingestion";
 import {
   marketplaceHealthSchema,
+  marketplaceMetricsSchema,
+  marketplaceServiceEvidenceSchema,
   parseMarketplaceListing,
   parseMarketplaceMetadata,
   parseMarketplaceSourceSnapshot,
   type MarketplaceHealth,
+  type MarketplaceMetrics,
   type MarketplaceListingInput,
   type MarketplaceListingMetadata,
+  type MarketplaceServiceEvidence,
   type MarketplaceSourceSnapshot
 } from "./types.js";
 
@@ -150,8 +154,12 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
       }
 
       try {
-        const health = healthFromProbes(probes, now);
         const parsedServices = services.map((service) => advertisedServiceSchema.parse(service));
+        const probeProjection = projectionFromProbes(probes, now);
+        const metrics = marketplaceMetricsSchema.parse({
+          ...(presentation.metrics ?? unknownMetrics()),
+          uptime: probeProjection.uptime
+        });
         const listing = parseMarketplaceListing({
           ...presentation,
           identityKey,
@@ -163,7 +171,9 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
           state: identityRecord.state,
           services: parsedServices,
           capabilities: parsedCapabilities,
-          health,
+          health: probeProjection.health,
+          metrics,
+          serviceEvidence: serviceEvidenceFrom(parsedServices, probes),
           provenance: {
             sourceKind: presentation.fixture === null ? "ingestion" : "fixture",
             fixture: presentation.fixture,
@@ -253,22 +263,33 @@ function latestProbeForService(
 // Minute-based health cron observations remain browse-usable for two ticks.
 // Execution paths must still perform their own immediate check.
 const endpointHealthMaxAgeMs = 120_000;
+const uptimeWindowMs = 30 * 60_000;
 
-function healthFromProbes(probes: readonly ServiceProbeRecord[], now: Date): MarketplaceHealth {
+function latestProbesByService(probes: readonly ServiceProbeRecord[]): readonly ServiceProbeRecord[] {
   const latestByService = new Map<string, ServiceProbeRecord>();
   for (const probe of probes) {
     const key = `${probe.kind}\u0000${probe.url}`;
     const previous = latestByService.get(key);
     latestByService.set(key, previous === undefined ? probe : latestProbeForService(previous, probe));
   }
-  const current = [...latestByService.values()];
+  return [...latestByService.values()];
+}
+
+function projectionFromProbes(
+  probes: readonly ServiceProbeRecord[],
+  now: Date
+): { readonly health: MarketplaceHealth; readonly uptime: MarketplaceMetrics["uptime"] } {
+  const current = latestProbesByService(probes);
   if (current.length === 0) {
-    return marketplaceHealthSchema.parse({
-      endpointStatus: "unknown",
-      observedAt: null,
-      latencyMs: null,
-      source: null
-    });
+    return {
+      health: marketplaceHealthSchema.parse({
+        endpointStatus: "unknown",
+        observedAt: null,
+        latencyMs: null,
+        source: null
+      }),
+      uptime: unknownMetrics().uptime
+    };
   }
   const observedNow = now.getTime();
   const fresh = current.filter((probe) => {
@@ -279,11 +300,115 @@ function healthFromProbes(probes: readonly ServiceProbeRecord[], now: Date): Mar
   const healthy = fresh.filter((probe) => probe.validationStatus === "healthy");
   const candidates = healthy.length > 0 ? healthy : fresh.length > 0 ? fresh : current;
   const probe = candidates.reduce((latest, candidate) => latestProbeForService(latest, candidate));
-  return marketplaceHealthSchema.parse({
-    endpointStatus: healthy.length > 0 ? "healthy" : fresh.length > 0 ? "unhealthy" : "unknown",
-    observedAt: probe.observedAt.toISOString(),
-    latencyMs: probe.latencyMs,
-    source: "agent-ingestion-probe"
+  const windowStartMs = observedNow - uptimeWindowMs;
+  const boundedHistory = probes
+    .filter((candidate) => {
+      const observedAt = candidate.observedAt.getTime();
+      return Number.isFinite(observedAt) && observedAt >= windowStartMs && observedAt <= observedNow;
+    })
+    .sort((left, right) => left.observedAt.getTime() - right.observedAt.getTime());
+  const observedFrom = boundedHistory[0]?.observedAt.toISOString() ?? null;
+  const observedTo = boundedHistory.at(-1)?.observedAt.toISOString() ?? null;
+  const attemptedChecks = boundedHistory.length;
+  const successfulChecks = boundedHistory.filter((candidate) => candidate.validationStatus === "healthy").length;
+  const observedSpanSeconds = boundedHistory.length > 0
+    ? Math.max(0, Math.floor((boundedHistory.at(-1)!.observedAt.getTime() - boundedHistory[0]!.observedAt.getTime()) / 1_000))
+    : null;
+  return {
+    health: marketplaceHealthSchema.parse({
+      endpointStatus: healthy.length > 0 ? "healthy" : fresh.length > 0 ? "unhealthy" : "unknown",
+      observedAt: probe.observedAt.toISOString(),
+      latencyMs: probe.latencyMs,
+      source: "agent-ingestion-probe"
+    }),
+    uptime: {
+      status: attemptedChecks > 0 ? "observed" : "unknown",
+      windowSeconds: observedSpanSeconds,
+      monitoringWindowSeconds: attemptedChecks > 0 ? uptimeWindowMs / 1_000 : null,
+      coverageSeconds: observedSpanSeconds,
+      coverageRatio: observedSpanSeconds === null ? null : Math.min(1, observedSpanSeconds / (uptimeWindowMs / 1_000)),
+      observedFrom,
+      observedTo,
+      attemptedChecks,
+      successfulChecks,
+      successRatio: attemptedChecks > 0 ? successfulChecks / attemptedChecks : null,
+      source: attemptedChecks > 0 ? "agent-ingestion-probe" : null
+    }
+  };
+}
+
+function unknownMetrics(): MarketplaceMetrics {
+  return marketplaceMetricsSchema.parse({
+    uptime: {
+      status: "unknown",
+      windowSeconds: null,
+      monitoringWindowSeconds: null,
+      coverageSeconds: null,
+      coverageRatio: null,
+      observedFrom: null,
+      observedTo: null,
+      attemptedChecks: 0,
+      successfulChecks: 0,
+      successRatio: null,
+      source: null
+    },
+    reviews: { status: "unavailable", count: null, averageScore: null, source: null, observedAt: null },
+    completedJobs: { status: "unavailable", completedCount: null, source: null, observedAt: null },
+    lastResult: { status: "unavailable", summary: null, reference: null, source: null, observedAt: null },
+    currentData: {
+      status: "unavailable",
+      summary: "No current data observation is available.",
+      observedAt: null,
+      source: null,
+      items: []
+    }
+  });
+}
+
+function skillEvidenceFrom(value: unknown): Array<{ readonly id: string; readonly name: string; readonly description: string }> {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((skill) => {
+      if (typeof skill !== "object" || skill === null || Array.isArray(skill)) return null;
+      const record = skill as Record<string, unknown>;
+      const id = typeof record.id === "string" ? record.id.trim() : "";
+      const name = typeof record.name === "string" ? record.name.trim() : "";
+      const description = typeof record.description === "string" ? record.description.trim() : "";
+      return id && name && description ? { id, name, description } : null;
+    })
+    .filter((skill): skill is { readonly id: string; readonly name: string; readonly description: string } => skill !== null)
+    .slice(0, 32);
+}
+
+function serviceEvidenceFrom(
+  services: readonly ReturnType<typeof advertisedServiceSchema.parse>[],
+  probes: readonly ServiceProbeRecord[]
+): readonly MarketplaceServiceEvidence[] {
+  const latest = new Map<string, ServiceProbeRecord>();
+  for (const probe of probes) {
+    const key = `${probe.kind}\u0000${probe.url}`;
+    const previous = latest.get(key);
+    latest.set(key, previous === undefined ? probe : latestProbeForService(previous, probe));
+  }
+  return services.map((service) => {
+    const probe = latest.get(`${service.kind}\u0000${service.url}`);
+    const summary = probe?.safeCapabilityProbe ?? null;
+    const isCard = service.kind === "a2a" && summary?.protocol === "a2a" && summary.contract === "agent-card" && summary.valid === true;
+    const invocationUrls = isCard && Array.isArray(summary.invocationUrls)
+      ? summary.invocationUrls.filter((value): value is string => typeof value === "string").slice(0, 32)
+      : [];
+    return marketplaceServiceEvidenceSchema.parse({
+      kind: service.kind,
+      advertisedUrl: service.url,
+      cardUrl: isCard ? service.url : null,
+      invocationUrls,
+      advertisedSkills: isCard ? skillEvidenceFrom(summary.skills) : [],
+      // A bounded GET proves card/transport reachability only. No task was
+      // invoked, so testedSkills must remain empty and explicit.
+      testedSkills: [],
+      testStatus: probe?.validationStatus === "healthy" ? "transport_only" : "not_tested",
+      testedAt: null
+    });
   });
 }
 

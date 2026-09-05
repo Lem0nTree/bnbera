@@ -5,8 +5,9 @@
  * it out of the shared web contract: pg and the ingestion repository must
  * never be reachable from a client component or browser bundle.
  */
-import { AppError, loadRuntimeConfig } from "@bnbera/config";
+import { AppError, loadRuntimeConfig, validateSemanticEmbeddingLock } from "@bnbera/config";
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import pg from "pg";
 import {
   IngestionMarketplaceSource,
@@ -36,6 +37,7 @@ import {
   marketplacePricingSchema,
   marketplaceSearchRequestSchema,
   marketplaceListingMetadataSchema,
+  marketplaceMetricsSchema,
   type MarketplaceListingMetadata,
   type MarketplaceSearchRequest
 } from "@bnbera/marketplace";
@@ -97,6 +99,7 @@ type MarketplaceMetadataRow = {
   readonly authority_expires_at: Date | null;
   readonly authority_spend_limits: unknown;
   readonly authority_calls_allowlist: unknown;
+  readonly enrichment_observations: unknown;
 };
 
 /**
@@ -126,7 +129,8 @@ export class PostgresMarketplaceMetadataSource {
         au.execution_wallet AS authority_execution_wallet,
         au.expires_at AS authority_expires_at,
         au.spend_limits AS authority_spend_limits,
-        au.calls_allowlist AS authority_calls_allowlist
+        au.calls_allowlist AS authority_calls_allowlist,
+        COALESCE(enrichment.observations, '[]'::json) AS enrichment_observations
       FROM agents a
       JOIN erc8004_identities i ON i.id = a.identity_id
       LEFT JOIN LATERAL (
@@ -152,6 +156,24 @@ export class PostgresMarketplaceMetadataSource {
         ORDER BY "updatedAt" DESC, id DESC
         LIMIT 1
       ) au ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT json_agg(observation ORDER BY observation.source_timestamp DESC NULLS LAST, observation.created_at DESC) AS observations
+        FROM (
+          SELECT
+            eo.provider,
+            eo.observation_type,
+            eo.normalized_payload,
+            eo.source_timestamp,
+            eo.source_block,
+            eo.freshness,
+            eo.validation_state,
+            eo."createdAt" AS created_at
+          FROM agent_enrichment_observations eo
+          WHERE eo.agent_version_id = v.id
+          ORDER BY eo.source_timestamp DESC NULLS LAST, eo."createdAt" DESC
+          LIMIT 32
+        ) observation
+      ) enrichment ON TRUE
       ORDER BY i.namespace, i.chain_id, i.identity_registry, i.agent_id
     `);
 
@@ -204,6 +226,7 @@ function metadataFromRow(row: MarketplaceMetadataRow): MarketplaceListingMetadat
   const authority = resolveAuthority(row, publicMetadata);
   const executionEvidence = resolveExecutionEvidence(publicMetadata);
   const activationOffer = resolveActivationOffer(publicMetadata);
+  const metrics = normalizePersistedMarketplaceMetrics(row.enrichment_observations);
 
   try {
     return marketplaceListingMetadataSchema.parse({
@@ -218,6 +241,7 @@ function metadataFromRow(row: MarketplaceMetadataRow): MarketplaceListingMetadat
       authority,
       executionEvidence,
       activationOffer,
+      metrics,
       fixture: null
     });
   } catch {
@@ -385,6 +409,188 @@ function resolveActivationOffer(metadata: Record<string, unknown> | null) {
   });
 }
 
+type EnrichmentObservation = {
+  readonly provider: string;
+  readonly observation_type: string;
+  readonly normalized_payload: unknown;
+  readonly source_timestamp: unknown;
+  readonly freshness: string;
+  readonly validation_state: string;
+};
+
+function unknownMetrics() {
+  return marketplaceMetricsSchema.parse({
+    uptime: {
+      status: "unknown",
+      windowSeconds: null,
+      monitoringWindowSeconds: null,
+      coverageSeconds: null,
+      coverageRatio: null,
+      observedFrom: null,
+      observedTo: null,
+      attemptedChecks: 0,
+      successfulChecks: 0,
+      successRatio: null,
+      source: null
+    },
+    reviews: { status: "unavailable", count: null, averageScore: null, source: null, observedAt: null },
+    completedJobs: { status: "unavailable", completedCount: null, source: null, observedAt: null },
+    lastResult: { status: "unavailable", summary: null, reference: null, source: null, observedAt: null },
+    currentData: {
+      status: "unavailable",
+      summary: "No current data observation is available.",
+      observedAt: null,
+      source: null,
+      items: []
+    }
+  });
+}
+
+function enrichmentRows(value: unknown): EnrichmentObservation[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const row = asRecord(entry);
+    const provider = boundedString(row?.provider, 128);
+    const observationType = boundedString(row?.observation_type ?? row?.observationType, 128);
+    const freshness = boundedString(row?.freshness, 64);
+    const validationState = boundedString(row?.validation_state ?? row?.validationState, 64);
+    if (provider === null || observationType === null || freshness === null || validationState === null) return [];
+    return [{
+      provider,
+      observation_type: observationType,
+      normalized_payload: row?.normalized_payload ?? row?.normalizedPayload,
+      source_timestamp: row?.source_timestamp ?? row?.sourceTimestamp,
+      freshness,
+      validation_state: validationState
+    }];
+  });
+}
+
+function usableEnrichment(row: EnrichmentObservation): boolean {
+  const validationState = row.validation_state.toLowerCase();
+  const freshness = row.freshness.toLowerCase();
+  const provider = row.provider.toLowerCase();
+  const observedAt = isoDateOrNull(row.source_timestamp);
+  const validStates = new Set(["valid", "verified", "accepted", "resolved", "complete"]);
+  const freshStates = new Set(["fresh", "current"]);
+  return provider !== "unknown" && provider !== "self" && provider !== "self-reported" &&
+    validStates.has(validationState) && freshStates.has(freshness) && observedAt !== null;
+}
+
+function metricPayload(row: EnrichmentObservation): Record<string, unknown> | null {
+  return asRecord(row.normalized_payload);
+}
+
+function metricNumber(value: unknown, minimum: number, maximum: number): number | null {
+  const candidate = typeof value === "number"
+    ? value
+    : typeof value === "string" && value.trim() !== ""
+      ? Number(value)
+      : Number.NaN;
+  return Number.isFinite(candidate) && candidate >= minimum && candidate <= maximum ? candidate : null;
+}
+
+function metricCount(value: unknown): number | null {
+  const candidate = metricNumber(value, 0, Number.MAX_SAFE_INTEGER);
+  return candidate !== null && Number.isSafeInteger(candidate) ? candidate : null;
+}
+
+function metricObservedAt(row: EnrichmentObservation): string | null {
+  return isoDateOrNull(row.source_timestamp);
+}
+
+function metricSource(row: EnrichmentObservation): string {
+  return row.provider;
+}
+
+/**
+ * Only persisted enrichment with a recognized validation/freshness state and
+ * source timestamp can become a public metric. Registration metadata is
+ * intentionally excluded: an agent cannot make its own review claim real by
+ * placing a count in its card or public JSON.
+ */
+export function normalizePersistedMarketplaceMetrics(enrichmentValue: unknown) {
+  const defaults = unknownMetrics();
+  const rows = enrichmentRows(enrichmentValue).filter(usableEnrichment);
+  let reviews = defaults.reviews;
+  let completedJobs = defaults.completedJobs;
+  let lastResult = defaults.lastResult;
+  let currentData = defaults.currentData;
+
+  for (const row of rows) {
+    const type = row.observation_type.toLowerCase();
+    const payload = metricPayload(row);
+    if (payload === null) continue;
+    if (reviews.status === "unavailable" && (type.includes("review") || type.includes("reputation") || type.includes("feedback"))) {
+      const reviewList = Array.isArray(payload.reviews) ? payload.reviews : null;
+      const count = metricCount(payload.reviewCount ?? payload.totalReviews ?? payload.count) ?? (reviewList === null ? null : reviewList.length);
+      const averageScore = metricNumber(payload.averageScore ?? payload.averageRating ?? payload.rating, 0, 100);
+      if (count !== null || averageScore !== null) {
+        reviews = marketplaceMetricsSchema.shape.reviews.parse({
+          status: "available",
+          count,
+          averageScore,
+          source: metricSource(row),
+          observedAt: metricObservedAt(row)
+        });
+      }
+    }
+    if (completedJobs.status === "unavailable" && (type.includes("job") || type.includes("task") || type.includes("execution"))) {
+      const completedCount = metricCount(payload.completedJobs ?? payload.completedJobCount ?? payload.completedTasks);
+      if (completedCount !== null) {
+        completedJobs = marketplaceMetricsSchema.shape.completedJobs.parse({
+          status: "available",
+          completedCount,
+          source: metricSource(row),
+          observedAt: metricObservedAt(row)
+        });
+      }
+    }
+    if (lastResult.status === "unavailable" && (type.includes("result") || type.includes("job") || type.includes("execution"))) {
+      const result = asRecord(payload.lastResult ?? payload.result);
+      const summary = boundedString(result?.summary ?? result?.description, 500);
+      const reference = boundedString(result?.reference ?? result?.id ?? result?.url, 500);
+      if (summary !== null || reference !== null) {
+        lastResult = marketplaceMetricsSchema.shape.lastResult.parse({
+          status: "available",
+          summary,
+          reference,
+          source: metricSource(row),
+          observedAt: metricObservedAt(row)
+        });
+      }
+    }
+    if (currentData.status === "unavailable" && (type.includes("market") || type.includes("data") || type.includes("state"))) {
+      const data = asRecord(payload.currentData ?? payload.data);
+      const rawItems = Array.isArray(data?.items) ? data.items : [];
+      const items = rawItems.flatMap((item) => {
+        const value = asRecord(item);
+        const label = boundedString(value?.label, 120);
+        const display = boundedString(value?.value, 240);
+        const source = boundedString(value?.source, 160) ?? metricSource(row);
+        return label !== null && display !== null ? [{ label, value: display, source }] : [];
+      }).slice(0, 12);
+      if (items.length > 0) {
+        const rawStatus = asString(data?.status);
+        currentData = marketplaceMetricsSchema.shape.currentData.parse({
+          status: rawStatus === "stale" ? "stale" : "available",
+          summary: boundedString(data?.summary, 500) ?? "Current data observed from an enrichment source.",
+          observedAt: metricObservedAt(row),
+          source: metricSource(row),
+          items
+        });
+      }
+    }
+  }
+  return marketplaceMetricsSchema.parse({
+    ...defaults,
+    reviews,
+    completedJobs,
+    lastResult,
+    currentData
+  });
+}
+
 function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -488,6 +694,11 @@ function getPool(connectionString: string, ssl: boolean): DatabasePool {
   return pool;
 }
 
+async function readSemanticEmbeddingStandardsLock(): Promise<unknown> {
+  const content = await readFile(new URL("../../../../config/standards.lock.json", import.meta.url), "utf8");
+  return JSON.parse(content) as unknown;
+}
+
 /** Test/process shutdown hook; production route handlers keep the pool cached. */
 export async function closeMarketplaceDatabaseForTests(): Promise<void> {
   const current = marketplaceGlobal.__bnberaMarketplacePool;
@@ -576,6 +787,11 @@ async function createLiveReadService(): Promise<MarketplaceReadService> {
   });
   let semanticRetriever: VectorMarketplaceSemanticRetriever | undefined;
   if (runtime.marketplaceSemanticRetrievalEnabled && runtime.embedding !== null) {
+    try {
+      validateSemanticEmbeddingLock(await readSemanticEmbeddingStandardsLock(), runtime);
+    } catch (error) {
+      throw configurationError(error);
+    }
     const provider = createEmbeddingProviderFromRuntimeConfig(
       runtime,
       (reference) => process.env[reference]

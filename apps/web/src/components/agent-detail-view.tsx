@@ -113,6 +113,20 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
               </div>
             )) : <p className="detail-section__lede">No service observations returned.</p>}
           </div>
+          {agent.serviceEvidence.length > 0 && (
+            <div className="detail-section__body">
+              {agent.serviceEvidence.map((evidence) => (
+                <div className="capability-card" key={`${evidence.kind}-${evidence.advertisedUrl}`}>
+                  <div className="detail-kv"><span>Advertised {evidence.kind} URL</span><span>{evidence.advertisedUrl}</span></div>
+                  <div className="detail-kv"><span>Agent Card URL</span><span>{evidence.cardUrl ?? "Not observed"}</span></div>
+                  <div className="detail-kv"><span>Invocation URL(s)</span><span>{evidence.invocationUrls.length > 0 ? evidence.invocationUrls.join(", ") : "Not observed"}</span></div>
+                  <div className="detail-kv"><span>Advertised skills</span><span>{evidence.advertisedSkills.map((skill) => skill.id).join(", ") || "Not observed"}</span></div>
+                  <div className="detail-kv"><span>Tested skills</span><span>{evidence.testedSkills.length > 0 ? evidence.testedSkills.map((skill) => skill.id).join(", ") : "None — transport/card check only"}</span></div>
+                  <StatusBadge value={titleCase(evidence.testStatus)} tone={evidence.testStatus === "verified" ? "success" : "neutral"} />
+                </div>
+              ))}
+            </div>
+          )}
           <div className="detail-actions">
             <StatusBadge value={`Observed ${formatObservedAt(agent.freshness.observedAt)}`} tone="neutral" />
             <StatusBadge value={`Protocol ${joinOrFallback(agent.protocols, "not observed")}`} tone="purple" />
@@ -133,6 +147,20 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
             </div>
           )}
           <div className="detail-actions"><StatusBadge value={agent.freshness.label} tone={statusTone(agent.freshness.status)} /><span className="muted-label">{agent.freshness.source}</span></div>
+        </section>
+
+        <section className="detail-section">
+          <p className="eyebrow">Observed marketplace metrics</p>
+          <h2>Counts require provenance</h2>
+          <p className="detail-section__lede">These fields are persisted observations, not estimates. Missing external feedback, jobs, results, or uptime samples stay explicitly unavailable.</p>
+          <div className="detail-section__body">
+            <div className="detail-kv"><span>Observed probe samples</span><span>{agent.metrics.uptime.status === "observed" ? `${agent.metrics.uptime.successfulChecks}/${agent.metrics.uptime.attemptedChecks} successful · ${Math.round((agent.metrics.uptime.successRatio ?? 0) * 100)}%` : "Not observed"}</span></div>
+            <div className="detail-kv"><span>Observed span / coverage</span><span>{agent.metrics.uptime.windowSeconds === null ? "Not observed" : `${agent.metrics.uptime.windowSeconds === 0 ? "0 sec" : `${Math.round(agent.metrics.uptime.windowSeconds / 60)} min`} observed · ${Math.round((agent.metrics.uptime.coverageRatio ?? 0) * 100)}% of ${Math.round((agent.metrics.uptime.monitoringWindowSeconds ?? 0) / 60)} min horizon · ${formatObservedAt(agent.metrics.uptime.observedFrom)} to ${formatObservedAt(agent.metrics.uptime.observedTo)}`}</span></div>
+            <div className="detail-kv"><span>Reviews / reputation</span><span>{agent.metrics.reviews.count === null ? "Unavailable" : `${agent.metrics.reviews.count}${agent.metrics.reviews.averageScore === null ? "" : ` · score ${agent.metrics.reviews.averageScore}`}`} · {agent.metrics.reviews.source ?? "No source"}</span></div>
+            <div className="detail-kv"><span>Completed jobs</span><span>{agent.metrics.completedJobs.completedCount === null ? "Unavailable" : agent.metrics.completedJobs.completedCount} · {agent.metrics.completedJobs.source ?? "No source"}</span></div>
+            <div className="detail-kv"><span>Last result</span><span>{agent.metrics.lastResult.summary ?? "Unavailable"}{agent.metrics.lastResult.reference === null ? "" : ` · ${agent.metrics.lastResult.reference}`}</span></div>
+            <p className="muted-label">Metrics are observed from persisted probes/enrichment only; no live qualification or fabricated zero values are implied.</p>
+          </div>
         </section>
 
         <section className="detail-section">

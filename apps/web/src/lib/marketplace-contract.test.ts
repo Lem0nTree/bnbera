@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { normalizePersistedMarketplaceMetrics } from "./marketplace-server";
 import {
   parseMarketplaceSearchParams,
   readMarketplace,
@@ -16,6 +17,43 @@ afterEach(() => {
 });
 
 describe("marketplace web adapter", () => {
+  it("only exposes fresh, validated persisted feedback metrics", () => {
+    const stale = normalizePersistedMarketplaceMetrics([{
+      provider: "erc8004-reputation",
+      observation_type: "feedback",
+      normalized_payload: { reviewCount: 99, averageScore: 98 },
+      source_timestamp: "2026-09-05T00:00:00.000Z",
+      freshness: "stale",
+      validation_state: "verified"
+    }]);
+    const pending = normalizePersistedMarketplaceMetrics([{
+      provider: "erc8004-reputation",
+      observation_type: "feedback",
+      normalized_payload: { reviewCount: 99, averageScore: 98 },
+      source_timestamp: "2026-09-05T00:00:00.000Z",
+      freshness: "fresh",
+      validation_state: "pending"
+    }]);
+    expect(stale.reviews).toMatchObject({ status: "unavailable", count: null, averageScore: null });
+    expect(pending.reviews).toMatchObject({ status: "unavailable", count: null, averageScore: null });
+
+    const fresh = normalizePersistedMarketplaceMetrics([{
+      provider: "erc8004-reputation",
+      observation_type: "feedback",
+      normalized_payload: { reviewCount: 2, averageScore: 87 },
+      source_timestamp: "2026-09-05T00:00:00.000Z",
+      freshness: "fresh",
+      validation_state: "verified"
+    }]);
+    expect(fresh.reviews).toMatchObject({
+      status: "available",
+      count: 2,
+      averageScore: 87,
+      source: "erc8004-reputation",
+      observedAt: "2026-09-05T00:00:00.000Z"
+    });
+  });
+
   it("parses discovery filters into the shared read input", () => {
     const input = parseMarketplaceSearchParams(new URLSearchParams(
       "q=yield&chainId=97&protocol=venus&freshness=fresh&sort=freshness&limit=3"
