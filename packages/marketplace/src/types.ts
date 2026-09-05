@@ -128,7 +128,12 @@ const marketplaceMetricStatusSchema = z.enum(["available", "unavailable", "unkno
  */
 export const marketplaceUptimeSchema = z.object({
   status: z.enum(["observed", "unknown"]),
-  windowSeconds: z.number().int().positive().nullable(),
+  /** Actual span between the oldest and newest persisted samples. */
+  windowSeconds: z.number().int().nonnegative().nullable(),
+  /** Configured monitoring horizon used only to describe coverage. */
+  monitoringWindowSeconds: z.number().int().positive().nullable(),
+  coverageSeconds: z.number().int().nonnegative().nullable(),
+  coverageRatio: z.number().min(0).max(1).nullable(),
   observedFrom: isoDateSchema.nullable(),
   observedTo: isoDateSchema.nullable(),
   attemptedChecks: z.number().int().nonnegative(),
@@ -136,11 +141,18 @@ export const marketplaceUptimeSchema = z.object({
   successRatio: z.number().min(0).max(1).nullable(),
   source: z.string().trim().min(1).max(160).nullable()
 }).superRefine((value, context) => {
-  if (value.status === "observed" && (value.windowSeconds === null || value.observedFrom === null || value.observedTo === null)) {
+  if (value.status === "observed" && (value.windowSeconds === null || value.monitoringWindowSeconds === null || value.coverageSeconds === null || value.coverageRatio === null || value.observedFrom === null || value.observedTo === null)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["observedFrom"],
       message: "Observed uptime samples must include a bounded observation window"
+    });
+  }
+  if (value.coverageSeconds !== null && value.windowSeconds !== null && value.coverageSeconds !== value.windowSeconds) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["coverageSeconds"],
+      message: "Coverage must equal the actually observed sample span"
     });
   }
   if (value.successfulChecks > value.attemptedChecks) {
@@ -239,6 +251,9 @@ function unknownMarketplaceMetrics(): MarketplaceMetrics {
     uptime: {
       status: "unknown",
       windowSeconds: null,
+      monitoringWindowSeconds: null,
+      coverageSeconds: null,
+      coverageRatio: null,
       observedFrom: null,
       observedTo: null,
       attemptedChecks: 0,

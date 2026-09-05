@@ -373,6 +373,33 @@ function validateA2AAgentCard(
   };
 }
 
+async function validateA2AInvocationTargets(
+  summary: Readonly<Record<string, unknown>>,
+  options: {
+    readonly lookup?: MetadataResolverOptions["lookup"];
+    readonly allowPrivateAddresses: boolean;
+  }
+): Promise<void> {
+  const urls = Array.isArray(summary.invocationUrls)
+    ? summary.invocationUrls.filter((value): value is string => typeof value === "string")
+    : [];
+  try {
+    for (const url of urls) {
+      await resolveSafePublicNetworkTarget(url, {
+        ...(options.lookup === undefined ? {} : { lookup: options.lookup }),
+        allowPrivateAddresses: options.allowPrivateAddresses
+      });
+    }
+  } catch (_cause) {
+    throw protocolError(
+      "SERVICE_A2A_AGENT_CARD_INVALID",
+      "The A2A Agent Card contains a private or unsafe invocation target.",
+      "repair_agent_card",
+      false
+    );
+  }
+}
+
 function validateReadiness(
   body: Record<string, unknown>
 ): { readonly summary: Readonly<Record<string, unknown>>; readonly contractStatus?: ProbeValidationStatus; readonly errorCode?: IngestionErrorCode } {
@@ -671,7 +698,12 @@ export class HttpServiceProbeTransport implements ServiceProbeTransport {
               : "SERVICE_PROBE_FAILED";
         const body = await readJsonObject(response, input.maxResponseBytes, invalidCode);
         if (kind === "a2a") {
-          return { statusCode: response.status, latencyMs, contentType, contractStatus: "healthy", safeCapabilityProbe: validateA2AAgentCard(body, input, this.allowInsecureHttp) };
+          const safeCapabilityProbe = validateA2AAgentCard(body, input, this.allowInsecureHttp);
+          await validateA2AInvocationTargets(safeCapabilityProbe, {
+            lookup: this.lookup,
+            allowPrivateAddresses: this.allowPrivateAddresses
+          });
+          return { statusCode: response.status, latencyMs, contentType, contractStatus: "healthy", safeCapabilityProbe };
         }
         if (kind === "readiness") {
           const readiness = validateReadiness(body);

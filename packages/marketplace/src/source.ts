@@ -309,6 +309,9 @@ function projectionFromProbes(
   const observedTo = boundedHistory.at(-1)?.observedAt.toISOString() ?? null;
   const attemptedChecks = boundedHistory.length;
   const successfulChecks = boundedHistory.filter((candidate) => candidate.validationStatus === "healthy").length;
+  const observedSpanSeconds = boundedHistory.length > 0
+    ? Math.max(0, Math.floor((boundedHistory.at(-1)!.observedAt.getTime() - boundedHistory[0]!.observedAt.getTime()) / 1_000))
+    : null;
   return {
     health: marketplaceHealthSchema.parse({
       endpointStatus: healthy.length > 0 ? "healthy" : fresh.length > 0 ? "unhealthy" : "unknown",
@@ -318,7 +321,10 @@ function projectionFromProbes(
     }),
     uptime: {
       status: attemptedChecks > 0 ? "observed" : "unknown",
-      windowSeconds: attemptedChecks > 0 ? uptimeWindowMs / 1_000 : null,
+      windowSeconds: observedSpanSeconds,
+      monitoringWindowSeconds: attemptedChecks > 0 ? uptimeWindowMs / 1_000 : null,
+      coverageSeconds: observedSpanSeconds,
+      coverageRatio: observedSpanSeconds === null ? null : Math.min(1, observedSpanSeconds / (uptimeWindowMs / 1_000)),
       observedFrom,
       observedTo,
       attemptedChecks,
@@ -334,6 +340,9 @@ function unknownMetrics(): MarketplaceMetrics {
     uptime: {
       status: "unknown",
       windowSeconds: null,
+      monitoringWindowSeconds: null,
+      coverageSeconds: null,
+      coverageRatio: null,
       observedFrom: null,
       observedTo: null,
       attemptedChecks: 0,

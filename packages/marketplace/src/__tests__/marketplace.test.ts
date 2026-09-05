@@ -440,6 +440,10 @@ describe("MarketplaceReadService", () => {
     });
     expect(snapshot.records[0]?.metrics?.uptime).toMatchObject({
       status: "observed",
+      windowSeconds: 30,
+      monitoringWindowSeconds: 1_800,
+      coverageSeconds: 30,
+      coverageRatio: 30 / 1_800,
       attemptedChecks: 3,
       successfulChecks: 2,
       successRatio: 2 / 3,

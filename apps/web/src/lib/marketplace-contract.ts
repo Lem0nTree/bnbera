@@ -88,7 +88,10 @@ const currentDataSchema = z.object({
 
 const uptimeSchema = z.object({
   status: z.enum(["observed", "unknown"]),
-  windowSeconds: z.number().int().positive().nullable(),
+  windowSeconds: z.number().int().nonnegative().nullable(),
+  monitoringWindowSeconds: z.number().int().positive().nullable(),
+  coverageSeconds: z.number().int().nonnegative().nullable(),
+  coverageRatio: z.number().min(0).max(1).nullable(),
   observedFrom: z.string().datetime({ offset: true }).nullable(),
   observedTo: z.string().datetime({ offset: true }).nullable(),
   attemptedChecks: z.number().int().nonnegative(),
@@ -609,6 +612,9 @@ function mapCard(
     uptime: {
       status: "unknown" as const,
       windowSeconds: null,
+      monitoringWindowSeconds: null,
+      coverageSeconds: null,
+      coverageRatio: null,
       observedFrom: null,
       observedTo: null,
       attemptedChecks: 0,

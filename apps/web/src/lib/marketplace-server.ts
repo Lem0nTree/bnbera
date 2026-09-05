@@ -226,7 +226,7 @@ function metadataFromRow(row: MarketplaceMetadataRow): MarketplaceListingMetadat
   const authority = resolveAuthority(row, publicMetadata);
   const executionEvidence = resolveExecutionEvidence(publicMetadata);
   const activationOffer = resolveActivationOffer(publicMetadata);
-  const metrics = resolveMetrics(row.enrichment_observations, publicMetadata);
+  const metrics = normalizePersistedMarketplaceMetrics(row.enrichment_observations);
 
   try {
     return marketplaceListingMetadataSchema.parse({
@@ -423,6 +423,9 @@ function unknownMetrics() {
     uptime: {
       status: "unknown",
       windowSeconds: null,
+      monitoringWindowSeconds: null,
+      coverageSeconds: null,
+      coverageRatio: null,
       observedFrom: null,
       observedTo: null,
       attemptedChecks: 0,
@@ -464,7 +467,14 @@ function enrichmentRows(value: unknown): EnrichmentObservation[] {
 }
 
 function usableEnrichment(row: EnrichmentObservation): boolean {
-  return !new Set(["invalid", "rejected", "failed", "error"]).has(row.validation_state.toLowerCase());
+  const validationState = row.validation_state.toLowerCase();
+  const freshness = row.freshness.toLowerCase();
+  const provider = row.provider.toLowerCase();
+  const observedAt = isoDateOrNull(row.source_timestamp);
+  const validStates = new Set(["valid", "verified", "accepted", "resolved", "complete"]);
+  const freshStates = new Set(["fresh", "current"]);
+  return provider !== "unknown" && provider !== "self" && provider !== "self-reported" &&
+    validStates.has(validationState) && freshStates.has(freshness) && observedAt !== null;
 }
 
 function metricPayload(row: EnrichmentObservation): Record<string, unknown> | null {
@@ -493,29 +503,19 @@ function metricSource(row: EnrichmentObservation): string {
   return row.provider;
 }
 
-function resolveMetrics(enrichmentValue: unknown, metadata: Record<string, unknown> | null) {
+/**
+ * Only persisted enrichment with a recognized validation/freshness state and
+ * source timestamp can become a public metric. Registration metadata is
+ * intentionally excluded: an agent cannot make its own review claim real by
+ * placing a count in its card or public JSON.
+ */
+export function normalizePersistedMarketplaceMetrics(enrichmentValue: unknown) {
   const defaults = unknownMetrics();
   const rows = enrichmentRows(enrichmentValue).filter(usableEnrichment);
-  const publicMetrics = asRecord(metadata?.metrics);
   let reviews = defaults.reviews;
   let completedJobs = defaults.completedJobs;
   let lastResult = defaults.lastResult;
   let currentData = defaults.currentData;
-
-  const publicReviews = asRecord(publicMetrics?.reviews);
-  if (publicReviews !== null) {
-    const count = metricCount(publicReviews.count);
-    const averageScore = metricNumber(publicReviews.averageScore, 0, 100);
-    if (count !== null || averageScore !== null) {
-      reviews = marketplaceMetricsSchema.shape.reviews.parse({
-        status: "available",
-        count,
-        averageScore,
-        source: boundedString(publicReviews.source, 160),
-        observedAt: isoDateOrNull(publicReviews.observedAt)
-      });
-    }
-  }
 
   for (const row of rows) {
     const type = row.observation_type.toLowerCase();
