@@ -1,9 +1,9 @@
 # T5 direct ERC-8004 registry sync handoff
 
-Date: 2026-09-05  
-Vertical: Marketplace Data + Web (direct registry-event sync)  
-Branch: `codex/mvp-direct-event-sync`  
-Base SHA: `a51bf2caa89975083954ddb79e70b218f737aa8d`  
+Date: 2026-09-05
+Vertical: Marketplace Data + Web (direct registry-event sync)
+Branch: `codex/mvp-direct-event-sync`
+Base SHA: `a51bf2caa89975083954ddb79e70b218f737aa8d`
 Head SHA: reported with the final coordinator handoff (`git rev-parse HEAD` after this evidence commit)
 
 ## Documentation and contract gate
