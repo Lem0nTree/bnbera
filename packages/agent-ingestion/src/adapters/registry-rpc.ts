@@ -199,6 +199,18 @@ export class JsonRpcRegistryChainReader implements RegistryChainReader {
     const events: RegistryEvent[] = [];
     const trustedHashes = new Map<number, string>();
     for (const log of logs) {
+      if (typeof log.address !== "string") {
+        throw ingestionError("CHAIN_PROVIDER_INVALID", "The registry provider returned a log without an address.", "review_chain_provider");
+      }
+      let logAddress: string;
+      try {
+        logAddress = normalizeEvmAddress(log.address);
+      } catch (cause) {
+        throw ingestionError("CHAIN_PROVIDER_INVALID", "The registry provider returned an invalid log address.", "review_chain_provider", cause);
+      }
+      if (logAddress !== registry) {
+        throw ingestionError("CHAIN_PROVIDER_INVALID", "The registry provider returned a log from a different contract.", "review_chain_provider");
+      }
       const decodedEvent = this.decodeLog({ log, chainId: query.chainId, identityRegistry: registry });
       if (decodedEvent === null) continue;
       const decodedIdentity = normalizeErc8004Identity(decodedEvent.identity);

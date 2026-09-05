@@ -92,8 +92,23 @@ export type RegistrySyncOptions = {
   /** Changing this value is an explicit cursor/configuration migration. */
   readonly indexerVersion?: string;
   readonly normalizedIngestionVersion?: string;
+  /** Maximum number of blocks fetched in one deterministic RPC request. */
+  readonly maxBlockRange?: number;
+  /** Maximum number of decoded logs accepted from one bounded request. */
+  readonly maxEvents?: number;
   readonly now?: () => Date;
 };
+
+const DEFAULT_REGISTRY_SYNC_MAX_BLOCK_RANGE = 100_000;
+const DEFAULT_REGISTRY_SYNC_MAX_EVENTS = 10_000;
+
+function boundedRegistrySyncLimit(value: number | undefined, fallback: number, field: string, maximum: number): number {
+  const result = value ?? fallback;
+  if (!Number.isSafeInteger(result) || result < 1 || result > maximum) {
+    throw ingestionError("REGISTRY_SYNC_CONFIG_INVALID", `The ${field} bound is invalid.`, "fix_registry_sync_configuration");
+  }
+  return result;
+}
 
 /**
  * Coordinates the four supported supply paths without making publication or
@@ -394,9 +409,27 @@ export class AgentIngestionService {
   ): Promise<RegistrySyncResult> {
     const registry = normalizeEvmAddress(options.identityRegistry);
     const now = options.now ?? this.options.now ?? (() => new Date());
+    if (!Number.isSafeInteger(options.chainId) || options.chainId <= 0) {
+      throw ingestionError("REGISTRY_SYNC_CONFIG_INVALID", "The registry sync chain ID is invalid.", "fix_registry_sync_configuration");
+    }
+    if (!Number.isSafeInteger(options.startBlock) || options.startBlock < 0) {
+      throw ingestionError("REGISTRY_SYNC_CONFIG_INVALID", "The registry sync start block is invalid.", "fix_registry_sync_configuration");
+    }
     if (!Number.isSafeInteger(options.confirmationThreshold) || options.confirmationThreshold < 0) {
       throw ingestionError("INGESTION_INPUT_INVALID", "The confirmation threshold is invalid.", "fix_finality");
     }
+    const maxBlockRange = boundedRegistrySyncLimit(
+      options.maxBlockRange,
+      DEFAULT_REGISTRY_SYNC_MAX_BLOCK_RANGE,
+      "registry block range",
+      100_000
+    );
+    const maxEvents = boundedRegistrySyncLimit(
+      options.maxEvents,
+      DEFAULT_REGISTRY_SYNC_MAX_EVENTS,
+      "registry event",
+      100_000
+    );
     const indexerVersion = normalizeIndexerVersion(options.indexerVersion);
     const latestBlock = await reader.getLatestBlock();
     if (!Number.isSafeInteger(latestBlock) || latestBlock < 0) {
@@ -450,6 +483,13 @@ export class AgentIngestionService {
     let scannedBlock: number | null = checkpoint?.lastScannedBlock ?? null;
     let scannedHashForQuery: string | null = null;
     if (fromBlock <= latestBlock) {
+      if (latestBlock - fromBlock + 1 > maxBlockRange) {
+        throw ingestionError(
+          "REGISTRY_SYNC_RANGE_EXCEEDED",
+          "The registry sync range exceeds its bounded read window.",
+          "advance_registry_checkpoint"
+        );
+      }
       scannedFromBlock = fromBlock;
       scannedThrough = latestBlock;
       scannedBlock = latestBlock;
@@ -470,6 +510,13 @@ export class AgentIngestionService {
         toBlock: latestBlock,
         blockTag: { blockNumber: latestBlock, blockHash: scannedHashForQuery }
       });
+      if (events.length > maxEvents) {
+        throw ingestionError(
+          "REGISTRY_SYNC_EVENT_LIMIT_EXCEEDED",
+          "The registry provider returned more events than the bounded sync limit.",
+          "reduce_registry_range"
+        );
+      }
       if (events.some((event) => event.blockNumber < fromBlock || event.blockNumber > latestBlock)) {
         throw ingestionError(
           "INGESTION_INPUT_INVALID",
@@ -479,7 +526,8 @@ export class AgentIngestionService {
       }
       const normalizedEvents = normalizeRegistryEvents(events);
       await this.assertTrustedObservationHashes(reader, normalizedEvents);
-      const ingested = await this.ingestRegistryEventsInTransaction(repository, events, {
+      const orderedEvents = [...events].sort(compareRegistryEventPosition);
+      const ingested = await this.ingestRegistryEventsInTransaction(repository, orderedEvents, {
         chainId: options.chainId,
         identityRegistry: registry
       }, options.normalizedIngestionVersion ?? "registry-event-v1");
@@ -828,6 +876,15 @@ function compareObservationPosition(a: ChainObservation, b: ChainObservation): n
     a.logIndex - b.logIndex ||
     a.transactionHash.localeCompare(b.transactionHash) ||
     a.identityKey.localeCompare(b.identityKey)
+  );
+}
+
+function compareRegistryEventPosition(a: RegistryEvent, b: RegistryEvent): number {
+  return (
+    a.blockNumber - b.blockNumber ||
+    a.logIndex - b.logIndex ||
+    a.transactionHash.localeCompare(b.transactionHash) ||
+    erc8004IdentityKey(a.identity).localeCompare(erc8004IdentityKey(b.identity))
   );
 }
 

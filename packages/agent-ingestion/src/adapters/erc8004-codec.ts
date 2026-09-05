@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
+  decodeEventLog,
   decodeFunctionResult,
+  encodeEventTopics,
   encodeFunctionData,
   type Abi,
   type Hex
@@ -10,6 +12,7 @@ import { normalizeErc8004Identity, type Erc8004Identity } from "@bnbera/domain";
 import { ingestionError } from "../errors.js";
 import {
   JsonRpcRegistryChainReader,
+  type RegistryLogDecoder,
   type RegistryReadDefinition,
   type RegistryRpcReaderOptions
 } from "./registry-rpc.js";
@@ -182,6 +185,195 @@ function decodeUri(abi: Abi, result: string): string {
   }
 }
 
+const officialRegistryEventNames = [
+  "Registered",
+  "Transfer",
+  "URIUpdated",
+  "MetadataSet",
+  "MetadataUpdate"
+] as const;
+type OfficialRegistryEventName = (typeof officialRegistryEventNames)[number];
+
+function eventTopic(abi: Abi, eventName: OfficialRegistryEventName): Hex {
+  try {
+    const encoded = encodeEventTopics({ abi, eventName } as never) as readonly unknown[];
+    const topic = encoded[0];
+    if (typeof topic !== "string" || !/^0x[0-9a-f]{64}$/iu.test(topic)) {
+      throw new Error("event signature topic is invalid");
+    }
+    return topic.toLowerCase() as Hex;
+  } catch (cause) {
+    throw ingestionError(
+      "CHAIN_PROVIDER_INVALID",
+      `The pinned ERC-8004 ABI is missing the reviewed ${eventName} event.`,
+      "repair_registry_abi",
+      cause
+    );
+  }
+}
+
+function eventHex(value: unknown, field: string): Hex {
+  if (typeof value !== "string" || !/^0x(?:[0-9a-f]{2})*$/iu.test(value)) {
+    throw ingestionError("CHAIN_PROVIDER_INVALID", `The registry event ${field} is not ABI hex data.`, "fix_registry_abi");
+  }
+  return value.toLowerCase() as Hex;
+}
+
+function eventTopics(value: unknown): readonly Hex[] {
+  if (!Array.isArray(value) || value.length === 0 || value.some((topic) => typeof topic !== "string")) {
+    throw ingestionError("CHAIN_PROVIDER_INVALID", "The registry event topics are invalid.", "fix_registry_abi");
+  }
+  return value.map((topic, index) => {
+    const normalized = eventHex(topic, `topic ${index}`);
+    if (index === 0 && normalized.length !== 66) {
+      throw ingestionError("CHAIN_PROVIDER_INVALID", "The registry event signature topic is invalid.", "fix_registry_abi");
+    }
+    return normalized;
+  });
+}
+
+function safeEventValue(value: unknown): unknown {
+  if (typeof value === "bigint") return value.toString(10);
+  if (Array.isArray(value)) return value.map((item) => safeEventValue(item));
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, safeEventValue(child)]));
+  }
+  return value;
+}
+
+function eventArguments(value: unknown): Readonly<Record<string, unknown>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw ingestionError("CHAIN_PROVIDER_INVALID", "The registry event arguments are invalid.", "fix_registry_abi");
+  }
+  const safe = safeEventValue(value);
+  if (typeof safe !== "object" || safe === null || Array.isArray(safe)) {
+    throw ingestionError("CHAIN_PROVIDER_INVALID", "The registry event arguments are invalid.", "fix_registry_abi");
+  }
+  return safe as Readonly<Record<string, unknown>>;
+}
+
+function eventAgentId(args: Readonly<Record<string, unknown>>, name: string): string {
+  const value = args[name];
+  if (typeof value !== "string" || !/^[0-9]+$/u.test(value)) {
+    throw ingestionError("CHAIN_PROVIDER_INVALID", "The registry event agent ID is invalid.", "fix_registry_abi");
+  }
+  return value;
+}
+
+function eventAddress(args: Readonly<Record<string, unknown>>, name: string): string {
+  const value = args[name];
+  if (typeof value !== "string" || !addressPattern.test(value)) {
+    throw ingestionError("CHAIN_PROVIDER_INVALID", "The registry event address is invalid.", "fix_registry_abi");
+  }
+  return value;
+}
+
+function eventUri(args: Readonly<Record<string, unknown>>, name: string): string | null {
+  const value = args[name];
+  if (typeof value !== "string") {
+    throw ingestionError("CHAIN_PROVIDER_INVALID", "The registry event URI is invalid.", "fix_registry_abi");
+  }
+  return value.length === 0 ? null : value;
+}
+
+export type OfficialErc8004RegistryEventDecoder = {
+  readonly logTopics: readonly Hex[];
+  readonly decodeLog: RegistryLogDecoder;
+};
+
+/**
+ * Build the event filter and decoder from the same checked-in ABI used by
+ * owner/wallet/URI reads. Unknown ABI events are ignored, while malformed
+ * reviewed events fail closed at the RPC boundary.
+ */
+export function createOfficialErc8004RegistryEventDecoder(): OfficialErc8004RegistryEventDecoder {
+  const loaded = loadOfficialIdentityAbi();
+  const topics = officialRegistryEventNames.map((name) => eventTopic(loaded.abi, name));
+  const topicToName = new Map(topics.map((topic, index) => [topic, officialRegistryEventNames[index]]));
+  return {
+    logTopics: topics,
+    decodeLog: ({ log, chainId, identityRegistry }) => {
+      const rawTopics = log.topics;
+      if (!Array.isArray(rawTopics) || rawTopics.length === 0) {
+        throw ingestionError("CHAIN_PROVIDER_INVALID", "The registry provider returned an event without topics.", "fix_chain_provider");
+      }
+      const topicsForDecode = eventTopics(rawTopics);
+      const signature = topicsForDecode[0];
+      if (signature === undefined) {
+        throw ingestionError("CHAIN_PROVIDER_INVALID", "The registry provider returned an event without a signature topic.", "fix_chain_provider");
+      }
+      const eventName = topicToName.get(signature);
+      if (eventName === undefined) return null;
+      const data = eventHex(log.data, "data");
+      let decoded: { readonly args?: unknown };
+      try {
+        decoded = decodeEventLog({ abi: loaded.abi, topics: topicsForDecode, data, strict: true } as never) as { readonly args?: unknown };
+      } catch (cause) {
+        throw ingestionError("CHAIN_PROVIDER_INVALID", `The ${eventName} registry event could not be decoded.`, "fix_registry_abi", cause);
+      }
+      const args = eventArguments(decoded.args);
+      const identityBase = {
+        namespace: "eip155",
+        chainId,
+        identityRegistry,
+        agentId: eventAgentId(args, eventName === "Registered" || eventName === "MetadataSet" || eventName === "URIUpdated" ? "agentId" : "tokenId")
+      } as const;
+      const payload = { event: eventName, args } as const;
+      switch (eventName) {
+        case "Registered":
+          return {
+            identity: identityBase,
+            eventType: eventName,
+            transactionHash: "0x" + "00".repeat(32),
+            logIndex: 0,
+            blockNumber: 0,
+            blockHash: "0x" + "00".repeat(32),
+            ownerAddress: eventAddress(args, "owner"),
+            agentUri: eventUri(args, "agentURI"),
+            changedFields: ["ownerAddress", "agentUri"],
+            payload
+          };
+        case "Transfer":
+          return {
+            identity: identityBase,
+            eventType: eventName,
+            transactionHash: "0x" + "00".repeat(32),
+            logIndex: 0,
+            blockNumber: 0,
+            blockHash: "0x" + "00".repeat(32),
+            ownerAddress: eventAddress(args, "to"),
+            changedFields: ["ownerAddress"],
+            payload
+          };
+        case "URIUpdated":
+          return {
+            identity: identityBase,
+            eventType: eventName,
+            transactionHash: "0x" + "00".repeat(32),
+            logIndex: 0,
+            blockNumber: 0,
+            blockHash: "0x" + "00".repeat(32),
+            agentUri: eventUri(args, "newURI"),
+            changedFields: ["agentUri"],
+            payload
+          };
+        case "MetadataSet":
+        case "MetadataUpdate":
+          return {
+            identity: identityBase,
+            eventType: eventName,
+            transactionHash: "0x" + "00".repeat(32),
+            logIndex: 0,
+            blockNumber: 0,
+            blockHash: "0x" + "00".repeat(32),
+            changedFields: [],
+            payload
+          };
+      }
+    }
+  };
+}
+
 export type OfficialErc8004RegistryReadDefinitions = {
   readonly abiSha256: string;
   readonly owner: RegistryReadDefinition<string>;
@@ -253,8 +445,11 @@ export type OfficialErc8004RegistryReaderOptions = Omit<RegistryRpcReaderOptions
 export function createOfficialErc8004RegistryReader(options: OfficialErc8004RegistryReaderOptions) {
   const { expectedAbiSha256, ...readerOptions } = options;
   const definitions = createOfficialErc8004RegistryReadDefinitions({ expectedAbiSha256 });
+  const events = createOfficialErc8004RegistryEventDecoder();
   return new JsonRpcRegistryChainReader({
     ...readerOptions,
-    ...definitions
+    ...definitions,
+    logTopics: events.logTopics,
+    decodeLog: events.decodeLog
   });
 }
