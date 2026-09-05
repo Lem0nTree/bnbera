@@ -323,7 +323,7 @@ export class Erc8004Pipeline {
     try {
       ingestionResult = await this.ingestion.ingestCandidate(candidate);
       identityRecord = ingestionResult.identity;
-    } catch (error) {
+    } catch {
       return emptyCandidateResult(key, "INGESTION_FAILED");
     }
     if (ingestionResult.rejectedServices.length > 0) warnings.push("SERVICE_OBSERVATIONS_REJECTED");
