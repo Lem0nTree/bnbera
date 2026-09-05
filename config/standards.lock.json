@@ -6,12 +6,63 @@
     "bscNetworks": {
       "url": "https://docs.bnbchain.org/bnb-smart-chain/developers/wallet-configuration/"
     },
+    "bscFinality": {
+      "docsUrl": "https://docs.bnbchain.org/bnb-smart-chain/introduction/",
+      "rpcApiUrl": "https://github.com/bnb-chain/bsc/blob/c5533ab5b7244dc474add10740834417a2c605d7/rpc/json-rpc-api.md",
+      "clientSourceUrl": "https://github.com/bnb-chain/bsc/blob/c5533ab5b7244dc474add10740834417a2c605d7/internal/ethapi/api.go",
+      "clientCommit": "c5533ab5b7244dc474add10740834417a2c605d7",
+      "bep126Url": "https://github.com/bnb-chain/BEPs/blob/da1567012df1e00e0cb5c5762a537768ca917f05/BEPs/BEP126.md",
+      "bep126Commit": "da1567012df1e00e0cb5c5762a537768ca917f05",
+      "retrievedAt": "2026-09-05T00:00:00Z"
+    },
     "erc8004Spec": {
       "url": "https://github.com/ethereum/ERCs",
-      "commit": "503591a6e80e6e1affdd6403341e25269141f046"
+      "commit": "503591a6e80e6e1affdd6403341e25269141f046",
+      "path": "ERCS/erc-8004.md",
+      "blob": "7653a80922c0bf0243669f30e7a2d4aabfe006aa",
+      "sha256": "249dc3d96ad7bbe4afd25cacd14be942eb87751abcf1608bab19a610f3c3f8a9",
+      "retrievedAt": "2026-09-04T10:26:37Z"
     },
     "erc8004Contracts": {
-      "url": "https://github.com/erc-8004/erc-8004-contracts"
+      "url": "https://github.com/erc-8004/erc-8004-contracts",
+      "commit": "b9e466c250744a7e06b13dff9d3c2844ed64f825",
+      "retrievedAt": "2026-09-04T10:26:37Z",
+      "readmePath": "README.md",
+      "readmeBlob": "d44087fd501689730ad1e5fd69ad8c5a83b67ede",
+      "deploymentPath": "scripts/addresses.ts",
+      "deploymentBlob": "7e98fdcceee3abd391643a0e51a890686257c342",
+      "compiler": {
+        "solidity": "0.8.24",
+        "evmVersion": "shanghai",
+        "optimizer": true,
+        "optimizerRuns": 200,
+        "viaIR": true,
+        "openzeppelinContracts": "5.4.0",
+        "openzeppelinContractsUpgradeable": "5.4.0"
+      },
+      "abiHashAlgorithm": "sha256(JSON.stringify(JSON.parse(abiBytes)))",
+      "abiArtifacts": {
+        "identityRegistry": {
+          "path": "abis/IdentityRegistry.json",
+          "blob": "ea5ccdf359405a24b9540bb67e22f3583fe67267",
+          "rawSha256": "cdb8e30f41a56ed53421126dab87551ff2a178b8463646f69f75bc5dc9620564",
+          "sha256": "6d5974b564d266507a53f65951adcd0ab288904d5a716a354ea237176ece8f83"
+        },
+        "reputationRegistry": {
+          "path": "abis/ReputationRegistry.json",
+          "blob": "c7d8affbc3628fcf09d4e2dbf3e05812ab3e81e0",
+          "rawSha256": "867b7975a5f2f9fee38c4a148a84471b141f4de91409ccc0c6bebe3df4f04001",
+          "sha256": "867b7975a5f2f9fee38c4a148a84471b141f4de91409ccc0c6bebe3df4f04001"
+        }
+      },
+      "sourceBlobs": {
+        "identityRegistry": "134b93126ae856548b5f3b09935c7b25336f01f3",
+        "reputationRegistry": "6d5ad6b1a8ccd78e2c36990b0fa9b74b68b9ea35",
+        "proxy": "30b6a155de08046aad766d740f405d26b38d134e",
+        "minimalUups": "edbc321e8525e581a877a6461f9161a083189e8e",
+        "minimalUupsMainnet": "993c931b5645367cf5789d032107f66da46b2293",
+        "hardhatConfig": "6fa88a76cd26bfc00c628d964ffee5fec2afeb98"
+      }
     },
     "erc8183Spec": {
       "url": "https://github.com/ethereum/ERCs",
@@ -23,6 +74,12 @@
     },
     "agentStudioCli": {
       "url": "https://docs.bnbchain.org/developer-kit/bnbchain-studio/cli-reference/"
+    },
+    "altanaSdk": {
+      "url": "https://github.com/altananetwork/altana-sdk"
+    },
+    "playwrightMcp": {
+      "url": "https://github.com/microsoft/playwright-mcp"
     },
     "greenfieldEndpoints": {
       "url": "https://docs.bnbchain.org/bnb-greenfield/for-developers/network-endpoint/endpoints/"
@@ -38,8 +95,8 @@
     "agentStudioCli": {
       "package": "@bnbagent/studio-cli",
       "version": "0.0.13",
-      "integrity": null,
-      "verificationStatus": "pending-package-integrity"
+      "integrity": "sha512-hwrblw3O1FZgBGu7kZdtB3wmXCJbYmQIybgp1A6H2HD7YAe79vhnTl943Ubx2IQ5jUErDsU0Uf1RQ34MCIyobA==",
+      "verificationStatus": "pinned-from-npm-registry"
     },
     "agentStudioRuntime": {
       "package": "@bnbagent/studio-runtime",
@@ -48,25 +105,70 @@
       "verificationStatus": "pending-package-integrity"
     },
     "altanaSdk": {
-      "package": null,
-      "version": null,
-      "integrity": null,
-      "verificationStatus": "unresolved"
+      "package": "@altananetwork/sdk",
+      "version": "0.9.0",
+      "integrity": "sha512-1RLOTvjQm5CHcIFDh/cN78prUkw59+v6qRDy43xKEOadmLyztpoHJIE1H+4Pisq4AbG+09tW8qMJ1UyuI/JBzw==",
+      "verificationStatus": "pinned-from-npm-registry"
+    },
+    "altanaMcp": {
+      "package": "@altananetwork/mcp",
+      "version": "0.9.0",
+      "integrity": "sha512-n49oKFsx2tAi568jd7npStDW/R+s3xPFylCNwEYBg+WmXkoJrOcwn8SVgfNWUHJkaaUbsFNFYc22UJ567UjLDQ==",
+      "network": "bnb-testnet",
+      "verificationStatus": "installed-on-aws-development-host"
+    },
+    "playwrightMcp": {
+      "package": "@playwright/mcp",
+      "version": "0.0.80",
+      "integrity": "sha512-FOPXHm2SvFhAQylm10jMZ35B/SR2TaMLVkavAlwoG4N2qCb5RqbvhQYcu3zmXNyxR2DW0Ooxe+9XPVt5UjKRCQ==",
+      "mode": "headless-isolated",
+      "verificationStatus": "installed-on-aws-development-host"
     }
+  },
+  "semanticEmbedding": {
+    "provider": "openrouter",
+    "endpoint": "https://openrouter.ai/api/v1/embeddings",
+    "model": "openai/text-embedding-3-small",
+    "modelVersion": "openrouter-openai-text-embedding-3-small-v1",
+    "dimension": 1536,
+    "semanticDocumentSchemaVersion": "bnbera-agent-semantic-v1",
+    "secretReference": "ERC8004_EMBEDDING_API_KEY",
+    "releaseEnabled": false,
+    "verificationStatus": "verified-live-read-only-canary",
+    "verificationNote": "Configured model returned response model text-embedding-3-small with one finite 1536-value vector; upstream model-version provenance remains represented by the configured modelVersion label."
   },
   "networks": {
     "56": {
       "name": "bsc-mainnet",
       "environment": "mainnet",
       "erc8004": {
+        "specRevision": "503591a6e80e6e1affdd6403341e25269141f046",
         "identityRegistry": "0x8004a169fb4a3325136eb29fa0ceb6d2e539a432",
         "reputationRegistry": "0x8004baa17c55a88189ae136b182e5fda19de9b63",
         "validationRegistry": null,
         "abiHashes": {
-          "identityRegistry": null,
-          "reputationRegistry": null
+          "identityRegistry": "6d5974b564d266507a53f65951adcd0ab288904d5a716a354ea237176ece8f83",
+          "reputationRegistry": "867b7975a5f2f9fee38c4a148a84471b141f4de91409ccc0c6bebe3df4f04001"
         },
-        "verificationStatus": "pending-bytecode-and-abi-hash"
+        "implementationSlot": "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+        "proxyRuntimeSha256": "e3b1c1b4c04b34f90557a867aaef6bf2d57c5674e7a9f24994ae498ffd0f6f85",
+        "implementationAddresses": {
+          "identityRegistry": "0x7274e874ca62410a93bd8bf61c69d8045e399c02",
+          "reputationRegistry": "0x16e0fa7f7c56b9a767e34b192b51f921be31da34"
+        },
+        "implementationRuntimeSha256": {
+          "identityRegistry": "201b7634af2de088c58868052856922ea8534c47e2837f19529460e2fafb4ff1",
+          "reputationRegistry": "0d8bb97bb04ab481bb3344859621be50eb219ffa37dfe8ee3907ae166e21e523"
+        },
+        "finality": {
+          "mode": "rpc-finalized-tag",
+          "blockTag": "finalized",
+          "fallback": "disabled",
+          "source": "https://docs.bnbchain.org/bnb-smart-chain/introduction/",
+          "version": "bsc-client-c5533ab5b7244dc474add10740834417a2c605d7",
+          "retrievedAt": "2026-09-05T00:00:00Z"
+        },
+        "verificationStatus": "verified-read-only-bytecode-and-abi"
       },
       "erc8183": {
         "commerceProxy": null,
@@ -88,14 +190,33 @@
       "name": "bsc-testnet",
       "environment": "testnet",
       "erc8004": {
+        "specRevision": "503591a6e80e6e1affdd6403341e25269141f046",
         "identityRegistry": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
-        "reputationRegistry": "0x8004b663056a597dffe9ecc1965a193b7388713",
+        "reputationRegistry": "0x8004b663056a597dffe9eccc1965a193b7388713",
         "validationRegistry": null,
         "abiHashes": {
-          "identityRegistry": null,
-          "reputationRegistry": null
+          "identityRegistry": "6d5974b564d266507a53f65951adcd0ab288904d5a716a354ea237176ece8f83",
+          "reputationRegistry": "867b7975a5f2f9fee38c4a148a84471b141f4de91409ccc0c6bebe3df4f04001"
         },
-        "verificationStatus": "pending-bytecode-and-abi-hash"
+        "implementationSlot": "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+        "proxyRuntimeSha256": "e3b1c1b4c04b34f90557a867aaef6bf2d57c5674e7a9f24994ae498ffd0f6f85",
+        "implementationAddresses": {
+          "identityRegistry": "0x7274e874ca62410a93bd8bf61c69d8045e399c02",
+          "reputationRegistry": "0x16e0fa7f7c56b9a767e34b192b51f921be31da34"
+        },
+        "implementationRuntimeSha256": {
+          "identityRegistry": "201b7634af2de088c58868052856922ea8534c47e2837f19529460e2fafb4ff1",
+          "reputationRegistry": "0d8bb97bb04ab481bb3344859621be50eb219ffa37dfe8ee3907ae166e21e523"
+        },
+        "finality": {
+          "mode": "rpc-finalized-tag",
+          "blockTag": "finalized",
+          "fallback": "disabled",
+          "source": "https://docs.bnbchain.org/bnb-smart-chain/introduction/",
+          "version": "bsc-client-c5533ab5b7244dc474add10740834417a2c605d7",
+          "retrievedAt": "2026-09-05T00:00:00Z"
+        },
+        "verificationStatus": "verified-read-only-bytecode-and-abi"
       },
       "erc8183": {
         "commerceProxy": null,

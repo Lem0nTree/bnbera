@@ -1,0 +1,471 @@
+{
+  "schemaVersion": "bnbera.erc8004-e2e/v1",
+  "startedAt": "2026-09-04T14:09:45.765Z",
+  "completedAt": "2026-09-04T14:10:11.873Z",
+  "pipelineComplete": false,
+  "noSecretsWritten": true,
+  "safety": {
+    "readOnlyRpcMethodsOnly": true,
+    "noWalletsOrSignatures": true,
+    "noOnchainWrites": true,
+    "noPaymentsOrDeployments": true,
+    "databaseRowsRolledBack": true
+  },
+  "configurationPresence": {
+    "eightsScanApiKey": true,
+    "embeddingApiKey": true,
+    "embeddingModel": true,
+    "embeddingDimension": "1536",
+    "databaseUrl": true,
+    "marketplaceApiUrl": true,
+    "previewUrl": false
+  },
+  "checks": [
+    {
+      "name": "runtime_configuration_presence_and_feature_gates",
+      "status": "pass",
+      "evidenceLevel": "contract",
+      "checkedAt": "2026-09-04T14:09:45.769Z",
+      "details": {
+        "environment": "development",
+        "nodeEnv": "development",
+        "chainId": 97,
+        "databaseConfigured": true,
+        "embeddingConfigured": true,
+        "embeddingSecretReferenceConfigured": true,
+        "sourceGatesRemainDisabled": false
+      }
+    },
+    {
+      "name": "standards_lock_network_and_abi_gate",
+      "status": "pass",
+      "evidenceLevel": "contract",
+      "checkedAt": "2026-09-04T14:09:45.771Z",
+      "details": {
+        "lockStatus": "candidate",
+        "chainId": 97,
+        "identityRegistry": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+        "abiHashesResolved": true,
+        "exactIdentityReadGate": "disabled-until-reviewed-abi"
+      }
+    },
+    {
+      "name": "8004scan_openapi_digest_and_drift",
+      "status": "pass",
+      "evidenceLevel": "contract",
+      "checkedAt": "2026-09-04T14:09:47.031Z",
+      "details": {
+        "httpStatus": 200,
+        "contentType": "application/json",
+        "byteLength": 426107,
+        "canonicalSha256": "a9686ae41d7a4d2c52c8e67fca193db643fe6dcd16a14bbfb6f35435f69a15ea",
+        "canonicalDigestMatches": true,
+        "rawSha256": "984ab5d6621c4ae555f30fb11fb831678a1355b68216f8edd2eed1f1e9c26eb1",
+        "rawDigestMatches": true,
+        "version": "0.4.363",
+        "apiKeyPresent": true,
+        "clientCircuit": "closed"
+      }
+    },
+    {
+      "name": "8004scan_authenticated_discovery",
+      "status": "pass",
+      "evidenceLevel": "live-read-only",
+      "checkedAt": "2026-09-04T14:09:47.306Z",
+      "details": {
+        "chainId": 97,
+        "isTestnet": true,
+        "requestedLimit": 5,
+        "returnedCount": 5,
+        "total": 2075,
+        "nextOffset": 5,
+        "nextCursor": "present"
+      }
+    },
+    {
+      "name": "identity_tuple_normalization_and_page_bound",
+      "status": "pass",
+      "evidenceLevel": "live-read-only",
+      "checkedAt": "2026-09-04T14:09:47.314Z",
+      "details": {
+        "chainId": 97,
+        "registry": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+        "candidates": 5,
+        "uniqueIdentityTuples": 5,
+        "normalizedTuplesValid": true,
+        "registryMatches": true,
+        "tupleWithinConfiguredNetwork": true,
+        "identityDigests": [
+          "5212fad839c9155ffe2003417dc84fc0ceb674eaaa094aa4b8f16a38089af523",
+          "16ade14222f2e10f39a1bcdeb398b1d9bac38bd273496c8a36236a37f0a45713",
+          "4ec708e51d8d264f6b5f8905018d0f15133463a2f16b70bc4a5a928ea43a5b68",
+          "8f99f71369d671e11df1ef39c0e74e0d8bbc5349e90493230735127099d36a1e",
+          "bf5581fba8d96704fe7c5ee0aaa8017b31a7dfa246105c8677b4110475a60d65"
+        ]
+      }
+    },
+    {
+      "name": "8004scan_semantic_endpoint_contract",
+      "status": "pass",
+      "evidenceLevel": "contract",
+      "checkedAt": "2026-09-04T14:10:00.697Z",
+      "details": {
+        "chainId": 97,
+        "returnedCount": 1,
+        "bounded": true,
+        "total": 4
+      }
+    },
+    {
+      "name": "8004scan_chain_catalog_contract",
+      "status": "pass",
+      "evidenceLevel": "contract",
+      "checkedAt": "2026-09-04T14:10:01.049Z",
+      "details": {
+        "objectResponse": true,
+        "chainCount": 2
+      }
+    },
+    {
+      "name": "8004scan_identity_detail_contract",
+      "status": "pass",
+      "evidenceLevel": "live-read-only",
+      "checkedAt": "2026-09-04T14:10:01.405Z",
+      "details": {
+        "chainId": 97,
+        "identityDigest": "5212fad839c9155ffe2003417dc84fc0ceb674eaaa094aa4b8f16a38089af523",
+        "detailMapped": true,
+        "metadataFields": 9,
+        "advertisedServiceCount": 0,
+        "capabilityManifestPresent": false
+      }
+    },
+    {
+      "name": "bsc_rpc_chain_bytecode_and_exact_block",
+      "status": "pass",
+      "evidenceLevel": "live-read-only",
+      "checkedAt": "2026-09-04T14:10:03.771Z",
+      "details": {
+        "chainId": 97,
+        "registry": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+        "endpoints": [
+          "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
+          "https://data-seed-prebsc-2-s1.bnbchain.org:8545"
+        ],
+        "secondaryConfigured": false,
+        "secondarySource": "bounded_public_fallback",
+        "observedChainIds": [
+          97,
+          97
+        ],
+        "latestBlocks": [
+          129076651,
+          129076653
+        ],
+        "latestBlockHashes": [
+          "0x463c255ef7af622df35e5ae143d0d60ae2c0c92d3457e5fd78bfc85dfa67003b",
+          "0x736a12fac7cc33741156834f8d63ba7ca0281a3d25725118a21171d91f09d277"
+        ],
+        "contracts": [
+          {
+            "name": "identity",
+            "address": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+            "bytecodePresent": true,
+            "bytecodeLength": 130,
+            "implementation": "0x7274e874ca62410a93bd8bf61c69d8045e399c02"
+          },
+          {
+            "name": "reputation",
+            "address": "0x8004b663056a597dffe9eccc1965a193b7388713",
+            "bytecodePresent": true,
+            "bytecodeLength": 130,
+            "implementation": "0x16e0fa7f7c56b9a767e34b192b51f921be31da34"
+          }
+        ],
+        "providerComparison": "agree"
+      }
+    },
+    {
+      "name": "erc8004_official_identity_abi_codec_lock",
+      "status": "pass",
+      "evidenceLevel": "contract",
+      "checkedAt": "2026-09-04T14:10:03.772Z",
+      "details": {
+        "chainId": 97,
+        "registry": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+        "artifactSha256": "6d5974b564d266507a53f65951adcd0ab288904d5a716a354ea237176ece8f83",
+        "lockSha256": "6d5974b564d266507a53f65951adcd0ab288904d5a716a354ea237176ece8f83",
+        "functions": [
+          "ownerOf(uint256)",
+          "getAgentWallet(uint256)",
+          "tokenURI(uint256)"
+        ]
+      }
+    },
+    {
+      "name": "bsc_exact_block_identity_reads",
+      "status": "pass",
+      "evidenceLevel": "live-read-only",
+      "checkedAt": "2026-09-04T14:10:05.162Z",
+      "details": {
+        "chainId": 97,
+        "registry": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+        "identityDigest": "5212fad839c9155ffe2003417dc84fc0ceb674eaaa094aa4b8f16a38089af523",
+        "agentId": "2114",
+        "observedBlock": 129076651,
+        "observedBlockHash": "0x463c255ef7af622df35e5ae143d0d60ae2c0c92d3457e5fd78bfc85dfa67003b",
+        "readConsistency": "provisional",
+        "providersAttempted": 2,
+        "providersRead": 2,
+        "providerAgreement": true,
+        "twoProviderEvidence": true,
+        "reads": [
+          {
+            "endpoint": "https://data-seed-prebsc-1-s1.bnbchain.org:8545",
+            "owner": "0x3c2d2248d065f80463d5c1453b659b7c18ac9f73",
+            "agentWallet": "0x3c2d2248d065f80463d5c1453b659b7c18ac9f73",
+            "agentUriScheme": "data:",
+            "agentUriSha256": "36d05fff2875581da9242515d5782872d127f59d1da1430df36647e1f0cd83a9",
+            "ownerObservedBlock": 129076651,
+            "agentWalletObservedBlock": 129076651,
+            "agentUriObservedBlock": 129076651
+          },
+          {
+            "endpoint": "https://data-seed-prebsc-2-s1.bnbchain.org:8545",
+            "owner": "0x3c2d2248d065f80463d5c1453b659b7c18ac9f73",
+            "agentWallet": "0x3c2d2248d065f80463d5c1453b659b7c18ac9f73",
+            "agentUriScheme": "data:",
+            "agentUriSha256": "36d05fff2875581da9242515d5782872d127f59d1da1430df36647e1f0cd83a9",
+            "ownerObservedBlock": 129076651,
+            "agentWalletObservedBlock": 129076651,
+            "agentUriObservedBlock": 129076651
+          }
+        ],
+        "readErrors": [],
+        "expectedFunctions": [
+          "ownerOf(uint256)",
+          "getAgentWallet(uint256)",
+          "tokenURI(uint256)"
+        ],
+        "zeroAgentWalletIsNull": true
+      }
+    },
+    {
+      "name": "repository_identity_idempotency_and_dedup",
+      "status": "pass",
+      "evidenceLevel": "live-read-only",
+      "checkedAt": "2026-09-04T14:10:05.274Z",
+      "details": {
+        "inputCandidates": 5,
+        "uniqueInputTuples": 5,
+        "persistedUniqueIdentities": 5,
+        "duplicateReplayCount": 5,
+        "repository": "postgresql",
+        "transactionRolledBack": true
+      }
+    },
+    {
+      "name": "bounded_metadata_resolution_and_service_enrichment",
+      "status": "pass",
+      "evidenceLevel": "live-read-only",
+      "checkedAt": "2026-09-04T14:10:05.551Z",
+      "details": {
+        "identityDigest": "5212fad839c9155ffe2003417dc84fc0ceb674eaaa094aa4b8f16a38089af523",
+        "requestedUriScheme": "data:",
+        "contentType": "application/json",
+        "byteLength": 542,
+        "contentDigest": "d67068d789d831093d1dd8a5f9890b87a3cc02298fa26e2576fa383d987f3848",
+        "parserVersion": "erc8004-registration-v1",
+        "registrationType": "erc8004-registration-v1",
+        "registrationWarnings": 0,
+        "serviceDescriptors": 1,
+        "unmappedServices": 0,
+        "acceptedServices": 1,
+        "rejectedServices": 0,
+        "persistedServices": 1,
+        "persistedProbes": 1,
+        "repository": "postgresql",
+        "transactionRolledBack": true,
+        "probeResults": [
+          {
+            "kind": "adapter",
+            "endpoint": "https://health-agent-production-4668.up.railway.app",
+            "validationStatus": "rejected",
+            "statusCode": null,
+            "latencyMs": null,
+            "errorCode": "SERVICE_ADAPTER_CONTRACT_INVALID",
+            "observedAt": "2026-09-04T14:10:05.302Z",
+            "freshnessSeconds": 0.238
+          }
+        ]
+      }
+    },
+    {
+      "name": "bounded_service_health_probes",
+      "status": "blocked",
+      "evidenceLevel": "live-read-only",
+      "checkedAt": "2026-09-04T14:10:05.551Z",
+      "details": {
+        "attempted": 1,
+        "healthy": 0,
+        "reason": "no_healthy_public_endpoint_observed"
+      }
+    },
+    {
+      "name": "deterministic_categorization_and_evidence",
+      "status": "pass",
+      "evidenceLevel": "deterministic",
+      "checkedAt": "2026-09-04T14:10:05.573Z",
+      "details": {
+        "identityDigest": "5212fad839c9155ffe2003417dc84fc0ceb674eaaa094aa4b8f16a38089af523",
+        "category": "uncategorized",
+        "structuredScore": 0,
+        "semanticScore": 0,
+        "confidence": 0,
+        "method": "deterministic-rules-v1",
+        "classifierVersion": "deterministic-rules-v1",
+        "reviewState": "needs_review",
+        "evidenceDigest": "1ee38d7a3ae4b46a6ebd0a1f9dbf17f4a608b05d122bfbe1e1b96bcf8f4a8055"
+      }
+    },
+    {
+      "name": "semantic_document_allowlist_and_digest",
+      "status": "pass",
+      "evidenceLevel": "deterministic",
+      "checkedAt": "2026-09-04T14:10:05.577Z",
+      "details": {
+        "identityDigest": "5212fad839c9155ffe2003417dc84fc0ceb674eaaa094aa4b8f16a38089af523",
+        "schemaVersion": "bnbera-agent-semantic-v1",
+        "textCharacters": 888,
+        "documentDigest": "e609b7ff7bbadb164798d87f61b71073e23ad547b33ce9b1d78811c3e023b88a",
+        "serviceCount": 1,
+        "capabilityCount": 0
+      }
+    },
+    {
+      "name": "pgvector_dimension_migration_compatibility",
+      "status": "pass",
+      "evidenceLevel": "contract",
+      "checkedAt": "2026-09-04T14:10:05.577Z",
+      "details": {
+        "configuredDimension": 1536,
+        "migrationDimension": 1536
+      }
+    },
+    {
+      "name": "openrouter_real_embedding_call",
+      "status": "pass",
+      "evidenceLevel": "live-read-only",
+      "checkedAt": "2026-09-04T14:10:06.239Z",
+      "details": {
+        "provider": "openrouter",
+        "model": "openai/text-embedding-3-small",
+        "modelVersion": "openrouter-openai-text-embedding-3-small-v1",
+        "configuredDimension": 1536,
+        "vectorLength": 1536,
+        "finiteValues": true,
+        "inputDigest": "5716da9fddae73d737dfec75639815e018eb4e191bec5852e349d5d8150d0427"
+      }
+    },
+    {
+      "name": "gated_erc8004_pipeline_orchestration",
+      "status": "pass",
+      "evidenceLevel": "live-read-only",
+      "checkedAt": "2026-09-04T14:10:11.108Z",
+      "details": {
+        "enabledGates": {
+          "ERC8004_INGESTION_ENABLED": true,
+          "ERC8004SCAN_DISCOVERY_ENABLED": true,
+          "MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED": true
+        },
+        "registryReaderConfigured": true,
+        "dualProviderEvidence": true,
+        "status": "completed",
+        "discoveryStatus": "completed",
+        "candidateCount": 5,
+        "completedCount": 5,
+        "failedCount": 0,
+        "expectedStatus": "completed",
+        "expectedFailedCount": 0,
+        "statusConsistent": true,
+        "warnings": [],
+        "repository": "postgresql",
+        "transactionRolledBack": true
+      }
+    },
+    {
+      "name": "disabled_provider_api_rpc_degraded_paths",
+      "status": "pass",
+      "evidenceLevel": "deterministic",
+      "checkedAt": "2026-09-04T14:10:11.108Z",
+      "details": {
+        "disabledGates": {
+          "ERC8004_INGESTION_ENABLED": false,
+          "ERC8004SCAN_DISCOVERY_ENABLED": false,
+          "MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED": false
+        },
+        "observedStatus": "disabled",
+        "warningCount": 1
+      }
+    },
+    {
+      "name": "hard_eligibility_before_semantic_ranking",
+      "status": "pass",
+      "evidenceLevel": "deterministic",
+      "checkedAt": "2026-09-04T14:10:11.148Z",
+      "details": {
+        "hardEligibleCount": 2,
+        "excludedCount": 2,
+        "semanticCandidateCount": 2,
+        "semanticCandidateSubsetOfEligible": true,
+        "semanticReorderedEligibleOnly": true
+      }
+    },
+    {
+      "name": "deterministic_marketplace_fallback_on_semantic_failure",
+      "status": "pass",
+      "evidenceLevel": "deterministic",
+      "checkedAt": "2026-09-04T14:10:11.158Z",
+      "details": {
+        "resultCount": 2,
+        "fallbackWarningPresent": true,
+        "resultOrderDigest": "f41c97f978170b2680daab6ebc8a62ba14c90c9adf468e4c444f6ec1cc6a63fc"
+      }
+    },
+    {
+      "name": "postgres_pgvector_transaction_idempotency_similarity_rollback",
+      "status": "pass",
+      "evidenceLevel": "live-read-only",
+      "checkedAt": "2026-09-04T14:10:11.865Z",
+      "details": {
+        "migrationApplied": true,
+        "vectorDimension": 1536,
+        "firstGenerated": true,
+        "secondGenerated": false,
+        "similarityHitCount": 1,
+        "similarityFinite": true,
+        "rollbackAttempted": true,
+        "testRowsAbsentAfterRollback": true
+      }
+    },
+    {
+      "name": "marketplace_api_live_database_backed_read",
+      "status": "blocked",
+      "evidenceLevel": "live-read-only",
+      "checkedAt": "2026-09-04T14:10:11.873Z",
+      "details": {
+        "endpoint": "http://localhost:3000",
+        "errorCode": "NETWORK_UNAVAILABLE"
+      }
+    },
+    {
+      "name": "marketplace_browser_routes",
+      "status": "skipped",
+      "evidenceLevel": "skipped",
+      "checkedAt": "2026-09-04T14:10:11.873Z",
+      "details": {
+        "reason": "BNBERA_PREVIEW_URL_MISSING"
+      }
+    }
+  ]
+}

@@ -18,6 +18,7 @@ import {
   normalizeRegistryCheckpoint,
   normalizeRegistryEvents,
   normalizeChainBlockTag,
+  type RegistryFinalityMode,
   type ChainBlockTag,
   type TrustedBlockHashReader,
   type RegistryChainReader
@@ -88,12 +89,30 @@ export type RegistrySyncOptions = {
   readonly chainId: number;
   readonly identityRegistry: string;
   readonly startBlock: number;
+  /** Required for legacy confirmation mode; finalized-tag mode uses zero as
+   * a compatibility marker in the existing checkpoint column. */
   readonly confirmationThreshold: number;
+  readonly finalityMode?: RegistryFinalityMode;
   /** Changing this value is an explicit cursor/configuration migration. */
   readonly indexerVersion?: string;
   readonly normalizedIngestionVersion?: string;
+  /** Maximum number of blocks fetched in one deterministic RPC request. */
+  readonly maxBlockRange?: number;
+  /** Maximum number of decoded logs accepted from one bounded request. */
+  readonly maxEvents?: number;
   readonly now?: () => Date;
 };
+
+const DEFAULT_REGISTRY_SYNC_MAX_BLOCK_RANGE = 100_000;
+const DEFAULT_REGISTRY_SYNC_MAX_EVENTS = 10_000;
+
+function boundedRegistrySyncLimit(value: number | undefined, fallback: number, field: string, maximum: number): number {
+  const result = value ?? fallback;
+  if (!Number.isSafeInteger(result) || result < 1 || result > maximum) {
+    throw ingestionError("REGISTRY_SYNC_CONFIG_INVALID", `The ${field} bound is invalid.`, "fix_registry_sync_configuration");
+  }
+  return result;
+}
 
 /**
  * Coordinates the four supported supply paths without making publication or
@@ -176,12 +195,25 @@ export class AgentIngestionService {
 
   async ingestCandidates(inputs: readonly IdentityCandidate[]): Promise<readonly CandidateIngestionResult[]> {
     return this.repository.withTransaction(async (unitOfWork) => {
-      const results: CandidateIngestionResult[] = [];
-      for (const input of inputs) {
-        results.push(await this.ingestCandidateInTransaction(unitOfWork, input));
-      }
-      return results;
+      return this.ingestCandidatesWithinTransaction(unitOfWork, inputs);
     });
+  }
+
+  /**
+   * Apply a page to an already-open repository transaction. The resumable
+   * 8004scan job uses this to commit candidates and its provider checkpoint as
+   * one unit; callers outside an existing transaction should use
+   * `ingestCandidates` instead.
+   */
+  async ingestCandidatesWithinTransaction(
+    repository: IngestionRepository,
+    inputs: readonly IdentityCandidate[]
+  ): Promise<readonly CandidateIngestionResult[]> {
+    const results: CandidateIngestionResult[] = [];
+    for (const input of inputs) {
+      results.push(await this.ingestCandidateInTransaction(repository, input));
+    }
+    return results;
   }
 
   async ingestRegistryEvents(
@@ -381,15 +413,64 @@ export class AgentIngestionService {
   ): Promise<RegistrySyncResult> {
     const registry = normalizeEvmAddress(options.identityRegistry);
     const now = options.now ?? this.options.now ?? (() => new Date());
-    if (!Number.isSafeInteger(options.confirmationThreshold) || options.confirmationThreshold < 0) {
-      throw ingestionError("INGESTION_INPUT_INVALID", "The confirmation threshold is invalid.", "fix_finality");
+    if (!Number.isSafeInteger(options.chainId) || options.chainId <= 0) {
+      throw ingestionError("REGISTRY_SYNC_CONFIG_INVALID", "The registry sync chain ID is invalid.", "fix_registry_sync_configuration");
     }
+    if (!Number.isSafeInteger(options.startBlock) || options.startBlock < 0) {
+      throw ingestionError("REGISTRY_SYNC_CONFIG_INVALID", "The registry sync start block is invalid.", "fix_registry_sync_configuration");
+    }
+    const finalityMode = options.finalityMode ?? "confirmations";
+    if (finalityMode !== "rpc-finalized-tag" && finalityMode !== "confirmations") {
+      throw ingestionError("REGISTRY_FINALITY_UNRESOLVED", "The registry finality mode is unresolved.", "resolve_registry_finality_lock");
+    }
+    if (!Number.isSafeInteger(options.confirmationThreshold) || options.confirmationThreshold < 0 ||
+      (finalityMode === "rpc-finalized-tag" && options.confirmationThreshold !== 0)) {
+      throw ingestionError(
+        "INGESTION_INPUT_INVALID",
+        finalityMode === "rpc-finalized-tag"
+          ? "The finalized-tag sync must use zero as its legacy checkpoint threshold marker."
+          : "The confirmation threshold is invalid.",
+        "fix_finality"
+      );
+    }
+    const maxBlockRange = boundedRegistrySyncLimit(
+      options.maxBlockRange,
+      DEFAULT_REGISTRY_SYNC_MAX_BLOCK_RANGE,
+      "registry block range",
+      100_000
+    );
+    const maxEvents = boundedRegistrySyncLimit(
+      options.maxEvents,
+      DEFAULT_REGISTRY_SYNC_MAX_EVENTS,
+      "registry event",
+      100_000
+    );
     const indexerVersion = normalizeIndexerVersion(options.indexerVersion);
     const latestBlock = await reader.getLatestBlock();
     if (!Number.isSafeInteger(latestBlock) || latestBlock < 0) {
       throw ingestionError("INGESTION_INPUT_INVALID", "The chain head is invalid.", "retry_chain_read");
     }
-    const finalizedBlock = Math.max(0, latestBlock - options.confirmationThreshold);
+    let finalizedTag: ChainBlockTag | null = null;
+    if (finalityMode === "rpc-finalized-tag") {
+      if (reader.getFinalizedBlockTag === undefined) {
+        throw ingestionError(
+          "REGISTRY_FINALITY_UNRESOLVED",
+          "The configured registry reader cannot prove the BSC finalized block tag.",
+          "configure_finalized_rpc_reader"
+        );
+      }
+      finalizedTag = normalizeChainBlockTag(await reader.getFinalizedBlockTag());
+      if (finalizedTag.blockNumber > latestBlock) {
+        throw ingestionError(
+          "REORG_RECONCILIATION_REQUIRED",
+          "The provider finalized block is ahead of its reported head.",
+          "retry_chain_read",
+          undefined,
+          true
+        );
+      }
+    }
+    const finalizedBlock = finalizedTag?.blockNumber ?? Math.max(0, latestBlock - options.confirmationThreshold);
     let checkpoint = await repository.getCheckpoint(options.chainId, registry);
     const persistedCheckpoint = checkpoint;
     if (
@@ -437,6 +518,13 @@ export class AgentIngestionService {
     let scannedBlock: number | null = checkpoint?.lastScannedBlock ?? null;
     let scannedHashForQuery: string | null = null;
     if (fromBlock <= latestBlock) {
+      if (latestBlock - fromBlock + 1 > maxBlockRange) {
+        throw ingestionError(
+          "REGISTRY_SYNC_RANGE_EXCEEDED",
+          "The registry sync range exceeds its bounded read window.",
+          "advance_registry_checkpoint"
+        );
+      }
       scannedFromBlock = fromBlock;
       scannedThrough = latestBlock;
       scannedBlock = latestBlock;
@@ -457,6 +545,13 @@ export class AgentIngestionService {
         toBlock: latestBlock,
         blockTag: { blockNumber: latestBlock, blockHash: scannedHashForQuery }
       });
+      if (events.length > maxEvents) {
+        throw ingestionError(
+          "REGISTRY_SYNC_EVENT_LIMIT_EXCEEDED",
+          "The registry provider returned more events than the bounded sync limit.",
+          "reduce_registry_range"
+        );
+      }
       if (events.some((event) => event.blockNumber < fromBlock || event.blockNumber > latestBlock)) {
         throw ingestionError(
           "INGESTION_INPUT_INVALID",
@@ -466,7 +561,8 @@ export class AgentIngestionService {
       }
       const normalizedEvents = normalizeRegistryEvents(events);
       await this.assertTrustedObservationHashes(reader, normalizedEvents);
-      const ingested = await this.ingestRegistryEventsInTransaction(repository, events, {
+      const orderedEvents = [...events].sort(compareRegistryEventPosition);
+      const ingested = await this.ingestRegistryEventsInTransaction(repository, orderedEvents, {
         chainId: options.chainId,
         identityRegistry: registry
       }, options.normalizedIngestionVersion ?? "registry-event-v1");
@@ -487,7 +583,8 @@ export class AgentIngestionService {
       }
       const scannedHash = await reader.getTrustedBlockHash(scannedBlock);
       const finalizedHash = await reader.getTrustedBlockHash(finalityBlock);
-      if (scannedHash === null || finalizedHash === null) {
+      if (scannedHash === null || finalizedHash === null ||
+        (finalizedTag !== null && (finalizedTag.blockNumber !== finalityBlock || finalizedTag.blockHash !== finalizedHash))) {
         throw ingestionError(
           "REORG_RECONCILIATION_REQUIRED",
           "The chain provider did not return block hashes required for a safe checkpoint.",
@@ -503,6 +600,16 @@ export class AgentIngestionService {
         finalizedBlockTag: { blockNumber: finalityBlock, blockHash: finalizedHash },
         canonicalizedAt: now()
       }, reader);
+      if (finalityMode === "rpc-finalized-tag" && finalizedTag !== null) {
+        await this.rereadFinalizedIdentitiesInTransaction(
+          repository,
+          reader,
+          options.chainId,
+          registry,
+          affectedIdentityKeys,
+          finalizedTag
+        );
+      }
       // This is deliberately the final write in the unit of work. If
       // canonicalization or any identity/claim mutation fails, the enclosing
       // transaction rolls back and this checkpoint is never committed.
@@ -542,6 +649,41 @@ export class AgentIngestionService {
       reorgRewound,
       checkpoint
     };
+  }
+
+  /**
+   * Event payloads are useful for indexing, but the exact registry projection
+   * used for publication must come from direct calls at the proven finalized
+   * block. This reread also handles fields whose events omit unchanged values.
+   */
+  private async rereadFinalizedIdentitiesInTransaction(
+    repository: IngestionRepository,
+    reader: RegistryChainReader,
+    chainId: number,
+    identityRegistry: string,
+    affectedIdentityKeys: ReadonlySet<IdentityKey>,
+    finalizedTag: ChainBlockTag
+  ): Promise<void> {
+    const identities = await repository.listIdentities({ chainId, identityRegistry });
+    for (const record of identities) {
+      if (!affectedIdentityKeys.has(erc8004IdentityKey(record.identity))) continue;
+      const state = await reader.readIdentity(record.identity, finalizedTag);
+      assertIdentityReadProvenance(state, "finalized registry identity read", {
+        observedBlock: finalizedTag.blockNumber,
+        observedBlockHash: finalizedTag.blockHash,
+        readConsistency: "finalized"
+      });
+      const previous = await repository.findIdentity(record.identity);
+      const reconciled = await repository.applyCanonicalState({ identity: record.identity, ...state });
+      if (previous !== null && previous.ownerAddress !== reconciled.ownerAddress && previous.state.claimStatus === "claimed") {
+        await this.markClaimStale(
+          repository,
+          reconciled,
+          "reconciliation",
+          "The finalized direct registry reread changed canonical ownership."
+        );
+      }
+    }
   }
 
   async reconcileIdentity(
@@ -815,6 +957,15 @@ function compareObservationPosition(a: ChainObservation, b: ChainObservation): n
     a.logIndex - b.logIndex ||
     a.transactionHash.localeCompare(b.transactionHash) ||
     a.identityKey.localeCompare(b.identityKey)
+  );
+}
+
+function compareRegistryEventPosition(a: RegistryEvent, b: RegistryEvent): number {
+  return (
+    a.blockNumber - b.blockNumber ||
+    a.logIndex - b.logIndex ||
+    a.transactionHash.localeCompare(b.transactionHash) ||
+    erc8004IdentityKey(a.identity).localeCompare(erc8004IdentityKey(b.identity))
   );
 }
 

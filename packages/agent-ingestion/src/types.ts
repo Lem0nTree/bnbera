@@ -374,6 +374,51 @@ export interface CheckpointRepository {
   saveCheckpoint(input: ChainCheckpoint, condition: CheckpointWriteCondition): Promise<ChainCheckpoint>;
 }
 
+/**
+ * Durable provider-pagination state for the bounded 8004scan discovery job.
+ * This is intentionally separate from ChainCheckpoint: provider offsets are
+ * not block cursors and must never be interpreted as chain finality.
+ */
+export type ScanDiscoveryCheckpoint = {
+  readonly scope: string;
+  readonly queryDigest: string;
+  readonly initialOffset: number | null;
+  readonly initialCursor: string | null;
+  readonly nextOffset: number | null;
+  readonly nextCursor: string | null;
+  readonly pageSize: number;
+  readonly total: number | null;
+  readonly pagesProcessed: number;
+  readonly candidatesProcessed: number;
+  readonly lastPageDigest: string | null;
+  readonly cursorVersion: number;
+  readonly completedAt: Date | null;
+  readonly updatedAt: Date;
+};
+
+export type ScanDiscoveryCheckpointWriteCondition = {
+  readonly expectedCursorVersion: number | null;
+  readonly expectedQueryDigest: string;
+  readonly expectedInitialOffset: number | null;
+  readonly expectedInitialCursor: string | null;
+};
+
+/**
+ * The job uses a transaction-scoped advisory lock in PostgreSQL and an
+ * equivalent in-memory guard in tests. Keeping this port outside the general
+ * ingestion repository means normal candidate ingestion remains unchanged.
+ */
+export interface ScanDiscoveryCheckpointRepository {
+  getScanDiscoveryCheckpoint(scope: string): Promise<ScanDiscoveryCheckpoint | null>;
+  saveScanDiscoveryCheckpoint(
+    input: ScanDiscoveryCheckpoint,
+    condition: ScanDiscoveryCheckpointWriteCondition
+  ): Promise<ScanDiscoveryCheckpoint>;
+  withScanDiscoveryRunLock<T>(scope: string, work: () => Promise<T>): Promise<T>;
+}
+
+export type ResumableScanRepository = IngestionRepository & ScanDiscoveryCheckpointRepository;
+
 export interface ClaimRepository {
   getClaim(identityKey: IdentityKey): Promise<ClaimRecord | null>;
   /**

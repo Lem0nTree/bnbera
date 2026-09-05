@@ -1,8 +1,8 @@
 # BNBEra: Ultra-Detailed Marketplace, No-Code Agent Deployer, and Greenfield Plan
 
 **Status:** Approved implementation plan
-**Revision:** 1.3
-**Date:** 2026-09-01
+**Revision:** 1.4
+**Date:** 2026-09-03
 
 Focused plans:
 
@@ -33,7 +33,7 @@ The implementation is optimized for the official [Smart Money Era tracks](https:
 | AgentTrust contribution | Selective port of capability, audit, verification, and requester/provider patterns |
 | Frontend | Entirely new BNBEra interface; no donor frontend reuse |
 | Agent sourcing | 8004scan, direct ERC-8004 events, manual claim/import, and BNBEra Creator |
-| Creator experience | Thin audited-strategy no-code MVP after marketplace and category gates; no general-purpose builder |
+| Creator experience | Thin audited-strategy no-code MVP after the Core Marketplace and Altana bootstrap gates; no general-purpose builder |
 | Hosting | One current BNB Agent Studio TypeScript runtime per created agent on AWS AgentCore behind authenticated ingress/WAF |
 | Network | Release-blocking organizer clarification; write-capable Creator demos default to BSC testnet, and main-track category coverage falls back to BSC mainnet if testnet eligibility is not confirmed |
 | Wallet authority | User-controlled Altana wallet with scoped runtime session |
@@ -50,6 +50,26 @@ The implementation is optimized for the official [Smart Money Era tracks](https:
 | Custom escrow/identity contracts | Excluded |
 | Mainnet writes | Disabled until explicit post-testnet security gates pass; read-only chain-56 discovery remains allowed |
 | Standards stability | Pin Studio CLI/runtime, Agent SDK, Altana SDK, ERC revisions, deployed contracts, and ABI hashes in `config/standards.lock.json` |
+
+### 1.1 Hackathon delivery override
+
+The immediate implementation order is marketplace-first. The public marketplace and web experience must become runnable before the optional Creator, full commerce, and canonical-evidence integrations are allowed to expand the critical path.
+
+The revised first two waves are:
+
+- **W0 — Marketplace runway:** clean runnable checkout, shared marketplace contracts, database/read model, API seam, and a minimal BNBEra web shell with public browse and detail routes. Real data is preferred; bounded fixtures are allowed only when visibly labelled and structurally identical to the production contract.
+- **W1 — Useful marketplace:** real discovery/manual import, eligibility state, search/filter/ranking explanations, category/detail/compare UI, freshness and degraded-state treatment, and an honest activation/hire affordance whose unavailable rails are disabled rather than simulated.
+
+Altana browser-to-Studio acceptance is a prerequisite for the **Creator + Altana** feature gate only. It does not block W0, W1, public web work, read-only chain discovery, marketplace ingestion, search, comparison, or detail pages.
+
+After W1, remaining execution is grouped into four delivery verticals rather than a dozen independently staffed streams:
+
+1. Marketplace Data + Web.
+2. Activation + Commerce.
+3. Creator + Altana + one Reference Agent.
+4. QA + Deployment + Submission.
+
+Each vertical is independently feature-gated. A failed or unresolved optional gate must degrade honestly and remain disabled without preventing a core marketplace preview or release.
 
 ---
 
@@ -675,7 +695,7 @@ The remediation must be simulated and revalidated immediately before submission.
 
 ## 8. No-code creation and deployment
 
-The hackathon ships a thin audited-strategy Creator only after marketplace ingestion/search, the four-category coverage gate, and one complete activation/hire path pass. It does not ship a general-purpose builder, arbitrary code/skills/dependencies/contracts, a visual programming language, or a multi-cloud framework.
+The hackathon may ship a thin audited-strategy Creator only after the Core Marketplace gate and the Creator-specific Altana browser-to-Studio bootstrap pass. Commerce and Greenfield are independent gates, not Creator prerequisites unless the selected reference-agent flow explicitly consumes them. The Creator does not ship a general-purpose builder, arbitrary code/skills/dependencies/contracts, a visual programming language, or a multi-cloud framework.
 
 ### Prerequisite: Altana browser-to-Studio spike
 
@@ -1763,149 +1783,64 @@ If the TermiX bounty is targeted, at least one paired task is explicitly from tr
 
 ## 18. Implementation sequence
 
-### Phase 0 — Documentation, provenance, and standards lock
+### W0 — Marketplace runway
 
-- Write the four plan documents.
-- Record donor hashes and provenance.
-- Confirm package and licensing notices.
-- Resolve the release-blocking main-track network question with the organizer: whether “live on BSC” accepts chain `97`, or requires chain `56`.
-- Create `config/standards.lock.json` with the reviewed Studio CLI/runtime, Agent SDK, Altana SDK, draft revisions, deployed registry addresses, and ABI hashes.
-- Complete the browser-controlled Altana-to-Studio session spike: one grant, one permitted AgentCore transaction, browser revocation, and rejection of the next write. Record whether Studio accepts an externally prepared session or the Altana SDK must provision it before Studio deployment.
-- Initialize Git and pnpm workspace.
-- Establish CI and branch protection.
+- Confirm the exact clean implementation base and preserve unrelated work.
+- Keep the current domain/database/auth foundation and publish the smallest stable marketplace read contracts needed by both API and web.
+- Create `apps/web` early with a distinctive BNBEra shell, public browse route, category navigation, detail route, loading/empty/error states, and responsive basics.
+- Create the API/read-model seam for listings without coupling it to Creator, Altana, commerce, Greenfield, or AWS deployment.
+- Use real imported data when available. Any bounded development fixture must be visibly labelled, conform to the production schema, and never be presented as discovered or live.
+- Keep unresolved standards-lock integrations disabled behind explicit flags.
 
-Exit condition: donor decisions, the standards snapshot, the main-track network rule, and the evidenced Altana/Studio bootstrap path are reviewable before source migration. If the organizer has not explicitly accepted chain `97`, plan main-track eligibility around chain `56`.
+Exit condition: a developer can run the database/API/web slice, browse an empty or honestly labelled marketplace, open a detail page, and observe honest unavailable/degraded states without any custody or paid-service prerequisite.
 
-### Phase 1 — TwinMarket base import
+### W1 — Useful marketplace
 
-- Import the modern application skeleton.
-- Move it into `apps/web`.
-- Standardize on pnpm and Node 22.
-- Remove World, AgentBook, ENS, Arc, ZK, mock, and private-key dependencies.
-- Replace the donor visual layer with a minimal BNBEra shell.
-- Establish shared domain and database packages.
+- Connect manual import and at least one real read-only discovery path to the marketplace read model.
+- Preserve the complete ERC-8004 identity tuple and independent origin, claim, verification, runtime, authority, and listing state axes.
+- Implement category views, text/filter search, eligibility reasons, freshness, detail, and compare. Add vector ranking only if it materially improves the demo after deterministic retrieval works.
+- Resolve services and capabilities from registered metadata and reviewed probes; do not assume universal endpoint paths.
+- Surface price, activation method, execution constraints, provenance, and evidence availability without claiming a rail is usable before its gate passes.
+- Add an activation/hire call to action that either enters a verified enabled flow or explains why that feature is unavailable; never simulate payment or execution.
+- Exercise the public browser-to-API-to-database path and the ingestion-to-read-model path.
 
-Exit condition: the clean application builds with no obsolete sponsor runtime.
+Exit condition: a user can discover, search, filter, compare, understand, and select credible agent supply in the public web application, with accurate state and a truthful next action.
 
-### Phase 2 — Database, identity, and state model
+### Post-W1 delivery verticals
 
-- Create the new Drizzle schema and additive migration.
-- Configure BetterAuth SIWE for account access and owner claim flows.
-- Store the complete ERC-8004 identity namespace: namespace, chain ID, registry address, and agent ID.
-- Add discovery-source/service records, finality checkpoints, reorg-aware chain observations, and independent origin, claim, verification, runtime, authority, and listing states.
-- Add creator, strategy, listing, deployment, commerce, health, evidence, audit, match, prediction, and embedding repositories.
+Only four coordinated verticals remain. They may proceed in parallel when their shared contracts are stable, and incomplete optional features must not regress the Core Marketplace gate.
 
-Exit condition: authentication and an empty marketplace work without fake records, and the database cannot collapse origin, owner claim, verification, runtime, authority, or publication into one field.
+1. **Marketplace Data + Web:** improve live supply, category coverage, verification, ranking, freshness, accessibility, and the complete public browsing journey.
+2. **Activation + Commerce:** deliver one complete activation/hire path first, then add another rail only if its contracts, recipient, asset, network, and settlement can be pinned and verified. ERC-8183 and X402/B402 remain separate lifecycles.
+3. **Creator + Altana + Reference Agent:** after the Core Marketplace gate and the Altana browser-to-Studio spike pass, deploy one audited-strategy reference agent with bounded revocable authority. General-purpose creation remains excluded.
+4. **QA + Deployment + Submission:** deploy the included feature set, verify each enabled gate end to end, maintain the claim-to-evidence index, and produce the demo/submission package.
 
-### Phase 3 — Supply ingestion, marketplace, and matching
-
-- Ingest registered agents through 8004scan, direct registry event/indexer reads, and manual import.
-- Permit discovered listings without SIWE; require a wallet signature only to claim or manage an owner-controlled listing.
-- Resolve public services from advertised metadata/cards or reviewed adapters instead of assuming Studio paths.
-- Implement configurable event finality, reorg rollback/replay, canonical state rereads, and stale-claim invalidation.
-- Implement category views, detail pages, compare, filters, and explanations.
-- Add endpoint, capability, protocol, health, price, and execution-constraint verification.
-- Add model-versioned pgvector embeddings over BNBEra’s verified and enriched representation.
-- Persist category predictions and their evidence separately from human or owner-provided categories.
-- Implement hard gates and weighted scoring.
-
-Exit condition: discovered supply is useful before owner claim, and only listings that pass the relevant verification and runtime gates can rank or execute.
-
-### Phase 4 — Four-category coverage gate
-
-- Inventory eligible external supply for LP Rebalancing, Grid Trading, Yield Optimisation, and Health Factor Monitoring.
-- Validate at least one credible, live listing in every category against the observable marketplace eligibility contract, with comparable detail and results/evidence appropriate to its service.
-- Build and deploy a BNBEra reference strategy only where external supply leaves a coverage or demo-quality gap.
-- Ensure at least one Studio-created reference agent exists for the Creator, Altana, and evidence demonstrations.
-- Apply the resolved main-track chain rule independently of the Creator demo’s chain.
-
-Exit condition: all four categories are equally credible without requiring BNBEra to implement or own four agents.
-
-### Phase 5 — Commerce
-
-- Add the pinned ERC-8183 provider and buyer flow.
-- Add the paid X402 gateway, authenticated AgentCore relay, complete per-agent B402 merchant/settlement configuration, fixed egress, and Altana-admin payout verification.
-- Keep ERC-8183 and B402 settlement assets/configuration distinct.
-- Add job pages, receipts, output hashes, and settlement state.
-- Verify at least one complete paid interaction against the locked deployment profile.
-
-Exit condition: a marketplace user can find, hire, receive, verify, and settle with at least one eligible agent.
-
-### Phase 6 — Reference agent, Altana, and Greenfield evidence
-
-- Deploy the selected reference agent through the pinned Agent Studio workflow.
-- Register it with direct user-controlled ERC-8004 ownership through the tested Studio/Altana custody path.
-- If registration must originate from an operational wallet, transfer ownership and then explicitly re-establish and verify `agentWallet` before enabling execution.
-- Demonstrate one bounded Altana session, one permitted transaction, revocation, and rejection of the next attempted execution.
-- Publish canonical evidence, wait for sealing, read it back, and verify its hash and marketplace link.
-- Keep Greenfield outside discovery eligibility; external agents need not have BNBEra-published Greenfield evidence.
-
-Exit condition: one real reference flow proves ownership, bounded execution authority, revocation, and independently retrievable evidence without mirroring or a custom anchor contract.
-
-### Phase 7 — Thin Creator MVP
-
-Start this phase only after the marketplace, category-coverage, and hire-flow gates pass.
-
-- Expose only audited strategies that have been explicitly activated for Creator use.
-- Build Step Functions and CodeBuild orchestration around the pinned Agent Studio CLI.
-- Deploy the single Studio runtime and place it behind the existing AWS ingress, Cognito, and WAF edge.
-- Add Altana setup, identity-ownership confirmation, progress, retry, pause, renewal, revocation, and destroy controls.
-- Add automatic verification and publication using the same marketplace state model.
-
-Exit condition: a new user configures, deploys, owns, and lists one audited-strategy agent without code, a terminal, GitHub, or personal AWS setup. A generalized agent builder remains deferred.
-
-### Phase 8 — Optional enrichment, hardening, and benchmark
-
-- Add Binance data adapters only as typed, optional enrichment when they materially improve a category flow.
-- Run security, ownership, and revocation drills.
-- Add capacity and sponsorship controls.
-- Complete the TermiX paired tasks if targeting that prize.
-- Verify any claimed PancakeSwap benefit.
-- Remove remaining placeholders and demo-only claims.
-- Conduct accessibility and mobile review.
-
-Exit condition: every published claim has evidence and no fake or unverified state is presented.
-
-### Phase 9 — Release
-
-- Apply the production database migration.
-- Deploy AWS infrastructure and the worker.
-- Run infrastructure verification.
-- Deploy the Vercel application.
-- Run browser-to-API-to-chain-to-Greenfield verification for the flows actually included in the release.
-- Run category canaries under the resolved main-track network rule.
-- Keep autonomous write execution on testnet unless mainnet execution is separately reviewed and approved.
-- Complete commit, CI, review, merge, remote-SHA, and production-deployment verification when publication is authorized.
+Greenfield/IPFS publication, optional Binance enrichment, extra protocols, extra reference strategies, and bounty-specific benchmarks are pulled into a vertical only when they support an included claim and do not delay a higher-priority gate.
 
 ---
 
 ## 19. Release gates
 
-The release is complete only when:
+Release readiness is evaluated by feature gate. The **Core Marketplace** gate is mandatory. Other gates are mandatory only when that capability is enabled or claimed in the hackathon submission. Passing one gate never supplies evidence for another.
 
-- The public application is accessible.
-- The chain `56` versus chain `97` main-track gate is closed and recorded. Explicit organizer acceptance may allow chain `97`; without it, every agent counted toward the main-track category gate is on chain `56`.
-- All four categories pass the documented coverage gate with at least one credible eligible listing and activation/hire path; qualifying agents may be externally discovered, manually imported, owner-claimed, or BNBEra-created.
-- Every surfaced listing accurately reports origin, owner claim, verification, runtime, authority, and listing state independently.
-- An unclaimed registered agent can be discovered and listed without SIWE, and its owner can later claim it with a wallet signature.
-- A canonical ERC-8004 ownership change makes the prior claim stale, and reorg rollback/replay cannot leave orphaned ownership or `agentWallet` data presented as canonical.
-- Every eligible agent exposes the observable capability, input/output, health, price/activation, data provenance, result/evidence, and execution-constraint information appropriate to the service it actually offers; external internal architecture is not assumed.
-- At least one ERC-8183 hire completes end to end.
-- At least one paid X402 request completes through the authenticated gateway/AgentCore relay and pinned B402 settlement configuration, with the distinct settlement asset, receipt, and expected payout recipient verified.
-- The phase-zero browser-controlled Altana-to-Studio bootstrap is evidenced against the pinned versions before Creator implementation.
-- At least one Studio-created reference agent demonstrates real Altana allowlists, caps, expiry, and the tested custody-specific setup.
-- Direct user control of the reference agent’s ERC-8004 NFT is verified; if a transfer fallback was used, `agentWallet` was re-established and re-verified after transfer.
-- A user can inspect and revoke authority inside BNBEra.
-- Revocation prevents the next execution.
-- The checked-in standards lock matches the CLI/runtime, SDKs, draft revisions, deployed addresses, and ABIs exercised by the release.
-- Any PancakeSwap benefit claimed in the submission is demonstrated with measured evidence.
-- Greenfield evidence for BNBEra-created or reference flows is sealed, read back, and linked from the marketplace.
-- Evidence hashes match local, IPFS, and Greenfield records.
-- If the TermiX prize is targeted, the three paired tasks and actual outputs are published; at least one is trading/stock/security, and any trading record reports its measurement window, sample size, win rate where meaningful, realized result, capital at risk, maximum drawdown, failures, methodology, fees, and linked transactions.
-- After its prerequisite marketplace gates pass, one user-created audited-strategy agent progresses from configuration to listing without a terminal, IDE, GitHub, or personal AWS setup.
-- No private key is stored in PostgreSQL or returned through an API.
-- No mock metric appears as real data.
-- CI, remote commit, migration, deployment, and production behavior are independently verified.
+| Gate | Required evidence | Failure behavior |
+|---|---|---|
+| Core Marketplace | Accessible public web; real or explicitly labelled data; browse plus four first-class category views, search/filter, detail and compare; accurate independent state axes; provenance/freshness; browser-to-API-to-database verification | Release is blocked |
+| Activation + Commerce | At least one complete enabled activation/hire path with correlated request, result and receipt evidence; every configured contract, recipient, asset, network and settlement boundary pinned | Disable activation CTAs for the unavailable rail; core browsing remains available |
+| Creator + Altana | Pinned SDK/Studio path; browser-controlled bounded grant; one permitted testnet action; revocation; deterministic rejection of the next write; direct ERC-8004 ownership or evidenced transfer recovery | Creator remains disabled; marketplace and external-agent activation remain available |
+| Evidence Publication | Greenfield seal plus readback/hash verification and IPFS hash agreement for every object claimed as canonically published | Mark publication unavailable/pending and omit the claim |
+| QA + Deployment + Submission | Integrated deployment, migration, enabled-gate browser/API verification, no unresolved P0/P1 defects, and claim-to-evidence index | Submission/release promotion is blocked |
+
+The following invariants apply to every gate:
+
+- The checked-in standards lock must match every CLI/runtime, SDK, draft revision, deployed address, ABI, network, and provider actually exercised. Unresolved entries stay disabled.
+- Chain `56` versus chain `97` eligibility must be recorded before making a main-track chain claim. Read-only chain-56 discovery does not authorize mainnet writes.
+- Every surfaced listing reports origin, owner claim, verification, runtime, authority, and listing state independently.
+- Registered agents may be discovered without SIWE; owner claim and management require the appropriate wallet proof.
+- No private key, passkey export, root credential, or raw runtime session is stored in PostgreSQL, returned through an API, logged, or committed.
+- No mock metric, simulated execution, HTTP status, transaction hash, or health response is represented as complete live behavior without the corresponding end-to-end evidence.
+- Any PancakeSwap, TermiX, performance, Greenfield, Altana, Agent Studio, ERC-8183, or X402/B402 claim is included only when its specific gate and measurement requirements pass.
+- CI, migration, remote SHA, deployment, and production behavior are distinguished and independently verified for the boundary being claimed.
 
 ## 20. Explicit assumptions
 
@@ -1930,6 +1865,7 @@ The release is complete only when:
 
 ## Changelog
 
+- **1.4 — 2026-09-03:** Reordered hackathon delivery around marketplace-first W0/W1, moved the public web into the first runnable slice, limited Altana blocking to Creator, consolidated remaining work into four delivery verticals, and replaced the monolithic release gate with independently disableable feature gates.
 - **1.3 — 2026-09-01:** Made public agent interfaces discovery-driven, separated external marketplace eligibility from BNBEra strategy internals, added the browser Altana-to-Studio bootstrap spike and complete paid-X402/B402 deployment contract, split origin/claim/listing state, added ERC-8004 finality/reorg semantics, and completed the conditional TermiX track-record fields.
 - **1.2 — 2026-09-01:** Separated provenance, verification, runtime, and authority; expanded external agent ingestion; made four-category coverage supply-driven; retained a gated thin Creator MVP; adopted the single Studio runtime; clarified direct ERC-8004 ownership and transfer recovery; removed Greenfield mirroring; added a standards lock and a release-blocking chain-eligibility gate.
 - **1.1 — 2026-09-01:** Added the exact BNBEra purple, BSC yellow, and Greenfield green design roles; constrained pgvector to public semantic agent metadata and kept live DeFi data structured.

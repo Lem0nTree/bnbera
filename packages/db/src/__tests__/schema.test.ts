@@ -177,7 +177,8 @@ describe("combined Wave 1 database schema", () => {
     expect(sqlFiles).toEqual([
       "0000_round_wallflower.sql",
       "0001_wave1_combined.sql",
-      "0002_wave1_legacy_repair.sql"
+      "0002_wave1_legacy_repair.sql",
+      "0003_scan_discovery_checkpoint.sql"
     ]);
     expect(wave1Files).toEqual(["0001_wave1_combined.sql"]);
 
@@ -187,5 +188,8 @@ describe("combined Wave 1 database schema", () => {
     expect(wave1).toContain('CREATE TABLE "evidence_publication_attempts"');
     expect(wave1).toContain('CREATE TABLE "evidence_verification_results"');
     expect(wave1).not.toMatch(/DROP CONSTRAINT ["']agents_current_version_id_agent_versions_id_fk["']/u);
+    const scanCheckpoint = readFileSync(join(migrationsPath, "0003_scan_discovery_checkpoint.sql"), "utf8");
+    expect(scanCheckpoint).toContain('CREATE TABLE "scan_discovery_checkpoints"');
+    expect(scanCheckpoint).not.toContain('DROP CONSTRAINT "agents_current_version_id_agent_versions_id_fk"');
   });
 });
