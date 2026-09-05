@@ -6,6 +6,8 @@ export type Erc8004RegistrySyncConfig = {
   readonly chainId: number;
   readonly identityRegistry: string;
   readonly abiSha256: string;
+  readonly finalityMode: "rpc-finalized-tag" | "confirmations";
+  readonly finalityBlockTag: "finalized" | null;
   readonly confirmationThreshold: number;
 };
 
@@ -21,9 +23,10 @@ function unresolved(message: string): never {
 
 /**
  * Resolve direct-sync authority only from the standards lock. In particular,
- * an environment variable or a code default can never supply finality. The
- * current lock intentionally has no confirmationThreshold, so production
- * direct sync remains disabled until A0 resolves that entry.
+ * an environment variable or a code default can never supply finality. BSC's
+ * current official policy is the provider's `finalized` block tag; numeric
+ * confirmation mode remains supported only for an explicitly locked legacy
+ * network policy.
  */
 export function resolveErc8004RegistrySyncConfig(
   lock: unknown,
@@ -64,10 +67,32 @@ export function resolveErc8004RegistrySyncConfig(
   }
 
   const finality = record(erc8004.finality);
-  const thresholdValue = erc8004.confirmationThreshold ?? finality?.confirmationThreshold;
-  if (thresholdValue === undefined) {
-    unresolved("The standards lock has no ERC-8004 confirmation threshold.");
+  const finalityMode = finality?.mode;
+  if (finalityMode === "rpc-finalized-tag") {
+    if (finality === null) unresolved("The standards lock has no finalized-tag policy details.");
+    const finalityPolicy = finality;
+    if (finalityPolicy.blockTag !== "finalized" || finalityPolicy.fallback !== "disabled") {
+      unresolved("The standards lock has an invalid finalized-tag fallback policy.");
+    }
+    if (typeof finalityPolicy.source !== "string" || !/^https?:\/\//iu.test(finalityPolicy.source) ||
+      typeof finalityPolicy.version !== "string" || finalityPolicy.version.trim().length === 0 ||
+      typeof finalityPolicy.retrievedAt !== "string" || Number.isNaN(Date.parse(finalityPolicy.retrievedAt))) {
+      unresolved("The standards lock has incomplete BSC finality source/version/date evidence.");
+    }
+    return {
+      chainId,
+      identityRegistry,
+      abiSha256: abiSha256.toLowerCase(),
+      finalityMode: "rpc-finalized-tag",
+      finalityBlockTag: "finalized",
+      // The database checkpoint column predates tag-based finality. Zero is a
+      // compatibility marker; indexerVersion identifies the policy mode.
+      confirmationThreshold: 0
+    };
   }
+
+  const thresholdValue = erc8004.confirmationThreshold ?? finality?.confirmationThreshold;
+  if (thresholdValue === undefined) unresolved("The standards lock has no ERC-8004 finality policy.");
   if (typeof thresholdValue !== "number" || !Number.isSafeInteger(thresholdValue) || thresholdValue < 0) {
     throw ingestionError("REGISTRY_SYNC_CONFIG_INVALID", "The standards-locked confirmation threshold is invalid.", "repair_registry_lock");
   }
@@ -76,6 +101,8 @@ export function resolveErc8004RegistrySyncConfig(
     chainId,
     identityRegistry,
     abiSha256: abiSha256.toLowerCase(),
+    finalityMode: "confirmations",
+    finalityBlockTag: null,
     confirmationThreshold: thresholdValue
   };
 }

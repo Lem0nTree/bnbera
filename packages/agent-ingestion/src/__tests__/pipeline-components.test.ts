@@ -128,6 +128,7 @@ describe("gated end-to-end pipeline", () => {
       ERC8004_INGESTION_ENABLED: "true",
       ERC8004SCAN_DISCOVERY_ENABLED: "true",
       MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED: "true",
+      MARKETPLACE_SEMANTIC_CANARY_ENABLED: "true",
       ERC8004_EMBEDDING_PROVIDER: "openrouter",
       ERC8004_EMBEDDING_MODEL: "test/model",
       ERC8004_EMBEDDING_MODEL_VERSION: "test-v1",
@@ -144,6 +145,19 @@ describe("gated end-to-end pipeline", () => {
     const pipeline = createErc8004PipelineFromRuntimeConfig({
       runtimeConfig,
       embeddingProvider: provider,
+      standardsLock: {
+        semanticEmbedding: {
+          provider: "openrouter",
+          model: "test/model",
+          modelVersion: "test-v1",
+          dimension: 3,
+          endpoint: "https://openrouter.ai/api/v1/embeddings",
+          semanticDocumentSchemaVersion: "semantic-document-v1",
+          secretReference: "ERC8004_EMBEDDING_API_KEY",
+          verificationStatus: "verified-live-read-only-canary",
+          releaseEnabled: false
+        }
+      },
       repository: new InMemoryIngestionRepository()
     });
     expect(pipeline.featureGates()).toEqual({

@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { loadRuntimeConfig } from "../packages/config/src/runtime.ts";
+import { loadRuntimeConfig, validateSemanticEmbeddingLock } from "../packages/config/src/runtime.ts";
 import {
   BoundedMetadataResolver,
   BoundedServiceProbe,
@@ -20,6 +20,7 @@ import {
   createEmbeddingProviderFromRuntimeConfig,
   pgVectorStorageDimension,
   readErc8004PipelineGates,
+  resolveErc8004RegistrySyncConfig,
   type IdentityCandidate,
   type EmbeddingProvider,
   type IngestionSource,
@@ -63,7 +64,8 @@ type ScanSummary = {
 
 type RegistrySummary = {
   readonly configured: boolean;
-  readonly readConsistency: "provisional";
+  readonly readConsistency: "finalized" | "provisional";
+  readonly finalityMode: "rpc-finalized-tag" | "confirmations" | null;
   readonly reason: string | null;
 };
 
@@ -247,9 +249,11 @@ async function persistedCandidates(
 function buildRegistryReader(lock: RuntimeStandardsLock, chainId: number, registry: string): { readonly reader: RegistryChainReader | undefined; readonly summary: RegistrySummary } {
   const endpoint = rpcEndpoint(chainId);
   const abiHash = lockedAbiHash(lock, chainId);
-  if (endpoint === undefined) return { reader: undefined, summary: { configured: false, readConsistency: "provisional", reason: "RPC_ENDPOINT_MISSING" } };
-  if (abiHash === null) return { reader: undefined, summary: { configured: false, readConsistency: "provisional", reason: "ABI_HASH_UNRESOLVED" } };
+  if (endpoint === undefined) return { reader: undefined, summary: { configured: false, readConsistency: "provisional", finalityMode: null, reason: "RPC_ENDPOINT_MISSING" } };
+  if (abiHash === null) return { reader: undefined, summary: { configured: false, readConsistency: "provisional", finalityMode: null, reason: "ABI_HASH_UNRESOLVED" } };
   try {
+    const syncConfig = resolveErc8004RegistrySyncConfig(lock, chainId, abiHash);
+    const readConsistency = syncConfig.finalityMode === "rpc-finalized-tag" ? "finalized" : "provisional";
     const definitions = createOfficialErc8004RegistryReadDefinitions({ expectedAbiSha256: abiHash });
     return {
       reader: new JsonRpcRegistryChainReader({
@@ -257,14 +261,14 @@ function buildRegistryReader(lock: RuntimeStandardsLock, chainId: number, regist
         identityRegistry: registry,
         client: new JsonRpcClient(endpoint, { timeoutMs: boundedNumber("ERC8004_RPC_TIMEOUT_MS", 15_000, 250, 120_000) }),
         ...definitions,
-        // Finality is intentionally unresolved in standards.lock.json. Reads
-        // are exact-block and truthfully provisional until that gate closes.
-        readConsistency: "provisional"
+        // BSC live publication is enabled only for the lock's finalized-tag
+        // policy; unresolved policy remains unavailable.
+        readConsistency
       }),
-      summary: { configured: true, readConsistency: "provisional", reason: null }
+      summary: { configured: true, readConsistency, finalityMode: syncConfig.finalityMode, reason: null }
     };
   } catch (error) {
-    return { reader: undefined, summary: { configured: false, readConsistency: "provisional", reason: safeErrorCode(error, "REGISTRY_READER_UNAVAILABLE") } };
+    return { reader: undefined, summary: { configured: false, readConsistency: "provisional", finalityMode: null, reason: safeErrorCode(error, "REGISTRY_READER_UNAVAILABLE") } };
   }
 }
 
@@ -313,6 +317,11 @@ async function main(): Promise<void> {
 
   const chainId = boundedNumber("ERC8004_SCAN_CHAIN_ID", runtime.bscChainId, 1, 2_147_483_647);
   const lock = await readStandardsLock();
+  if (runtime.marketplaceSemanticRetrievalEnabled) {
+    // Semantic retrieval is independently lock-gated. A false release flag
+    // may only be exercised by the explicit development/test canary mode.
+    validateSemanticEmbeddingLock(lock, runtime);
+  }
   const registry = lockedRegistry(lock, chainId);
   if (registry === null) throw new Error("REGISTRY_NOT_RESOLVED_FROM_STANDARDS_LOCK");
   const maxCandidates = boundedNumber("ERC8004_MARKETPLACE_MAX_CANDIDATES", 20, 1, 20);
@@ -416,6 +425,7 @@ async function main(): Promise<void> {
     const pipeline = new Erc8004Pipeline({
       repository,
       ...(registryReader === undefined ? {} : { registryReader }),
+      ...(registryReader === undefined ? {} : { registryReadPolicy: registrySummary.readConsistency === "finalized" ? "finalized-tag" as const : "provisional" as const }),
       metadataResolver,
       serviceProbe,
       serviceProbeOptions: {

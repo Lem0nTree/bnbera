@@ -6,6 +6,15 @@
     "bscNetworks": {
       "url": "https://docs.bnbchain.org/bnb-smart-chain/developers/wallet-configuration/"
     },
+    "bscFinality": {
+      "docsUrl": "https://docs.bnbchain.org/bnb-smart-chain/introduction/",
+      "rpcApiUrl": "https://github.com/bnb-chain/bsc/blob/c5533ab5b7244dc474add10740834417a2c605d7/rpc/json-rpc-api.md",
+      "clientSourceUrl": "https://github.com/bnb-chain/bsc/blob/c5533ab5b7244dc474add10740834417a2c605d7/internal/ethapi/api.go",
+      "clientCommit": "c5533ab5b7244dc474add10740834417a2c605d7",
+      "bep126Url": "https://github.com/bnb-chain/BEPs/blob/da1567012df1e00e0cb5c5762a537768ca917f05/BEPs/BEP126.md",
+      "bep126Commit": "da1567012df1e00e0cb5c5762a537768ca917f05",
+      "retrievedAt": "2026-09-05T00:00:00Z"
+    },
     "erc8004Spec": {
       "url": "https://github.com/ethereum/ERCs",
       "commit": "503591a6e80e6e1affdd6403341e25269141f046",
@@ -151,6 +160,14 @@
           "identityRegistry": "201b7634af2de088c58868052856922ea8534c47e2837f19529460e2fafb4ff1",
           "reputationRegistry": "0d8bb97bb04ab481bb3344859621be50eb219ffa37dfe8ee3907ae166e21e523"
         },
+        "finality": {
+          "mode": "rpc-finalized-tag",
+          "blockTag": "finalized",
+          "fallback": "disabled",
+          "source": "https://docs.bnbchain.org/bnb-smart-chain/introduction/",
+          "version": "bsc-client-c5533ab5b7244dc474add10740834417a2c605d7",
+          "retrievedAt": "2026-09-05T00:00:00Z"
+        },
         "verificationStatus": "verified-read-only-bytecode-and-abi"
       },
       "erc8183": {
@@ -190,6 +207,14 @@
         "implementationRuntimeSha256": {
           "identityRegistry": "201b7634af2de088c58868052856922ea8534c47e2837f19529460e2fafb4ff1",
           "reputationRegistry": "0d8bb97bb04ab481bb3344859621be50eb219ffa37dfe8ee3907ae166e21e523"
+        },
+        "finality": {
+          "mode": "rpc-finalized-tag",
+          "blockTag": "finalized",
+          "fallback": "disabled",
+          "source": "https://docs.bnbchain.org/bnb-smart-chain/introduction/",
+          "version": "bsc-client-c5533ab5b7244dc474add10740834417a2c605d7",
+          "retrievedAt": "2026-09-05T00:00:00Z"
         },
         "verificationStatus": "verified-read-only-bytecode-and-abi"
       },

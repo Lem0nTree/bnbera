@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AppError, loadRuntimeConfig } from "../index.js";
+import { AppError, loadRuntimeConfig, validateSemanticEmbeddingLock } from "../index.js";
 
 describe("runtime configuration", () => {
   it("uses safe development defaults without requiring a database secret", () => {
@@ -10,6 +10,7 @@ describe("runtime configuration", () => {
     expect(config.erc8004IngestionEnabled).toBe(false);
     expect(config.erc8004ScanDiscoveryEnabled).toBe(false);
     expect(config.marketplaceSemanticRetrievalEnabled).toBe(false);
+    expect(config.marketplaceSemanticCanaryEnabled).toBe(false);
     expect(config.embedding).toBeNull();
   });
 
@@ -64,6 +65,38 @@ describe("runtime configuration", () => {
       NODE_ENV: "test",
       MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED: "true"
     })).toThrow(/embedding configuration/i);
+  });
+
+  it("requires the checked-in embedding lock and labels the explicit development canary", () => {
+    const lock = {
+      semanticEmbedding: {
+        provider: "openrouter",
+        model: "openai/text-embedding-3-small",
+        modelVersion: "openrouter-openai-text-embedding-3-small-v1",
+        dimension: 1536,
+        endpoint: "https://openrouter.ai/api/v1/embeddings",
+        semanticDocumentSchemaVersion: "semantic-document-v1",
+        secretReference: "ERC8004_EMBEDDING_API_KEY",
+        verificationStatus: "verified-live-read-only-canary",
+        releaseEnabled: false
+      }
+    };
+    const base = {
+      NODE_ENV: "test" as const,
+      APP_URL: "https://preview.example.test",
+      SIWE_DOMAIN: "preview.example.test",
+      MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED: "true",
+      ERC8004_EMBEDDING_PROVIDER: "openrouter",
+      ERC8004_EMBEDDING_MODEL: "openai/text-embedding-3-small",
+      ERC8004_EMBEDDING_MODEL_VERSION: "openrouter-openai-text-embedding-3-small-v1",
+      ERC8004_EMBEDDING_DIMENSION: "1536",
+      ERC8004_EMBEDDING_SECRET_REFERENCE: "ERC8004_EMBEDDING_API_KEY"
+    };
+    const runtime = loadRuntimeConfig(base);
+    expect(() => validateSemanticEmbeddingLock(lock, runtime)).toThrow("EMBEDDING_RELEASE_DISABLED");
+    const canaryRuntime = loadRuntimeConfig({ ...base, MARKETPLACE_SEMANTIC_CANARY_ENABLED: "true" });
+    expect(validateSemanticEmbeddingLock(lock, canaryRuntime)).toMatchObject({ mode: "development-canary", releaseEnabled: false });
+    expect(() => validateSemanticEmbeddingLock({ semanticEmbedding: { ...lock.semanticEmbedding, model: "other/model" } }, canaryRuntime)).toThrow("EMBEDDING_LOCK_MISMATCH");
   });
 
   it("does not enable read-only gates for malformed or missing feature flags", () => {

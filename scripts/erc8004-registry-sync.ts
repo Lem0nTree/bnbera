@@ -118,7 +118,7 @@ async function main(): Promise<void> {
       identityRegistry: config.identityRegistry,
       client: new JsonRpcClient(endpoint, { timeoutMs: boundedNumber("ERC8004_RPC_TIMEOUT_MS", 15_000, 250, 120_000) }),
       expectedAbiSha256: config.abiSha256,
-      // The lock-derived confirmation threshold makes the exact block reads
+      // The lock-derived finalized-tag policy makes every exact block read
       // finality-bound for this command. No head read is used for publication.
       readConsistency: "finalized",
       maxLogResults: maxEvents
@@ -164,6 +164,7 @@ async function main(): Promise<void> {
       identityRegistry: config.identityRegistry,
       startBlock,
       confirmationThreshold: config.confirmationThreshold,
+      finalityMode: config.finalityMode,
       maxBlockRange,
       maxEvents,
       maxCandidates,

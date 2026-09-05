@@ -138,6 +138,26 @@ export class JsonRpcRegistryChainReader implements RegistryChainReader {
     return this.client.latestBlock();
   }
 
+  /**
+   * Resolve BSC's consensus-backed finalized tag to an exact number/hash
+   * pair. The numeric hash is reread from the provider's canonical view so a
+   * caller can bind all registry calls and event replay to one block proof.
+   */
+  async getFinalizedBlockTag(): Promise<ChainBlockTag> {
+    const finalized = await this.client.finalizedBlock();
+    const trustedHash = await this.getTrustedBlockHash(finalized.number);
+    if (trustedHash === null || trustedHash !== finalized.hash) {
+      throw ingestionError(
+        "REORG_RECONCILIATION_REQUIRED",
+        "The provider finalized block hash is not stable in its canonical view.",
+        "retry_chain_read",
+        undefined,
+        true
+      );
+    }
+    return { blockNumber: finalized.number, blockHash: finalized.hash };
+  }
+
   async getTrustedBlockHash(blockNumber: number): Promise<string | null> {
     const result = await this.client.blockHash(blockNumber);
     return result === null ? null : assertHash(result, "trusted block hash");
@@ -149,7 +169,7 @@ export class JsonRpcRegistryChainReader implements RegistryChainReader {
     assertReaderIdentityNetwork(normalized, this.chainId, this.registry);
     await this.assertProviderNetwork();
     const tag = blockTag === undefined
-      ? await this.explicitHeadTag()
+      ? this.readConsistency === "finalized" ? await this.getFinalizedBlockTag() : await this.explicitHeadTag()
       : normalizeChainBlockTag(blockTag);
     if (blockTag !== undefined) {
       const trusted = await this.getTrustedBlockHash(tag.blockNumber);

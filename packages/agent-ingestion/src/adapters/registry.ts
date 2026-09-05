@@ -18,6 +18,14 @@ export type ChainBlockTag = {
   readonly blockHash: string;
 };
 
+/**
+ * BSC exposes consensus finality through the JSON-RPC `finalized` tag.  A
+ * numeric confirmation depth is retained as a compatibility mode for other
+ * reviewed providers, but BSC live publication must use the RPC tag so a
+ * probabilistic fallback is never mistaken for deterministic finality.
+ */
+export type RegistryFinalityMode = "rpc-finalized-tag" | "confirmations";
+
 export type RegistryEventQuery = {
   readonly chainId: number;
   readonly identityRegistry: string;
@@ -39,6 +47,12 @@ export interface TrustedBlockHashReader {
  */
 export interface RegistryChainReader extends TrustedBlockHashReader {
   getLatestBlock(): Promise<number>;
+  /**
+   * Return the exact block selected by the provider's finalized view.  This
+   * is optional for legacy test/operator readers; a finalized-tag sync gate
+   * fails closed when it is absent.
+   */
+  getFinalizedBlockTag?(): Promise<ChainBlockTag>;
   /**
    * Read the canonical hash from a trusted/finality-aware chain provider.
    * Ordinary event payload hashes are never accepted as a substitute.

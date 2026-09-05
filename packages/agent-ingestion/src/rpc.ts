@@ -34,6 +34,12 @@ export type JsonRpcClientOptions = {
   readonly maxResponseBytes?: number;
 };
 
+export type RpcBlockReference = {
+  readonly number: number;
+  readonly hash: string;
+  readonly parentHash: string;
+};
+
 type JsonRpcResponse = {
   readonly jsonrpc?: unknown;
   readonly id?: unknown;
@@ -194,7 +200,42 @@ export class JsonRpcClient {
     return hash(block.hash, "block hash");
   }
 
-  async blockByHash(blockHash: string): Promise<{ readonly number: number; readonly hash: string; readonly parentHash: string } | null> {
+  /**
+   * Read a block selected by an explicit JSON-RPC block tag.  BSC's
+   * `finalized` tag is consensus-backed; callers still receive the numeric
+   * block/hash pair and can bind every subsequent read to that exact block.
+   */
+  async blockByNumberTag(blockTag: string, includeTransactions = false): Promise<RpcBlockReference | null> {
+    assertBlockTag(blockTag);
+    const block = await this.request<{
+      readonly number?: unknown;
+      readonly hash?: unknown;
+      readonly parentHash?: unknown;
+    } | null>({
+      method: "eth_getBlockByNumber",
+      params: [blockTag, includeTransactions]
+    });
+    if (block === null) return null;
+    if (block.number === undefined || block.hash === undefined || block.parentHash === undefined) {
+      throw ingestionError("CHAIN_PROVIDER_INVALID", "The RPC block-by-number response is incomplete.", "retry_chain_read");
+    }
+    return {
+      number: quantityToNumber(block.number, "block number"),
+      hash: hash(block.hash, "block hash"),
+      parentHash: hash(block.parentHash, "parent block hash")
+    };
+  }
+
+  /** Return the block selected by BSC's consensus `finalized` tag. */
+  async finalizedBlock(): Promise<RpcBlockReference> {
+    const block = await this.blockByNumberTag("finalized", false);
+    if (block === null) {
+      throw ingestionError("CHAIN_PROVIDER_UNAVAILABLE", "The chain provider returned no finalized block.", "retry_chain_read", undefined, true);
+    }
+    return block;
+  }
+
+  async blockByHash(blockHash: string): Promise<RpcBlockReference | null> {
     const normalizedHash = hash(blockHash, "requested block hash");
     const block = await this.request<{ readonly number?: unknown; readonly hash?: unknown; readonly parentHash?: unknown } | null>({
       method: "eth_getBlockByHash",

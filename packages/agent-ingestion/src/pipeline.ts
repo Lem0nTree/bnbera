@@ -1,4 +1,4 @@
-import type { RuntimeConfig } from "@bnbera/config";
+import { validateSemanticEmbeddingLock, type RuntimeConfig } from "@bnbera/config";
 import { erc8004IdentityKey, type CapabilityManifest, type Erc8004Identity } from "@bnbera/domain";
 import { ingestionError } from "./errors.js";
 import { AgentIngestionService, type CandidateIngestionResult } from "./ingestion.js";
@@ -7,7 +7,7 @@ import { normalizeCapabilityManifest, normalizeServices } from "./normalize.js";
 import { type CategoryClassification, type CategoryClassificationInput, DeterministicCategoryClassifier } from "./categorization.js";
 import { buildSemanticDocument, validateEmbeddingProvider, type EmbeddingProvider, type SemanticDocumentInput } from "./semantic.js";
 import type { EightHundredFourScanAdapter, EightHundredFourScanQuery } from "./adapters/8004scan.js";
-import type { RegistryChainReader } from "./adapters/registry.js";
+import type { ChainBlockTag, RegistryChainReader } from "./adapters/registry.js";
 import type { IdentityCandidate, IdentityRecord, IngestionRepository, ServiceObservation } from "./types.js";
 import { ensureSemanticVector, type SemanticVectorRepository, type SemanticVectorRecord } from "./vector.js";
 import { BoundedServiceProbe, type ServiceProbeBatchOptions, type ServiceProbeResult } from "./probe.js";
@@ -52,6 +52,9 @@ export type Erc8004PipelineOptions = {
   readonly adapter?: EightHundredFourScanAdapter;
   readonly ingestion?: AgentIngestionService;
   readonly registryReader?: RegistryChainReader;
+  /** Direct registry reads are provisional by default. Live publication
+   * callers must opt into the standards-locked finalized-tag policy. */
+  readonly registryReadPolicy?: "provisional" | "finalized-tag";
   readonly metadataResolver?: BoundedMetadataResolver;
   /** Optional bounded transport for read-only service contract probes. */
   readonly serviceProbe?: BoundedServiceProbe;
@@ -67,6 +70,9 @@ export type Erc8004PipelineOptions = {
 
 export type RuntimeConfiguredPipelineOptions = Omit<Erc8004PipelineOptions, "embeddingProvider" | "gates"> & {
   readonly runtimeConfig: RuntimeConfig;
+  /** Parsed checked-in standards lock. Required whenever semantic retrieval
+   * is requested so the runtime cannot bypass release/provider validation. */
+  readonly standardsLock?: unknown;
   /** Explicit deterministic provider seam for tests; production selects the configured adapter below. */
   readonly embeddingProvider?: EmbeddingProvider;
   /** Server-side secret manager callback; never persist the resolved value. */
@@ -183,6 +189,7 @@ export class Erc8004Pipeline {
   private readonly adapter: EightHundredFourScanAdapter | undefined;
   private readonly ingestion: AgentIngestionService;
   private readonly registryReader: RegistryChainReader | undefined;
+  private readonly registryReadPolicy: "provisional" | "finalized-tag";
   private readonly metadataResolver: BoundedMetadataResolver | undefined;
   private readonly serviceProbe: BoundedServiceProbe | undefined;
   private readonly serviceProbeOptions: ServiceProbeBatchOptions;
@@ -199,6 +206,7 @@ export class Erc8004Pipeline {
     this.adapter = options.adapter;
     this.ingestion = options.ingestion ?? new AgentIngestionService(options.repository);
     this.registryReader = options.registryReader;
+    this.registryReadPolicy = options.registryReadPolicy ?? "provisional";
     this.metadataResolver = options.metadataResolver;
     this.serviceProbe = options.serviceProbe;
     this.serviceProbeOptions = options.serviceProbeOptions ?? {};
@@ -274,10 +282,22 @@ export class Erc8004Pipeline {
     let registry: PipelineCandidateResult["registry"] = "skipped";
     if (this.registryReader !== undefined) {
       try {
-        const blockNumber = await this.registryReader.getLatestBlock();
-        const blockHash = await this.registryReader.getTrustedBlockHash(blockNumber);
-        if (blockHash === null) throw ingestionError("CHAIN_PROVIDER_UNAVAILABLE", "The registry block hash was unavailable.", "retry_chain_read", undefined, true);
-        const state = await this.registryReader.readIdentity(candidate.identity, { blockNumber, blockHash });
+        let blockTag: ChainBlockTag;
+        if (this.registryReadPolicy === "finalized-tag") {
+          if (this.registryReader.getFinalizedBlockTag === undefined) {
+            throw ingestionError("REGISTRY_FINALITY_UNRESOLVED", "The configured registry reader cannot prove the BSC finalized RPC tag.", "configure_finalized_rpc_reader");
+          }
+          blockTag = await this.registryReader.getFinalizedBlockTag();
+        } else {
+          const blockNumber = await this.registryReader.getLatestBlock();
+          const blockHash = await this.registryReader.getTrustedBlockHash(blockNumber);
+          if (blockHash === null) throw ingestionError("CHAIN_PROVIDER_UNAVAILABLE", "The registry block hash was unavailable.", "retry_chain_read", undefined, true);
+          blockTag = { blockNumber, blockHash };
+        }
+        const state = await this.registryReader.readIdentity(candidate.identity, blockTag);
+        if (this.registryReadPolicy === "finalized-tag" && state.readConsistency !== "finalized") {
+          throw ingestionError("REORG_RECONCILIATION_REQUIRED", "The registry reader returned a non-finalized read under the finalized publication policy.", "configure_finalized_rpc_reader");
+        }
         identityRecord = await this.repository.withTransaction(async (repository) => repository.applyCanonicalState({ identity: candidate.identity, ...state }));
         registry = "verified";
       } catch (error) {
@@ -466,9 +486,13 @@ export async function runErc8004Pipeline(options: Erc8004PipelineOptions, query:
  * caller's runtime configuration did not explicitly enable.
  */
 export function createErc8004PipelineFromRuntimeConfig(options: RuntimeConfiguredPipelineOptions): Erc8004Pipeline {
-  const { runtimeConfig, resolveEmbeddingSecret, embeddingProviderOptions, embeddingProvider: providedEmbeddingProvider, ...pipelineOptions } = options;
+  const { runtimeConfig, standardsLock, resolveEmbeddingSecret, embeddingProviderOptions, embeddingProvider: providedEmbeddingProvider, ...pipelineOptions } = options;
   let embeddingProvider: EmbeddingProvider | undefined = providedEmbeddingProvider;
   if (runtimeConfig.marketplaceSemanticRetrievalEnabled) {
+    if (standardsLock === undefined) {
+      throw ingestionError("EMBEDDING_CONFIG_INVALID", "Semantic retrieval requires the checked-in embedding standards lock.", "configure_embedding_lock");
+    }
+    validateSemanticEmbeddingLock(standardsLock, runtimeConfig);
     if (embeddingProvider === undefined) {
       if (resolveEmbeddingSecret === undefined) {
         throw ingestionError("EMBEDDING_CONFIG_INVALID", "Semantic retrieval requires a server-side embedding secret resolver.", "configure_embedding_secret");

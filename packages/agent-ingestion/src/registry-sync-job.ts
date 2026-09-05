@@ -5,7 +5,7 @@ import {
 } from "@bnbera/domain";
 import { ingestionError } from "./errors.js";
 import { AgentIngestionService, type RegistrySyncResult } from "./ingestion.js";
-import type { RegistryChainReader } from "./adapters/registry.js";
+import type { RegistryChainReader, RegistryFinalityMode } from "./adapters/registry.js";
 import type { IdentityCandidate, IngestionRepository } from "./types.js";
 
 export type Erc8004DirectRegistrySyncGates = {
@@ -27,8 +27,10 @@ export type DirectRegistrySyncJobOptions = {
   readonly chainId: number;
   readonly identityRegistry: string;
   readonly startBlock: number;
-  /** Must come from the standards lock; this seam has no fallback value. */
+  /** Must come from the standards lock; this seam has no fallback value. A
+   * finalized-tag policy uses zero only as the legacy checkpoint marker. */
   readonly confirmationThreshold: number;
+  readonly finalityMode?: RegistryFinalityMode;
   readonly indexerVersion?: string;
   readonly normalizedIngestionVersion?: string;
   readonly maxBlockRange?: number;
@@ -134,8 +136,16 @@ export class Erc8004DirectRegistrySyncJob {
     if (!Number.isSafeInteger(this.options.startBlock) || this.options.startBlock < 0) {
       throw ingestionError("REGISTRY_SYNC_CONFIG_INVALID", "The direct-sync start block is invalid.", "fix_registry_sync_configuration");
     }
-    if (!Number.isSafeInteger(this.options.confirmationThreshold) || this.options.confirmationThreshold < 0) {
+    const finalityMode = this.options.finalityMode ?? "confirmations";
+    if (finalityMode !== "rpc-finalized-tag" && finalityMode !== "confirmations") {
+      throw ingestionError("REGISTRY_FINALITY_UNRESOLVED", "The direct-sync finality policy is unresolved.", "resolve_registry_finality_lock");
+    }
+    if (!Number.isSafeInteger(this.options.confirmationThreshold) || this.options.confirmationThreshold < 0 ||
+      (finalityMode === "rpc-finalized-tag" && this.options.confirmationThreshold !== 0)) {
       throw ingestionError("REGISTRY_FINALITY_UNRESOLVED", "The direct-sync confirmation threshold is unresolved.", "resolve_registry_finality_lock");
+    }
+    if (finalityMode === "rpc-finalized-tag" && this.options.reader.getFinalizedBlockTag === undefined) {
+      throw ingestionError("REGISTRY_FINALITY_UNRESOLVED", "The configured reader cannot prove the BSC finalized RPC tag.", "configure_finalized_rpc_reader");
     }
 
     const sync = await this.ingestion.syncRegistry(this.options.reader, {
@@ -143,7 +153,8 @@ export class Erc8004DirectRegistrySyncJob {
       identityRegistry: this.registry,
       startBlock: this.options.startBlock,
       confirmationThreshold: this.options.confirmationThreshold,
-      ...(this.options.indexerVersion === undefined ? {} : { indexerVersion: this.options.indexerVersion }),
+      finalityMode,
+      indexerVersion: this.options.indexerVersion ?? (finalityMode === "rpc-finalized-tag" ? "registry-indexer-v2-finalized-tag" : "registry-indexer-v1"),
       ...(this.options.normalizedIngestionVersion === undefined ? {} : { normalizedIngestionVersion: this.options.normalizedIngestionVersion }),
       maxBlockRange: this.maxBlockRange,
       maxEvents: this.maxEvents,

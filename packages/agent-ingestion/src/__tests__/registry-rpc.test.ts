@@ -133,6 +133,43 @@ describe("configured read-only registry adapter", () => {
     await expect(reader.readIdentity(identity, { blockNumber: 10, blockHash })).rejects.toMatchObject({ code: "REORG_RECONCILIATION_REQUIRED" });
   });
 
+  it("proves BSC's finalized tag and binds default reads to the exact numeric block", async () => {
+    const definitions = createOfficialErc8004RegistryReadDefinitions({ expectedAbiSha256: officialErc8004IdentityAbiSha256 });
+    const calls: Array<{ readonly method: string; readonly params: readonly unknown[] }> = [];
+    const fetcher = async (_input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
+      const body = JSON.parse(String(init?.body)) as { readonly method: string; readonly id: number; readonly params?: readonly unknown[] };
+      const params = body.params ?? [];
+      calls.push({ method: body.method, params });
+      if (body.method === "eth_chainId") return rpcResponse("0x61", body.id);
+      if (body.method === "eth_getBlockByNumber") {
+        if (params[0] === "finalized") {
+          return rpcResponse({ number: "0xa", hash: blockHash, parentHash: `0x${"99".repeat(32)}` }, body.id);
+        }
+        if (params[0] === "0xa") return rpcResponse({ hash: blockHash }, body.id);
+      }
+      if (body.method === "eth_call") {
+        const request = params[0] as { readonly data?: unknown } | undefined;
+        if (request?.data === definitions.owner.calldata(identity)) return rpcResponse(addressResult("0x2222222222222222222222222222222222222222"), body.id);
+        if (request?.data === definitions.agentWallet.calldata(identity)) return rpcResponse(addressResult("0x0000000000000000000000000000000000000000"), body.id);
+        if (request?.data === definitions.agentUri.calldata(identity)) return rpcResponse(stringResult("https://agent.example/metadata.json"), body.id);
+      }
+      throw new Error(`unexpected request ${body.method} ${JSON.stringify(params)}`);
+    };
+    const reader = new JsonRpcRegistryChainReader({
+      chainId: 97,
+      identityRegistry: registry,
+      client: new JsonRpcClient("https://rpc.example.test", { fetch: fetcher }),
+      ...definitions,
+      readConsistency: "finalized"
+    });
+
+    await expect(reader.getFinalizedBlockTag()).resolves.toEqual({ blockNumber: 10, blockHash });
+    const state = await reader.readIdentity(identity);
+    expect(state).toMatchObject({ observedBlock: 10, observedBlockHash: blockHash, readConsistency: "finalized" });
+    expect(calls.filter((call) => call.method === "eth_call").every((call) => call.params[1] === "0xa")).toBe(true);
+    expect(calls.filter((call) => call.method === "eth_getBlockByNumber").some((call) => call.params[0] === "finalized")).toBe(true);
+  });
+
   it("reads all identity fields at a trusted explicit block with injected ABI decoders", async () => {
     const fetcher = async (_input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
       const body = JSON.parse(String(init?.body)) as { readonly method: string; readonly id: number };

@@ -63,6 +63,9 @@ export const runtimeConfigSchema = z.object({
   erc8004IngestionEnabled: z.boolean().default(false),
   erc8004ScanDiscoveryEnabled: z.boolean().default(false),
   marketplaceSemanticRetrievalEnabled: z.boolean().default(false),
+  /** Separate, explicitly labelled non-production escape hatch for a
+   * read-only semantic canary while the checked-in release gate is false. */
+  marketplaceSemanticCanaryEnabled: z.boolean().default(false),
   embedding: runtimeEmbeddingConfigSchema.nullable().default(null)
 }).superRefine((value, context) => {
   if (value.marketplaceSemanticRetrievalEnabled && value.embedding === null) {
@@ -75,6 +78,61 @@ export const runtimeConfigSchema = z.object({
 });
 
 export type RuntimeConfig = z.infer<typeof runtimeConfigSchema>;
+
+export type SemanticEmbeddingEnablement = "release" | "development-canary";
+
+export type SemanticEmbeddingLockValidation = {
+  readonly mode: SemanticEmbeddingEnablement;
+  readonly releaseEnabled: boolean;
+  readonly verificationStatus: string;
+};
+
+function record(value: unknown): Readonly<Record<string, unknown>> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : null;
+}
+
+/**
+ * Validate the checked-in semantic provider lock before a runtime can turn on
+ * vector generation/querying. The lock's `releaseEnabled=false` cannot be
+ * bypassed in preview/production; only an explicit development/test canary
+ * flag can select the separately labelled canary mode.
+ */
+export function validateSemanticEmbeddingLock(
+  lock: unknown,
+  runtime: RuntimeConfig
+): SemanticEmbeddingLockValidation {
+  const root = record(lock);
+  const embedding = record(root?.semanticEmbedding);
+  if (embedding === null || runtime.embedding === null) {
+    throw new Error("EMBEDDING_LOCK_UNRESOLVED");
+  }
+  const expected = {
+    provider: runtime.embedding.provider,
+    model: runtime.embedding.model,
+    modelVersion: runtime.embedding.modelVersion,
+    dimension: runtime.embedding.dimension
+  } as const;
+  for (const [field, value] of Object.entries(expected)) {
+    if (embedding[field] !== value) throw new Error("EMBEDDING_LOCK_MISMATCH");
+  }
+  if (typeof embedding.endpoint !== "string" || embedding.endpoint.trim().length === 0 ||
+    typeof embedding.semanticDocumentSchemaVersion !== "string" || embedding.semanticDocumentSchemaVersion.trim().length === 0 ||
+    typeof embedding.secretReference !== "string" || embedding.secretReference !== runtime.embedding.secretReference ||
+    typeof embedding.verificationStatus !== "string") {
+    throw new Error("EMBEDDING_LOCK_INCOMPLETE");
+  }
+  if (embedding.verificationStatus !== "verified-live-read-only-canary") {
+    throw new Error("EMBEDDING_LOCK_UNVERIFIED");
+  }
+  const releaseEnabled = embedding.releaseEnabled === true;
+  if (releaseEnabled) return { mode: "release", releaseEnabled, verificationStatus: embedding.verificationStatus };
+  const canaryAllowed = runtime.marketplaceSemanticCanaryEnabled === true &&
+    (runtime.nodeEnv === "test" || runtime.environment === "development");
+  if (!canaryAllowed) throw new Error("EMBEDDING_RELEASE_DISABLED");
+  return { mode: "development-canary", releaseEnabled, verificationStatus: embedding.verificationStatus };
+}
 
 type StringEnvironment = Record<string, string | undefined>;
 
@@ -159,6 +217,7 @@ export function loadRuntimeConfig(env: StringEnvironment = process.env): Runtime
     erc8004IngestionEnabled: parseFeatureGate(env.ERC8004_INGESTION_ENABLED),
     erc8004ScanDiscoveryEnabled: parseFeatureGate(env.ERC8004SCAN_DISCOVERY_ENABLED),
     marketplaceSemanticRetrievalEnabled: parseFeatureGate(env.MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED),
+    marketplaceSemanticCanaryEnabled: parseFeatureGate(env.MARKETPLACE_SEMANTIC_CANARY_ENABLED),
     embedding: embeddingConfigFromEnvironment(env)
   });
 }

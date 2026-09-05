@@ -115,6 +115,28 @@ describe("official direct registry event seam", () => {
         }
       }
     }, 97, officialErc8004IdentityAbiSha256)).toMatchObject({ confirmationThreshold: 12, identityRegistry: registry });
+    expect(resolveErc8004RegistrySyncConfig({
+      ...lock,
+      networks: {
+        "97": {
+          erc8004: {
+            ...lock.networks["97"].erc8004,
+            finality: {
+              mode: "rpc-finalized-tag",
+              blockTag: "finalized",
+              fallback: "disabled",
+              source: "https://docs.bnbchain.org/bnb-smart-chain/introduction/",
+              version: "bsc-client-test",
+              retrievedAt: "2026-09-05T00:00:00Z"
+            }
+          }
+        }
+      }
+    }, 97, officialErc8004IdentityAbiSha256)).toMatchObject({
+      finalityMode: "rpc-finalized-tag",
+      finalityBlockTag: "finalized",
+      confirmationThreshold: 0
+    });
   });
 
   it("fails closed before a provider call when either direct gate is disabled", async () => {
@@ -158,6 +180,54 @@ describe("official direct registry event seam", () => {
     expect(forwarded).toEqual(["eip155:97:0x1111111111111111111111111111111111111111:7"]);
     expect(result.sync?.checkpoint).toMatchObject({ lastScannedBlock: 10, lastFinalizedBlock: 10, lastScannedBlockHash: blockHash });
     expect((await repository.listObservations({ chainId: 97, identityRegistry: registry }))[0]?.confirmationState).toBe("canonical");
+  });
+
+  it("uses the finalized RPC block proof for the direct publication reread", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const finalizedReads: number[] = [];
+    const finalizedReader: RegistryChainReader = {
+      ...reader(),
+      async getFinalizedBlockTag() { return { blockNumber: 10, blockHash }; },
+      async readIdentity(readIdentityValue, blockTag) {
+        if (blockTag !== undefined) finalizedReads.push(blockTag.blockNumber);
+        expect(readIdentityValue).toEqual(identity);
+        return {
+          ownerAddress: owner,
+          agentWallet: null,
+          agentUri: "https://agent.example/finalized.json",
+          contentDigest: null,
+          observedBlock: 10,
+          observedBlockHash: blockHash,
+          readConsistency: "finalized",
+          ownerObservedBlock: 10,
+          agentWalletObservedBlock: 10,
+          agentUriObservedBlock: 10,
+          contentDigestObservedBlock: null
+        };
+      }
+    };
+    const job = new Erc8004DirectRegistrySyncJob({
+      repository,
+      reader: finalizedReader,
+      gates: { ERC8004_INGESTION_ENABLED: true, ERC8004_DIRECT_REGISTRY_SYNC_ENABLED: true },
+      chainId: 97,
+      identityRegistry: registry,
+      startBlock: 10,
+      confirmationThreshold: 0,
+      finalityMode: "rpc-finalized-tag",
+      maxBlockRange: 1,
+      maxEvents: 1
+    });
+    const result = await job.run();
+    expect(result.status).toBe("completed");
+    expect(finalizedReads).toEqual([10]);
+    expect(result.sync?.checkpoint).toMatchObject({
+      lastFinalizedBlock: 10,
+      lastFinalizedBlockHash: blockHash,
+      indexerVersion: "registry-indexer-v2-finalized-tag",
+      confirmationThreshold: 0
+    });
+    expect((await repository.findIdentity(identity))?.agentUri).toBe("https://agent.example/finalized.json");
   });
 
   it("rejects a provider read wider than the configured block bound", async () => {
