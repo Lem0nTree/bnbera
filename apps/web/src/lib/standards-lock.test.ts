@@ -1,17 +1,23 @@
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import nextConfig from "../../next.config.mjs";
 import {
+  parseStandardsLockContent,
   readStandardsLock,
-  standardsLockCandidates,
-  standardsLockUnavailableCode
+  standardsLockInvalidCode
 } from "./standards-lock";
 
-const repositoryRoot = fileURLToPath(new URL("../../../../", import.meta.url));
-const lockPath = fileURLToPath(new URL("../../../../config/standards.lock.json", import.meta.url));
+const originalCwd = process.cwd();
+
+afterEach(() => {
+  process.chdir(originalCwd);
+});
 
 describe("standards lock runtime loading", () => {
-  it("finds the repository lock from an app/package cwd", async () => {
-    const lock = await readStandardsLock({ cwd: `${repositoryRoot}/apps/web` });
+  it("loads the checked-in lock as a static bundle independent of cwd", async () => {
+    const lock = await readStandardsLock();
 
     expect(lock).toMatchObject({
       schemaVersion: 1,
@@ -24,30 +30,48 @@ describe("standards lock runtime loading", () => {
     });
   });
 
-  it("finds the repository lock from a generated Next-like bundle path", async () => {
-    const bundlePath = pathToFileURL(
-      `${repositoryRoot}/apps/web/.next/standalone/apps/web/.next/server/chunks/marketplace.js`
-    );
-    const candidates = standardsLockCandidates({
-      cwd: `${repositoryRoot}/apps/web/.next/standalone/apps/web`,
-      moduleUrl: bundlePath
-    });
-
-    expect(candidates).toContain(lockPath);
-    await expect(readStandardsLock({
-      cwd: `${repositoryRoot}/apps/web/.next/standalone/apps/web`,
-      moduleUrl: bundlePath
-    })).resolves.toMatchObject({ schemaVersion: 1 });
+  it("declares the checked-in lock for standalone output tracing", () => {
+    expect(nextConfig.outputFileTracingIncludes?.["/*"])
+      .toContain("../../config/standards.lock.json");
   });
 
-  it("fails with a stable code when no repository lock is reachable", async () => {
-    const missingRoot = `/tmp/bnbera-missing-lock-${process.pid}`;
-    await expect(readStandardsLock({
-      cwd: missingRoot,
-      moduleUrl: pathToFileURL(`${missingRoot}/.next/server/chunks/marketplace.js`)
-    })).rejects.toMatchObject({
-      name: standardsLockUnavailableCode,
-      message: standardsLockUnavailableCode
-    });
+  it("ignores a nearer attacker config that attempts to enable release semantics", async () => {
+    const attackerRoot = await mkdtemp(join(tmpdir(), "bnbera-lock-attacker-"));
+    try {
+      await mkdir(join(attackerRoot, "config"));
+      await writeFile(join(attackerRoot, "config", "standards.lock.json"), JSON.stringify({
+        schemaVersion: 1,
+        semanticEmbedding: {
+          provider: "attacker",
+          model: "attacker/model",
+          modelVersion: "attacker-v1",
+          dimension: 1,
+          releaseEnabled: true
+        }
+      }), "utf8");
+      process.chdir(attackerRoot);
+
+      await expect(readStandardsLock()).resolves.toMatchObject({
+        semanticEmbedding: {
+          provider: "openrouter",
+          releaseEnabled: false
+        }
+      });
+      await expect(readFile(join(attackerRoot, "config", "standards.lock.json"), "utf8"))
+        .resolves.toContain('"releaseEnabled":true');
+    } finally {
+      process.chdir(originalCwd);
+      await rm(attackerRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed on malformed lock content at the parsing boundary", () => {
+    let error: unknown;
+    try {
+      parseStandardsLockContent("{malformed");
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({ name: standardsLockInvalidCode, message: standardsLockInvalidCode });
   });
 });

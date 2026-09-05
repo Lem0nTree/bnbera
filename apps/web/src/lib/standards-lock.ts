@@ -1,75 +1,7 @@
-import { readFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const standardsLockRelativePath = join("config", "standards.lock.json");
-const maxAncestorSearchDepth = 12;
+import bundledStandardsLock from "../../../../config/standards.lock.json";
 
 export const standardsLockUnavailableCode = "STANDARDS_LOCK_UNAVAILABLE" as const;
 export const standardsLockInvalidCode = "STANDARDS_LOCK_INVALID" as const;
-
-export type StandardsLockLocationOptions = {
-  readonly cwd?: string;
-  readonly moduleUrl?: string | URL;
-};
-
-function moduleDirectory(moduleUrl: string | URL): string | null {
-  try {
-    if (typeof moduleUrl === "string" && !moduleUrl.startsWith("file:")) {
-      return dirname(isAbsolute(moduleUrl) ? moduleUrl : resolve(moduleUrl));
-    }
-    return dirname(fileURLToPath(moduleUrl));
-  } catch {
-    return null;
-  }
-}
-
-function ancestorDirectories(start: string): readonly string[] {
-  const directories: string[] = [];
-  let current = resolve(start);
-  for (let depth = 0; depth <= maxAncestorSearchDepth; depth += 1) {
-    directories.push(current);
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return directories;
-}
-
-/**
- * Return bounded candidates for the checked-in lock file.
- *
- * Next may execute this module from a generated `.next`/standalone chunk,
- * while development runs from the source tree. Searching from both the
- * process cwd and the module directory handles either layout without relying
- * on the source-file relative path surviving bundling.
- */
-export function standardsLockCandidates(
-  options: StandardsLockLocationOptions = {}
-): readonly string[] {
-  const starts = [
-    options.cwd ?? process.cwd(),
-    moduleDirectory(options.moduleUrl ?? import.meta.url)
-  ];
-  const candidates: string[] = [];
-  const seen = new Set<string>();
-  for (const start of starts) {
-    if (start === null || start.trim() === "") continue;
-    for (const directory of ancestorDirectories(start)) {
-      const candidate = join(directory, standardsLockRelativePath);
-      if (seen.has(candidate)) continue;
-      seen.add(candidate);
-      candidates.push(candidate);
-    }
-  }
-  return candidates;
-}
-
-function isMissingFile(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) return false;
-  const code = (error as { readonly code?: unknown }).code;
-  return code === "ENOENT" || code === "ENOTDIR";
-}
 
 function lockLoadError(code: string, cause?: unknown): Error {
   const error = new Error(code);
@@ -86,26 +18,30 @@ function lockLoadError(code: string, cause?: unknown): Error {
 }
 
 /**
- * Read and parse the standards lock without exposing candidate paths or file
- * contents in the resulting error. The caller still performs the authoritative
- * semantic-lock validation after loading.
+ * Parse a lock payload at a trusted build boundary. The production loader
+ * below receives the checked-in JSON as a static module import, so runtime
+ * cwd/module paths cannot replace the authoritative configuration.
  */
-export async function readStandardsLock(
-  options: StandardsLockLocationOptions = {}
-): Promise<unknown> {
-  for (const candidate of standardsLockCandidates(options)) {
-    let content: string;
-    try {
-      content = await readFile(candidate, "utf8");
-    } catch (error) {
-      if (isMissingFile(error)) continue;
-      throw lockLoadError(standardsLockUnavailableCode, error);
-    }
-    try {
-      return JSON.parse(content) as unknown;
-    } catch (error) {
-      throw lockLoadError(standardsLockInvalidCode, error);
-    }
+export function parseStandardsLockContent(content: string): unknown {
+  try {
+    return JSON.parse(content) as unknown;
+  } catch (error) {
+    throw lockLoadError(standardsLockInvalidCode, error);
   }
-  throw lockLoadError(standardsLockUnavailableCode);
+}
+
+function trustedBundledStandardsLock(): unknown {
+  if (typeof bundledStandardsLock !== "object" || bundledStandardsLock === null || Array.isArray(bundledStandardsLock)) {
+    throw lockLoadError(standardsLockInvalidCode);
+  }
+  return bundledStandardsLock;
+}
+
+/**
+ * Return the checked-in lock bundled by Next. Deliberately no cwd, URL or
+ * filesystem lookup is accepted at runtime: those locations are untrusted
+ * and must not be able to alter release gate decisions.
+ */
+export async function readStandardsLock(): Promise<unknown> {
+  return trustedBundledStandardsLock();
 }
