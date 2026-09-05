@@ -449,7 +449,7 @@ describe("MarketplaceReadService", () => {
       "VERIFICATION_PENDING"
     ]);
 
-    sourceNow = new Date("2026-09-02T12:01:31.000Z");
+    sourceNow = new Date("2026-09-02T12:02:36.000Z");
     const staleSnapshot = await source.read();
     expect(staleSnapshot.records[0]?.health).toMatchObject({
       endpointStatus: "unknown",

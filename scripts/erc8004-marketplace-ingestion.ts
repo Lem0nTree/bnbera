@@ -15,6 +15,8 @@ import {
   PgCategoryPredictionSink,
   PgVectorSemanticRepository,
   PostgresIngestionRepository,
+  PostgresMarketplaceIngestionState,
+  recordMarketplaceRetries,
   createEightHundredFourScanAdapter,
   createOfficialErc8004RegistryReadDefinitions,
   createEmbeddingProviderFromRuntimeConfig,
@@ -220,7 +222,8 @@ async function persistedCandidates(
   chainId: number,
   registry: string,
   excludeKeys: ReadonlySet<string>,
-  maxCandidates: number
+  maxCandidates: number,
+  isDue: (identityKey: string) => Promise<boolean>
 ): Promise<readonly IdentityCandidate[]> {
   const identities = [...await repository.listIdentities({ chainId, identityRegistry: registry })]
     .sort((left, right) => left.updatedAt.getTime() - right.updatedAt.getTime() || erc8004IdentityKey(left.identity).localeCompare(erc8004IdentityKey(right.identity)));
@@ -228,6 +231,7 @@ async function persistedCandidates(
   for (const record of identities) {
     const key = erc8004IdentityKey(record.identity);
     if (excludeKeys.has(key)) continue;
+    if (!(await isDue(key))) continue;
     const sources = (await repository.listSources(key))
       .filter((source) => allowedPersistedSources.has(source.source))
       .sort((left, right) => sourcePriority[left.source] - sourcePriority[right.source] || right.lastObservedAt.getTime() - left.lastObservedAt.getTime() || left.sourceReference.localeCompare(right.sourceReference));
@@ -325,10 +329,17 @@ async function main(): Promise<void> {
   const registry = lockedRegistry(lock, chainId);
   if (registry === null) throw new Error("REGISTRY_NOT_RESOLVED_FROM_STANDARDS_LOCK");
   const maxCandidates = boundedNumber("ERC8004_MARKETPLACE_MAX_CANDIDATES", 20, 1, 20);
+  const pageSize = boundedNumber("ERC8004_SCAN_PAGE_SIZE", Math.min(20, maxCandidates), 1, Math.min(100, maxCandidates));
+  const cursorScope = optionalText("ERC8004_MARKETPLACE_DISCOVERY_SCOPE") ?? `erc8004scan:marketplace:${chainId}`;
+  // The discovery wrapper stops at 240 seconds (with a 20 second kill grace).
+  // Leave enough time to reconcile candidate retry state before that outer
+  // timeout rather than letting the wrapper terminate the process mid-write.
+  const endToEndRunMs = boundedNumber("ERC8004_MARKETPLACE_MAX_RUN_MS", 180_000, 1_000, 220_000);
   const manual = parseManualCandidates(chainId, registry);
   const { reader: registryReader, summary: registrySummary } = buildRegistryReader(lock, chainId, registry);
   const repository = new PostgresIngestionRepository(runtime.databaseUrl, { ssl: runtime.databaseSsl });
   const { pool } = createDb(runtime.databaseUrl, { ssl: runtime.databaseSsl });
+  const state = new PostgresMarketplaceIngestionState(pool);
   let scanSummary: ScanSummary = {
     status: gates.ERC8004SCAN_DISCOVERY_ENABLED ? "failed" : "disabled",
     errorCode: gates.ERC8004SCAN_DISCOVERY_ENABLED ? "SCAN_NOT_ATTEMPTED" : null,
@@ -343,7 +354,16 @@ async function main(): Promise<void> {
     categories: [],
     diagnostics: []
   };
+  let cursor: Awaited<ReturnType<PostgresMarketplaceIngestionState["ensureDiscoveryCursor"]>>;
+  const runController = new AbortController();
+  const runTimeout = setTimeout(() => runController.abort(), endToEndRunMs);
   try {
+    cursor = await state.ensureDiscoveryCursor({
+      scope: cursorScope,
+      chainId,
+      identityRegistry: registry,
+      pageSize
+    });
     const scanCandidates: IdentityCandidate[] = [];
     const semanticCandidates: IdentityCandidate[] = [];
     let discoveryAdapter: ReturnType<typeof createEightHundredFourScanAdapter> | undefined;
@@ -360,14 +380,21 @@ async function main(): Promise<void> {
             ERC8004SCAN_DISCOVERY_ENABLED: true
           }
         });
+        // A caller-provided scope is only a stable prefix. Appending the
+        // persisted sweep/offset prevents a completed checkpoint from
+        // freezing the external cursor on the next scheduled invocation.
+        const scanScopePrefix = optionalText("ERC8004SCAN_JOB_SCOPE") ?? cursorScope;
+        const scanScope = `${scanScopePrefix.slice(0, 96)}:sweep:${cursor.sweep}:offset:${cursor.nextOffset}`;
         const scan = await job.run({
-          scope: optionalText("ERC8004SCAN_JOB_SCOPE") ?? `erc8004scan:marketplace:${chainId}`,
+          scope: scanScope,
           maxPages: boundedNumber("ERC8004SCAN_MAX_PAGES", 1, 1, 100),
           maxCandidates,
           maxRunMs: boundedNumber("ERC8004SCAN_MAX_RUN_MS", 120_000, 250, 600_000),
+          signal: runController.signal,
           query: {
             chainId,
-            limit: boundedNumber("ERC8004SCAN_PAGE_SIZE", Math.min(20, maxCandidates), 1, Math.min(100, maxCandidates)),
+            limit: pageSize,
+            offset: cursor.nextOffset,
             ...(optionalText("ERC8004_SCAN_SEARCH") === undefined ? {} : { search: optionalText("ERC8004_SCAN_SEARCH") }),
             ...(optionalText("ERC8004_SCAN_SUPPORTED_PROTOCOL") === undefined ? {} : { supportedProtocol: optionalText("ERC8004_SCAN_SUPPORTED_PROTOCOL") }),
             ...(optionalText("ERC8004_SCAN_IS_TESTNET") === undefined ? {} : { isTestnet: parseBoolean("ERC8004_SCAN_IS_TESTNET", false) })
@@ -375,17 +402,39 @@ async function main(): Promise<void> {
         });
         scanSummary = sanitizedScan(scan);
         for (const candidate of scan.candidates) scanCandidates.push(candidateFromScanIdentity(candidate.identity.identity, new Date()));
+        if (scan.checkpoint !== null) {
+          // A provider can return an already-completed checkpoint with no
+          // candidates after a process restart. Advance one bounded page in
+          // that case so a crash between fetch and cursor persistence cannot
+          // pin the sweep forever at the same offset.
+          const returned = scan.metrics.candidatesFetched > 0 || scan.checkpoint.completedAt === null
+            ? scan.metrics.candidatesFetched
+            : pageSize;
+          const providerNext = scan.checkpoint.nextOffset;
+          const nextOffset = providerNext ?? (
+            scan.checkpoint.total !== null && cursor.nextOffset + returned < scan.checkpoint.total
+              ? cursor.nextOffset + returned
+              : 0
+          );
+          await state.advanceDiscoveryCursor({
+            scope: cursorScope,
+            expectedOffset: cursor.nextOffset,
+            nextOffset,
+            total: scan.checkpoint.total,
+            pageAt: new Date()
+          });
+        }
       } catch (error) {
         scanSummary = { ...scanSummary, status: "failed", errorCode: safeErrorCode(error, "SCAN_JOB_FAILED") };
       }
-      if (discoveryAdapter !== undefined) {
+      if (discoveryAdapter !== undefined && !runController.signal.aborted) {
         try {
           const semantic = await new Erc8004SemanticCandidateCollector({
             adapter: discoveryAdapter,
             maxCandidatesPerCategory: boundedNumber("ERC8004SCAN_SEMANTIC_PAGE_SIZE", Math.min(5, maxCandidates), 1, 20),
             maxCandidates,
             maxRunMs: boundedNumber("ERC8004SCAN_SEMANTIC_MAX_RUN_MS", 120_000, 250, 600_000)
-          }).collect({ chainId, isTestnet: chainId === 97 });
+          }).collect({ chainId, isTestnet: chainId === 97, signal: runController.signal });
           semanticSummary = sanitizedSemantic({
             status: semantic.status,
             candidates: semantic.candidates.length,
@@ -404,11 +453,19 @@ async function main(): Promise<void> {
       }
     }
 
-    const initialCandidates = [...manual, ...scanCandidates];
+    const attemptedAt = new Date();
+    const initialCandidates: IdentityCandidate[] = [];
+    for (const candidate of [...manual, ...scanCandidates]) {
+      if (await state.isRetryDue(erc8004IdentityKey(candidate.identity), attemptedAt)) initialCandidates.push(candidate);
+    }
     const initialKeys = new Set<string>(initialCandidates.map((candidate) => erc8004IdentityKey(candidate.identity)));
-    const semanticFill = semanticCandidates.filter((candidate) => !initialKeys.has(erc8004IdentityKey(candidate.identity))).slice(0, Math.max(0, maxCandidates - initialKeys.size));
+    const semanticFill = (await Promise.all(semanticCandidates
+      .filter((candidate) => !initialKeys.has(erc8004IdentityKey(candidate.identity)))
+      .map(async (candidate) => (await state.isRetryDue(erc8004IdentityKey(candidate.identity), attemptedAt)) ? candidate : null)))
+      .filter((candidate): candidate is IdentityCandidate => candidate !== null)
+      .slice(0, Math.max(0, maxCandidates - initialKeys.size));
     const selectedKeys = new Set<string>([...initialCandidates, ...semanticFill].map((candidate) => erc8004IdentityKey(candidate.identity)));
-    const persisted = await persistedCandidates(repository, chainId, registry, selectedKeys, Math.max(0, maxCandidates - selectedKeys.size));
+    const persisted = await persistedCandidates(repository, chainId, registry, selectedKeys, Math.max(0, maxCandidates - selectedKeys.size), (identityKey) => state.isRetryDue(identityKey, attemptedAt));
     const candidates = [...initialCandidates, ...semanticFill, ...persisted];
     const metadataResolver = new BoundedMetadataResolver({
       ipfsGateways: (optionalText("ERC8004_IPFS_GATEWAYS") ?? "").split(",").map((value) => value.trim()).filter((value) => value.length > 0)
@@ -420,7 +477,8 @@ async function main(): Promise<void> {
     });
     const serviceProbe = new BoundedServiceProbe(probeTransport, {
       timeoutMs: boundedNumber("ERC8004_SERVICE_PROBE_TIMEOUT_MS", 5_000, 250, 30_000),
-      maxResponseBytes: boundedNumber("ERC8004_SERVICE_PROBE_MAX_BYTES", 64 * 1024, 1_024, 1_048_576)
+      maxResponseBytes: boundedNumber("ERC8004_SERVICE_PROBE_MAX_BYTES", 64 * 1024, 1_024, 1_048_576),
+      signal: runController.signal
     });
     const pipeline = new Erc8004Pipeline({
       repository,
@@ -474,9 +532,11 @@ async function main(): Promise<void> {
       ...(vectorRepository === undefined ? {} : { vectorRepository }),
       maxCandidates
     });
-    const composition = await runner.run({ candidates });
+    const composition = await runner.run({ candidates, signal: runController.signal });
+    const retrySummary = await recordMarketplaceRetries(state, composition.candidates, attemptedAt);
     process.stdout.write(`${JSON.stringify({
       status: composition.status,
+      budgetExpired: runController.signal.aborted,
       registry: registrySummary,
       scan: scanSummary,
       semanticDiscovery: semanticSummary,
@@ -484,11 +544,15 @@ async function main(): Promise<void> {
         candidateCount: composition.candidateCount,
         completedCount: composition.completedCount,
         failedCount: composition.failedCount,
+        retryRecorded: retrySummary.recorded,
+        retryRecordFailures: retrySummary.failures,
+        retryRecordFailureCodes: retrySummary.failureCodes,
         stageCounts: composition.stageCounts,
         reasons: composition.reasons
       }
     })}\n`);
   } finally {
+    clearTimeout(runTimeout);
     await repository.close();
     await pool.end();
   }

@@ -1,6 +1,6 @@
 # MVP runbook
 
-Scope: existing commands at `31d112f` and the small operational layer to add in T1. No command below installs a persistent cron job yet. Do not confuse a one-shot run with completed G1.
+Scope: existing commands at `31d112f` plus the T1 persistent operational layer. A one-shot run is still not a completed G1 acceptance.
 
 ## Existing local commands
 
@@ -38,9 +38,26 @@ This command writes retained observations and eligible listings. It is not a rea
 | Discovery/enrichment | Every five minutes | Separate process lock; resume provider cursor and due retries; bounded registry/metadata/category/vector/publication work |
 | Published-service health | Every minute | Separate lock/budget; refresh service observations without running vendor discovery or regenerating unchanged profiles |
 
-Use host cron and ordinary process locks. Persist progress/retry state in the existing DB. No broker or extra service is needed. T1 supplies exact installed commands, cron file, lock locations, timeouts and stop/recovery instructions after verification. Until then no persistent worker is claimed.
+Use host cron and ordinary `flock` process locks. The wrappers are [discovery.sh](../ops/marketplace-cron/discovery.sh), [health.sh](../ops/marketplace-cron/health.sh), and the reference [crontab](../ops/marketplace-cron/bnbera-marketplace.crontab). Discovery and health have independent lock files and timeouts; a provider timeout cannot hold the health lock. Progress is persisted in `scan_discovery_checkpoints` plus `marketplace_discovery_cursors`, and per-identity backoff/failure codes are in `marketplace_ingestion_retries`. Health rotates its persisted batch offset so a `maxAgents` bound does not permanently favor the oldest page. No broker or extra service is needed.
 
-At HEAD, health expires after 60 seconds. T1 changes browse staleness consistently to two minutes for minute-based cron, with real timestamps and immediate pre-action checks. T3 verifies expiry and recovery through the public API/UI.
+Apply the forward migration once, after the retained database has been backed up and on a disposable copy first:
+
+```bash
+node scripts/run-with-repo-env.mjs -- pnpm db:migrate
+```
+
+Install the two entries without replacing unrelated user cron jobs. This command removes only prior BNBEra wrapper lines, then installs the accepted checkout's absolute paths:
+
+```bash
+REPO_ROOT=/home/ubuntu/bnbera-w0-w1
+CRON_DIR="$REPO_ROOT/ops/marketplace-cron"
+(crontab -l 2>/dev/null | awk -v d="$CRON_DIR" 'index($0,d "/discovery.sh")==0 && index($0,d "/health.sh")==0'; \
+  printf '%s\n' "*/5 * * * * $CRON_DIR/discovery.sh" "* * * * * $CRON_DIR/health.sh") | crontab -
+```
+
+The wrappers create `.runtime/marketplace/{locks,logs}` (ignored by Git), load the root `.env` through `run-with-repo-env.mjs`, and log only bounded JSON status/reason codes. Discovery defaults to an end-to-end 180-second budget (`ERC8004_MARKETPLACE_MAX_RUN_MS`, bounded below the wrapper's 240-second timeout); on expiry it aborts provider work, preserves the last committed page/cursor, and records retry outcomes for completed composition candidates before exit. Test each job immediately with `"$CRON_DIR/discovery.sh"` and `"$CRON_DIR/health.sh"`; inspect status with `crontab -l`, `pgrep -af 'marketplace-(health|ingestion)'`, and `tail -n 40 "$REPO_ROOT/.runtime/marketplace/logs/health.log"`. Stop future invocations by removing only these two lines with the same `awk` filter and `crontab -`; an already-running process exits at its wrapper timeout. For recovery, preserve the DB, inspect the last safe error code/cursor, repair configuration or provider access, and rerun the affected wrapper. Do not delete cursors, retries, versions, or observations.
+
+Health observations expire from browse projections after two minutes, with real timestamps and immediate pre-action checks. T3 verifies expiry and recovery through the public API/UI.
 
 ## Verification and rollback
 

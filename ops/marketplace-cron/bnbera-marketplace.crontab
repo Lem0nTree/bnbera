@@ -1,0 +1,4 @@
+# BNBEra persistent marketplace jobs. Install the two wrapper paths from the
+# accepted checkout; each wrapper owns an independent flock and timeout.
+*/5 * * * * /absolute/path/to/repo/ops/marketplace-cron/discovery.sh
+* * * * * /absolute/path/to/repo/ops/marketplace-cron/health.sh

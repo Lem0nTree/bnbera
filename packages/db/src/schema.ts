@@ -438,6 +438,61 @@ export const scanDiscoveryCheckpoints = pgTable(
   ]
 );
 
+/**
+ * Marketplace discovery owns a small cursor in addition to the provider's
+ * page checkpoints. The provider checkpoint is immutable once it reaches the
+ * end of a page stream; this cursor lets the five-minute sweep start the next
+ * bounded page (and wrap only after a complete sweep) without re-reading the
+ * same first page forever.
+ */
+export const marketplaceDiscoveryCursors = pgTable(
+  "marketplace_discovery_cursors",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    scope: varchar("scope", { length: 160 }).notNull(),
+    chainId: integer("chain_id").notNull(),
+    identityRegistry: varchar("identity_registry", { length: 42 }).notNull(),
+    pageSize: integer("page_size").notNull(),
+    nextOffset: bigint("next_offset", { mode: "number" }).notNull().default(0),
+    total: bigint("total", { mode: "number" }),
+    sweep: integer("sweep").notNull().default(0),
+    lastPageAt: timestamp("last_page_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: now()
+  },
+  (table) => [
+    uniqueIndex("marketplace_discovery_cursor_scope_unique").on(table.scope),
+    index("marketplace_discovery_cursor_due_idx").on(table.updatedAt)
+  ]
+);
+
+/**
+ * Per-identity composition retry state. Failure state is intentionally kept
+ * separate from immutable marketplace versions and raw observations so a
+ * provider outage cannot churn listing history while still being retried with
+ * bounded backoff.
+ */
+export const marketplaceIngestionRetries = pgTable(
+  "marketplace_ingestion_retries",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    identityId: uuid("identity_id")
+      .notNull()
+      .references(() => erc8004Identities.id, { onDelete: "cascade" }),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull(),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
+    lastStage: varchar("last_stage", { length: 64 }),
+    lastErrorCode: varchar("last_error_code", { length: 64 }),
+    updatedAt: now()
+  },
+  (table) => [
+    uniqueIndex("marketplace_ingestion_retry_identity_unique").on(table.identityId),
+    index("marketplace_ingestion_retry_due_idx").on(table.nextAttemptAt, table.updatedAt)
+  ]
+);
+
 export const agentClaimEvents = pgTable(
   "agent_claim_events",
   {
@@ -1380,6 +1435,8 @@ export const schemaTables = {
   erc8004ChainObservations,
   chainIngestionCheckpoints,
   scanDiscoveryCheckpoints,
+  marketplaceDiscoveryCursors,
+  marketplaceIngestionRetries,
   agentClaimEvents,
   agentReorgReconciliations,
   agentTemplates,
