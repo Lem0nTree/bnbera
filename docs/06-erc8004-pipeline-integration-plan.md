@@ -163,7 +163,7 @@ The canary is read-only. It performs no wallet access, signing, transaction simu
 5. **Semantic index:** accept and pin provider/model/version/dimension, implement canonical documents, pgvector repository/backfill, fallback, and relevance measurements.
 6. **End-to-end verification:** run fixture CI, disposable database, API/browser path, and sanitized read-only canary; record release evidence.
 
-The pipeline gate passes only when stages A–H are wired together; deterministic tests are green; database/API/browser evidence is recorded; degradation is truthful; the vendor contract and embedding configuration are pinned; and rollback is exercised. Until then, leave the three feature gates disabled and retain the current deterministic marketplace/fixture behavior.
+The feature gates are accepted independently. Bounded deterministic ingestion may be enabled for a controlled database-backed preview after stages A–E and H are wired through an explicit marketplace-publication boundary, their R1 evidence passes, and rollback/disable behavior is exercised. Vendor discovery additionally requires the reviewed provider contract and release credential. Semantic retrieval additionally requires stage F/G vector wiring, a formally accepted provider/model/version/dimension lock, relevance evidence, and deterministic fallback. Continuous direct-event synchronization additionally requires its finality, checkpoint, reorg, replay, and reconciliation evidence. Until a gate passes its own criteria, leave that gate disabled; one incomplete enhancement must not force the Core Marketplace back to fixtures.
 
 ## 7. Rollback and disable procedure
 
