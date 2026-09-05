@@ -143,7 +143,7 @@ async function makeLegacyShape(connectionString: string): Promise<void> {
         DROP COLUMN IF EXISTS "observed_block_hash" CASCADE,
         DROP COLUMN IF EXISTS "read_consistency" CASCADE;
 
-      -- 0003 and 0004 are deliberately rewound below. Remove both T1
+      -- 0002, 0003, and 0004 are deliberately rewound below. Remove both T1
       -- scheduling tables from this disposable legacy shape so 0004 can be
       -- replayed instead of colliding with its original CREATE statements.
       DROP TABLE IF EXISTS "marketplace_ingestion_retries" CASCADE;
@@ -154,7 +154,7 @@ async function makeLegacyShape(connectionString: string): Promise<void> {
          SELECT id
            FROM drizzle.__drizzle_migrations
           ORDER BY id DESC
-          LIMIT 2
+          LIMIT 3
        );
     `);
   } catch {
