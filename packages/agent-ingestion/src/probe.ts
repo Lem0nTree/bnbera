@@ -288,6 +288,7 @@ function validateA2AAgentCard(
   const interfaces = body.supportedInterfaces;
   let interfaceCount = 0;
   let interfaceProtocolVersion: string | null = null;
+  const invocationUrls: string[] = [];
   if (interfaces !== undefined) {
     if (!Array.isArray(interfaces) || interfaces.length === 0 || interfaces.length > safeSummaryArrayLimit) {
       throw protocolError("SERVICE_A2A_AGENT_CARD_INVALID", "The A2A Agent Card has no valid supported interface.", "repair_agent_card");
@@ -295,7 +296,8 @@ function validateA2AAgentCard(
     for (const entry of interfaces) {
       const value = plainObject(entry);
       if (value === null) throw protocolError("SERVICE_A2A_AGENT_CARD_INVALID", "The A2A Agent Card interface is invalid.", "repair_agent_card");
-      assertEmbeddedServiceUrl(value.url, allowInsecureHttp, "SERVICE_A2A_AGENT_CARD_INVALID");
+      const invocationUrl = assertEmbeddedServiceUrl(value.url, allowInsecureHttp, "SERVICE_A2A_AGENT_CARD_INVALID");
+      invocationUrls.push(invocationUrl.toString());
       if (publicString(value.protocolBinding, 128) === null || publicString(value.protocolVersion, 64) === null) {
         throw protocolError("SERVICE_A2A_AGENT_CARD_INVALID", "The A2A Agent Card interface is missing its protocol binding or version.", "repair_agent_card");
       }
@@ -305,7 +307,8 @@ function validateA2AAgentCard(
   } else {
     // A2A 0.3 cards used `url`/`preferredTransport`; accept this documented
     // legacy shape but keep the compatibility fact in the safe summary.
-    assertEmbeddedServiceUrl(body.url, allowInsecureHttp, "SERVICE_A2A_AGENT_CARD_INVALID");
+    const invocationUrl = assertEmbeddedServiceUrl(body.url, allowInsecureHttp, "SERVICE_A2A_AGENT_CARD_INVALID");
+    invocationUrls.push(invocationUrl.toString());
     if (publicString(body.preferredTransport, 128) === null && publicString(service.protocolVersion, 64) === null) {
       throw protocolError("SERVICE_A2A_AGENT_CARD_INVALID", "The legacy A2A Agent Card has no transport declaration.", "repair_agent_card");
     }
@@ -354,6 +357,9 @@ function validateA2AAgentCard(
     protocol: "a2a",
     contract: "agent-card",
     valid: true,
+    cardUrl: service.url,
+    invocationUrls: [...new Set(invocationUrls)].slice(0, safeSummaryArrayLimit),
+    capabilityEvidence: "advertised-only",
     agentCardDigest: canonicalSha256Hex(body),
     agentName: name,
     agentVersion: version,
@@ -390,16 +396,33 @@ function validateReadiness(
 }
 
 function validateAdapter(body: Record<string, unknown>): Readonly<Record<string, unknown>> {
-  const markerKeys = ["protocol", "service", "capabilities", "agent", "schemaVersion"];
-  const present = markerKeys.filter((key) => Object.prototype.hasOwnProperty.call(body, key));
-  if (present.length === 0) {
-    throw protocolError("SERVICE_ADAPTER_CONTRACT_INVALID", "The reviewed adapter response has no protocol evidence.", "repair_service_contract");
+  // A marker-only object is not useful service evidence: arbitrary JSON often
+  // contains one of these keys. Accept a vendor-neutral, reviewed shape with
+  // an explicit protocol and structured advertised capabilities, without
+  // requiring agents to invent a BNBEra-specific manifest.
+  const protocol = publicString(body.protocol, 128);
+  const capabilities = body.capabilities;
+  if (protocol === null || !Array.isArray(capabilities) || capabilities.length === 0 || capabilities.length > safeSummaryArrayLimit) {
+    throw protocolError("SERVICE_ADAPTER_CONTRACT_INVALID", "The reviewed adapter response must expose a protocol and structured advertised capabilities.", "repair_service_contract");
+  }
+  const capabilityIds: string[] = [];
+  for (const capability of capabilities) {
+    const value = plainObject(capability);
+    const id = publicString(value?.id ?? value?.name, 160);
+    const description = publicString(value?.description, 2_000);
+    if (value === null || id === null || description === null) {
+      throw protocolError("SERVICE_ADAPTER_CONTRACT_INVALID", "The reviewed adapter capabilities must include an id or name and description.", "repair_service_contract");
+    }
+    capabilityIds.push(id);
   }
   return {
     protocol: "adapter",
     contract: "reviewed-adapter-json-v1",
     valid: true,
-    evidenceKeys: present.slice(0, safeSummaryArrayLimit),
+    advertisedProtocol: protocol,
+    capabilityEvidence: "advertised-only",
+    capabilityCount: capabilityIds.length,
+    capabilityIds,
     bodyDigest: canonicalSha256Hex(body)
   };
 }

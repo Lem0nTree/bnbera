@@ -438,6 +438,21 @@ describe("MarketplaceReadService", () => {
       latencyMs: 25,
       source: "agent-ingestion-probe"
     });
+    expect(snapshot.records[0]?.metrics?.uptime).toMatchObject({
+      status: "observed",
+      attemptedChecks: 3,
+      successfulChecks: 2,
+      successRatio: 2 / 3,
+      source: "agent-ingestion-probe"
+    });
+    expect(snapshot.records[0]?.metrics?.reviews).toMatchObject({
+      status: "unavailable",
+      count: null,
+      averageScore: null
+    });
+    expect(snapshot.records[0]?.serviceEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "mcp", advertisedUrl: alternateService.url, invocationUrls: [], testedSkills: [] })
+    ]));
 
     const response = await service(source).search();
 

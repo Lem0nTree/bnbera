@@ -86,6 +86,62 @@ const currentDataSchema = z.object({
   ).max(12)
 });
 
+const uptimeSchema = z.object({
+  status: z.enum(["observed", "unknown"]),
+  windowSeconds: z.number().int().positive().nullable(),
+  observedFrom: z.string().datetime({ offset: true }).nullable(),
+  observedTo: z.string().datetime({ offset: true }).nullable(),
+  attemptedChecks: z.number().int().nonnegative(),
+  successfulChecks: z.number().int().nonnegative(),
+  successRatio: z.number().min(0).max(1).nullable(),
+  source: z.string().trim().min(1).max(160).nullable()
+});
+
+const marketplaceMetricsSchema = z.object({
+  uptime: uptimeSchema,
+  reviews: z.object({
+    status: z.enum(["available", "unavailable", "unknown"]),
+    count: z.number().int().nonnegative().nullable(),
+    averageScore: z.number().min(0).max(100).nullable(),
+    source: z.string().trim().min(1).max(160).nullable(),
+    observedAt: z.string().datetime({ offset: true }).nullable()
+  }),
+  completedJobs: z.object({
+    status: z.enum(["available", "unavailable", "unknown"]),
+    completedCount: z.number().int().nonnegative().nullable(),
+    source: z.string().trim().min(1).max(160).nullable(),
+    observedAt: z.string().datetime({ offset: true }).nullable()
+  }),
+  lastResult: z.object({
+    status: z.enum(["available", "unavailable", "unknown"]),
+    summary: z.string().trim().min(1).max(500).nullable(),
+    reference: z.string().trim().min(1).max(500).nullable(),
+    source: z.string().trim().min(1).max(160).nullable(),
+    observedAt: z.string().datetime({ offset: true }).nullable()
+  }),
+  currentData: currentDataSchema
+});
+
+const skillEvidenceSchema = z.object({
+  id: z.string().trim().min(1).max(160),
+  name: z.string().trim().min(1).max(160),
+  description: z.string().trim().min(1).max(2_000)
+});
+
+const serviceEvidenceSchema = z.object({
+  kind: advertisedServiceSchema.shape.kind,
+  advertisedUrl: z.string().url(),
+  cardUrl: z.string().url().nullable(),
+  invocationUrls: z.array(z.string().url()).max(32),
+  advertisedSkills: z.array(skillEvidenceSchema).max(32),
+  testedSkills: z.array(skillEvidenceSchema).max(32),
+  testStatus: z.enum(["not_tested", "transport_only", "verified"]),
+  testedAt: z.string().datetime({ offset: true }).nullable()
+});
+
+export type MarketplaceMetricsReadModel = z.infer<typeof marketplaceMetricsSchema>;
+export type MarketplaceServiceEvidence = z.infer<typeof serviceEvidenceSchema>;
+
 /**
  * Endpoint probes are observations about an advertised service, not a
  * guarantee that the connected database or the agent will remain available.
@@ -196,6 +252,8 @@ export const marketplaceAgentReadModelSchema = z.object({
   authority: authoritySummarySchema,
   currentData: currentDataSchema,
   health: marketplaceEndpointHealthSchema,
+  metrics: marketplaceMetricsSchema,
+  serviceEvidence: z.array(serviceEvidenceSchema).max(128),
   evidence: evidenceSummarySchema,
   activation: activationSummarySchema,
   scoreExplanation: marketplaceScoreExplanationSchema,
@@ -547,6 +605,28 @@ function mapCard(
   refreshedAt: string | null = null
 ): MarketplaceAgentReadModel {
   const freshnessStatus = card.dataFreshness.status;
+  const metrics = card.metrics ?? {
+    uptime: {
+      status: "unknown" as const,
+      windowSeconds: null,
+      observedFrom: null,
+      observedTo: null,
+      attemptedChecks: 0,
+      successfulChecks: 0,
+      successRatio: null,
+      source: null
+    },
+    reviews: { status: "unavailable" as const, count: null, averageScore: null, source: null, observedAt: null },
+    completedJobs: { status: "unavailable" as const, completedCount: null, source: null, observedAt: null },
+    lastResult: { status: "unavailable" as const, summary: null, reference: null, source: null, observedAt: null },
+    currentData: {
+      status: "unavailable" as const,
+      summary: "No current data observation is available.",
+      observedAt: null,
+      source: null,
+      items: []
+    }
+  };
   return marketplaceAgentReadModelSchema.parse({
     id: card.identityKey,
     slug: card.slug,
@@ -571,15 +651,11 @@ function mapCard(
       source: card.dataFreshness.source ?? card.health.source ?? "marketplace read model"
     },
     health: card.health,
+    metrics,
+    serviceEvidence: card.serviceEvidence ?? [],
     pricing: mapPricing(card),
     authority: mapAuthority(card),
-    currentData: {
-      status: "unavailable",
-      summary: card.fixture !== null
-        ? "Current financial data is not included in a development fixture."
-        : "No current financial data is exposed by this read model; freshness alone is not a value observation.",
-      items: []
-    },
+    currentData: metrics.currentData,
     evidence: mapEvidence(card),
     activation: mapActivation(card),
     dataProvenance: mapProvenance(card, mode, refreshedAt)

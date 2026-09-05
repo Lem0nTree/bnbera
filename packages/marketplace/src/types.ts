@@ -119,6 +119,146 @@ export const marketplaceHealthSchema = z.object({
 
 export type MarketplaceHealth = z.infer<typeof marketplaceHealthSchema>;
 
+const marketplaceMetricStatusSchema = z.enum(["available", "unavailable", "unknown"]);
+
+/**
+ * Probe history is deliberately described as observed samples, not as a
+ * synthetic SLA. A null window/coverage means that the source did not have
+ * enough persisted observations to make even a bounded availability claim.
+ */
+export const marketplaceUptimeSchema = z.object({
+  status: z.enum(["observed", "unknown"]),
+  windowSeconds: z.number().int().positive().nullable(),
+  observedFrom: isoDateSchema.nullable(),
+  observedTo: isoDateSchema.nullable(),
+  attemptedChecks: z.number().int().nonnegative(),
+  successfulChecks: z.number().int().nonnegative(),
+  successRatio: z.number().min(0).max(1).nullable(),
+  source: z.string().trim().min(1).max(160).nullable()
+}).superRefine((value, context) => {
+  if (value.status === "observed" && (value.windowSeconds === null || value.observedFrom === null || value.observedTo === null)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["observedFrom"],
+      message: "Observed uptime samples must include a bounded observation window"
+    });
+  }
+  if (value.successfulChecks > value.attemptedChecks) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["successfulChecks"],
+      message: "Successful checks cannot exceed attempted checks"
+    });
+  }
+  if (value.attemptedChecks === 0 && value.successRatio !== null) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["successRatio"],
+      message: "An empty sample cannot have a success ratio"
+    });
+  }
+});
+
+export type MarketplaceUptime = z.infer<typeof marketplaceUptimeSchema>;
+
+export const marketplaceReviewMetricsSchema = z.object({
+  status: marketplaceMetricStatusSchema,
+  count: z.number().int().nonnegative().nullable(),
+  averageScore: z.number().min(0).max(100).nullable(),
+  source: z.string().trim().min(1).max(160).nullable(),
+  observedAt: isoDateSchema.nullable()
+});
+
+export type MarketplaceReviewMetrics = z.infer<typeof marketplaceReviewMetricsSchema>;
+
+export const marketplaceJobMetricsSchema = z.object({
+  status: marketplaceMetricStatusSchema,
+  completedCount: z.number().int().nonnegative().nullable(),
+  source: z.string().trim().min(1).max(160).nullable(),
+  observedAt: isoDateSchema.nullable()
+});
+
+export type MarketplaceJobMetrics = z.infer<typeof marketplaceJobMetricsSchema>;
+
+export const marketplaceLastResultSchema = z.object({
+  status: marketplaceMetricStatusSchema,
+  summary: z.string().trim().min(1).max(500).nullable(),
+  reference: z.string().trim().min(1).max(500).nullable(),
+  source: z.string().trim().min(1).max(160).nullable(),
+  observedAt: isoDateSchema.nullable()
+});
+
+export type MarketplaceLastResult = z.infer<typeof marketplaceLastResultSchema>;
+
+export const marketplaceCurrentDataSchema = z.object({
+  status: z.enum(["available", "stale", "unavailable"]),
+  summary: z.string().trim().min(1).max(500),
+  observedAt: isoDateSchema.nullable(),
+  source: z.string().trim().min(1).max(160).nullable(),
+  items: z.array(z.object({
+    label: z.string().trim().min(1).max(120),
+    value: z.string().trim().min(1).max(240),
+    source: z.string().trim().min(1).max(160)
+  })).max(12)
+});
+
+export type MarketplaceCurrentData = z.infer<typeof marketplaceCurrentDataSchema>;
+
+export const marketplaceMetricsSchema = z.object({
+  uptime: marketplaceUptimeSchema,
+  reviews: marketplaceReviewMetricsSchema,
+  completedJobs: marketplaceJobMetricsSchema,
+  lastResult: marketplaceLastResultSchema,
+  currentData: marketplaceCurrentDataSchema
+});
+
+export type MarketplaceMetrics = z.infer<typeof marketplaceMetricsSchema>;
+
+const marketplaceSkillEvidenceSchema = z.object({
+  id: z.string().trim().min(1).max(160),
+  name: z.string().trim().min(1).max(160),
+  description: z.string().trim().min(1).max(2_000)
+});
+
+export const marketplaceServiceEvidenceSchema = z.object({
+  kind: advertisedServiceSchema.shape.kind,
+  advertisedUrl: z.string().url(),
+  /** A2A Agent Card URL, distinct from the endpoint used to invoke it. */
+  cardUrl: z.string().url().nullable(),
+  invocationUrls: z.array(z.string().url()).max(32),
+  advertisedSkills: z.array(marketplaceSkillEvidenceSchema).max(32),
+  testedSkills: z.array(marketplaceSkillEvidenceSchema).max(32),
+  testStatus: z.enum(["not_tested", "transport_only", "verified"]),
+  testedAt: isoDateSchema.nullable()
+});
+
+export type MarketplaceServiceEvidence = z.infer<typeof marketplaceServiceEvidenceSchema>;
+
+function unknownMarketplaceMetrics(): MarketplaceMetrics {
+  return marketplaceMetricsSchema.parse({
+    uptime: {
+      status: "unknown",
+      windowSeconds: null,
+      observedFrom: null,
+      observedTo: null,
+      attemptedChecks: 0,
+      successfulChecks: 0,
+      successRatio: null,
+      source: null
+    },
+    reviews: { status: "unavailable", count: null, averageScore: null, source: null, observedAt: null },
+    completedJobs: { status: "unavailable", completedCount: null, source: null, observedAt: null },
+    lastResult: { status: "unavailable", summary: null, reference: null, source: null, observedAt: null },
+    currentData: {
+      status: "unavailable",
+      summary: "No current data observation is available.",
+      observedAt: null,
+      source: null,
+      items: []
+    }
+  });
+}
+
 export const marketplaceFreshnessSchema = z.object({
   status: z.enum(["fresh", "stale", "unknown"]),
   observedAt: isoDateSchema.nullable(),
@@ -262,6 +402,9 @@ export const marketplaceListingMetadataSchema = z.object({
   authority: marketplaceAuthoritySchema,
   executionEvidence: marketplaceExecutionEvidenceSchema,
   activationOffer: marketplaceActivationOfferSchema,
+  /** Optional at input boundaries; parseMarketplaceMetadata fills an explicit
+   * unavailable projection when no enrichment observation exists. */
+  metrics: marketplaceMetricsSchema.optional(),
   fixture: fixtureMetadataSchema.nullable()
 });
 
@@ -292,6 +435,9 @@ export const marketplaceListingInputSchema = z.object({
   authority: marketplaceAuthoritySchema,
   executionEvidence: marketplaceExecutionEvidenceSchema,
   activationOffer: marketplaceActivationOfferSchema,
+  /** Service probes and enrichment are separate from the advertised contract. */
+  metrics: marketplaceMetricsSchema.optional(),
+  serviceEvidence: z.array(marketplaceServiceEvidenceSchema).max(128).optional(),
   provenance: marketplaceProvenanceSchema,
   fixture: fixtureMetadataSchema.nullable()
 });
@@ -432,11 +578,19 @@ export function parseMarketplaceListing(input: unknown): MarketplaceListingInput
   } else if (provenanceFixture !== null || listingFixture !== null) {
     throw new Error("Ingestion marketplace listings cannot carry fixture markers");
   }
-  return listing;
+  return {
+    ...listing,
+    metrics: listing.metrics ?? unknownMarketplaceMetrics(),
+    serviceEvidence: listing.serviceEvidence ?? []
+  };
 }
 
 export function parseMarketplaceMetadata(input: unknown): MarketplaceListingMetadata {
-  return marketplaceListingMetadataSchema.parse(input);
+  const metadata = marketplaceListingMetadataSchema.parse(input);
+  return {
+    ...metadata,
+    metrics: metadata.metrics ?? unknownMarketplaceMetrics()
+  };
 }
 
 export function parseMarketplaceSearchRequest(input: unknown = {}): MarketplaceSearchRequest {

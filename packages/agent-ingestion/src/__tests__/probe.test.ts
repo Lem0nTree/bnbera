@@ -99,6 +99,9 @@ describe("bounded advertised-service probes", () => {
         contract: "agent-card",
         skillCount: 1,
         interfaceCount: 1,
+        cardUrl: "https://agent.example/.well-known/agent-card.json",
+        invocationUrls: ["https://agent.example/a2a"],
+        capabilityEvidence: "advertised-only",
         skills: [{ id: "status", name: "Status", description: "Reports status.", tags: ["health"] }]
       }
     });
@@ -109,6 +112,32 @@ describe("bounded advertised-service probes", () => {
     });
     await expect(genericJson.probe({ kind: "a2a", url: "https://agent.example/.well-known/agent-card.json", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
       .rejects.toMatchObject({ code: "SERVICE_A2A_AGENT_CARD_INVALID" });
+  });
+
+  it("requires structured adapter capability evidence instead of marker-only JSON", async () => {
+    const invalid = new HttpServiceProbeTransport({
+      fetch: async () => new Response(JSON.stringify({ protocol: "vendor", capabilities: { status: true } }), { status: 200, headers: { "content-type": "application/json" } }),
+      lookup: async () => [{ address: "93.184.216.34", family: 4 }]
+    });
+    await expect(invalid.probe({ kind: "adapter", url: "https://agent.example/adapter", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
+      .rejects.toMatchObject({ code: "SERVICE_ADAPTER_CONTRACT_INVALID" });
+
+    const valid = new HttpServiceProbeTransport({
+      fetch: async () => new Response(JSON.stringify({
+        protocol: "vendor-read-only-v1",
+        capabilities: [{ id: "health", description: "Reports public health." }]
+      }), { status: 200, headers: { "content-type": "application/json" } }),
+      lookup: async () => [{ address: "93.184.216.34", family: 4 }]
+    });
+    await expect(valid.probe({ kind: "adapter", url: "https://agent.example/adapter", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
+      .resolves.toMatchObject({
+        contractStatus: "healthy",
+        safeCapabilityProbe: {
+          capabilityEvidence: "advertised-only",
+          capabilityCount: 1,
+          capabilityIds: ["health"]
+        }
+      });
   });
 
   it("uses MCP GET semantics, validates readiness, and never guesses auth", async () => {
