@@ -594,17 +594,21 @@ function parseCompositeAgentId(value: string): { readonly chainId: number; reado
 
 function normalizeOfficialServices(value: unknown): readonly unknown[] {
   const result: unknown[] = [];
-  const push = (kind: string, descriptor: unknown): void => {
+  const push = (kind: string | undefined, descriptor: unknown): void => {
     const object = typeof descriptor === "object" && descriptor !== null && !Array.isArray(descriptor) ? descriptor as Record<string, unknown> : { url: descriptor };
     const url = asString(object.url) ?? asString(object.endpoint) ?? asString(object.server) ?? asString(object.mcp_server) ?? asString(object.a2a_endpoint);
-    if (url === undefined) return;
-    const protocolVersion = asString(object.protocolVersion) ?? asString(object.version) ?? "unknown";
+    const protocolVersion = asString(object.protocolVersion) ?? asString(object.protocol_version) ?? asString(object.version);
+    // A vendor summary is not allowed to acquire a generic service kind or
+    // protocol version here. Unsupported descriptors remain absent and are
+    // reported by the bounded ingestion/reconciliation stages instead of
+    // becoming apparently usable observations.
+    if (kind === undefined || url === undefined || protocolVersion === undefined) return;
     result.push({ kind: kind.toLowerCase(), url, protocolVersion });
   };
   if (Array.isArray(value)) {
     for (const descriptor of value) {
       const object = typeof descriptor === "object" && descriptor !== null ? descriptor as Record<string, unknown> : {};
-      push(asString(object.kind) ?? asString(object.type) ?? "adapter", descriptor);
+      push(asString(object.kind) ?? asString(object.type), descriptor);
     }
   } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
     for (const [kind, descriptor] of Object.entries(value as Record<string, unknown>)) push(kind, descriptor);
@@ -613,28 +617,50 @@ function normalizeOfficialServices(value: unknown): readonly unknown[] {
 }
 
 function normalizeOfficialCapabilities(value: unknown): unknown | undefined {
+  const record = typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
   const candidates: readonly unknown[] | null = Array.isArray(value)
     ? value
-    : typeof value === "object" && value !== null && Array.isArray((value as Record<string, unknown>).capabilities)
-      ? (value as Record<string, unknown>).capabilities as readonly unknown[]
+    : record !== null && Array.isArray(record.capabilities)
+      ? record.capabilities
       : null;
   if (candidates === null || candidates.length === 0) return undefined;
-  const capabilities = candidates.flatMap((candidate) => {
-    if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return [];
+  const capabilities = candidates.map((candidate) => {
+    if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return null;
     const object = candidate as Record<string, unknown>;
     const id = asString(object.id) ?? asString(object.name);
     const description = asString(object.description);
-    if (id === undefined || description === undefined) return [];
-    return [{
+    const inputSchema = object.inputSchema;
+    const outputSchema = object.outputSchema;
+    const requiredProtocols = object.requiredProtocols;
+    const allowedActions = object.allowedActions;
+    const maxTaskBounds = object.maxTaskBounds;
+    if (
+      id === undefined ||
+      description === undefined ||
+      typeof inputSchema !== "object" || inputSchema === null || Array.isArray(inputSchema) ||
+      typeof outputSchema !== "object" || outputSchema === null || Array.isArray(outputSchema) ||
+      (requiredProtocols !== undefined && (!Array.isArray(requiredProtocols) || requiredProtocols.some((item) => typeof item !== "string"))) ||
+      (allowedActions !== undefined && (!Array.isArray(allowedActions) || allowedActions.some((item) => typeof item !== "string"))) ||
+      (maxTaskBounds !== undefined && (typeof maxTaskBounds !== "object" || maxTaskBounds === null || Array.isArray(maxTaskBounds)))
+    ) return null;
+    return {
       id,
       description,
-      inputSchema: typeof object.inputSchema === "object" && object.inputSchema !== null ? object.inputSchema : { type: "object" },
-      outputSchema: typeof object.outputSchema === "object" && object.outputSchema !== null ? object.outputSchema : { type: "object" },
-      requiredProtocols: Array.isArray(object.requiredProtocols) ? object.requiredProtocols.filter((item): item is string => typeof item === "string") : [],
-      allowedActions: Array.isArray(object.allowedActions) ? object.allowedActions.filter((item): item is string => typeof item === "string") : []
-    }];
+      inputSchema,
+      outputSchema,
+      requiredProtocols: requiredProtocols === undefined ? [] : requiredProtocols,
+      allowedActions: allowedActions === undefined ? [] : allowedActions,
+      ...(maxTaskBounds === undefined ? {} : { maxTaskBounds })
+    };
   });
-  return capabilities.length === 0 ? undefined : { schemaVersion: "8004scan-capabilities-v1", capabilities };
+  if (capabilities.some((capability) => capability === null)) return undefined;
+  const schemaVersion = record === null || record.schemaVersion === undefined
+    ? "8004scan-capabilities-v1"
+    : asString(record.schemaVersion);
+  if (schemaVersion === undefined) return undefined;
+  return { schemaVersion, capabilities };
 }
 
 /** Strict mapper for the reviewed `AgentSummary` response shape. */

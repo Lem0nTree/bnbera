@@ -1,0 +1,406 @@
+import { readFile } from "node:fs/promises";
+import { loadRuntimeConfig } from "../packages/config/src/runtime.ts";
+import {
+  BoundedMetadataResolver,
+  BoundedServiceProbe,
+  Erc8004MarketplaceCompositionRunner,
+  Erc8004Pipeline,
+  Erc8004ScanJob,
+  EightHundredFourScanHttpClient,
+  HttpServiceProbeTransport,
+  JsonRpcClient,
+  JsonRpcRegistryChainReader,
+  ManualImportAdapter,
+  PgCategoryPredictionSink,
+  PostgresIngestionRepository,
+  createEightHundredFourScanAdapter,
+  createOfficialErc8004RegistryReadDefinitions,
+  readErc8004PipelineGates,
+  type IdentityCandidate,
+  type IngestionSource,
+  type MarketplaceCompositionPublicationResult,
+  type RegistryChainReader
+} from "../packages/agent-ingestion/src/index.ts";
+import { PostgresMarketplacePublicationService } from "../packages/marketplace/src/index.ts";
+import { createDb } from "../packages/db/src/client.ts";
+import {
+  erc8004IdentityKey,
+  normalizeErc8004Identity,
+  normalizeEvmAddress,
+  type Erc8004Identity
+} from "../packages/domain/src/index.ts";
+
+type LockNetwork = {
+  readonly erc8004?: {
+    readonly identityRegistry?: unknown;
+    readonly abiHashes?: { readonly identityRegistry?: unknown };
+  };
+};
+
+type RuntimeStandardsLock = {
+  readonly networks?: Readonly<Record<string, LockNetwork>>;
+};
+
+type ScanSummary = {
+  readonly status: "disabled" | "completed" | "partial" | "failed";
+  readonly errorCode: string | null;
+  readonly pagesFetched: number;
+  readonly candidatesFetched: number;
+  readonly candidatesCommitted: number;
+  readonly checkpoint: {
+    readonly pagesProcessed: number;
+    readonly candidatesProcessed: number;
+    readonly cursorVersion: number;
+    readonly completedAt: string | null;
+  } | null;
+};
+
+type RegistrySummary = {
+  readonly configured: boolean;
+  readonly readConsistency: "provisional";
+  readonly reason: string | null;
+};
+
+const allowedPersistedSources = new Set<IngestionSource>(["8004scan", "registry_event", "manual"]);
+const sourcePriority: Readonly<Record<IngestionSource, number>> = {
+  manual: 0,
+  "8004scan": 1,
+  registry_event: 2,
+  creator: 3
+};
+
+function optionalText(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value === undefined || value.length === 0 ? undefined : value;
+}
+
+function boundedNumber(name: string, fallback: number, minimum: number, maximum: number): number {
+  const value = optionalText(name);
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) throw new Error(`${name} is outside its safe bound`);
+  return parsed;
+}
+
+function parseBoolean(name: string, fallback: boolean): boolean {
+  const value = optionalText(name);
+  if (value === undefined) return fallback;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`${name} must be true or false`);
+}
+
+function safeErrorCode(error: unknown, fallback: string): string {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    const code = (error as { readonly code?: unknown }).code;
+    if (typeof code === "string" && /^[A-Z][A-Z0-9_]{2,63}$/u.test(code)) return code;
+  }
+  return fallback;
+}
+
+function parseLock(value: unknown): RuntimeStandardsLock {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("STANDARDS_LOCK_INVALID");
+  return value as RuntimeStandardsLock;
+}
+
+async function readStandardsLock(): Promise<RuntimeStandardsLock> {
+  try {
+    return parseLock(JSON.parse(await readFile(new URL("../config/standards.lock.json", import.meta.url), "utf8")) as unknown);
+  } catch (error) {
+    if (error instanceof Error && error.message === "STANDARDS_LOCK_INVALID") throw error;
+    throw new Error("STANDARDS_LOCK_UNAVAILABLE");
+  }
+}
+
+function lockedRegistry(lock: RuntimeStandardsLock, chainId: number): string | null {
+  const value = lock.networks?.[String(chainId)]?.erc8004?.identityRegistry;
+  if (typeof value !== "string") return null;
+  try {
+    return normalizeEvmAddress(value);
+  } catch {
+    return null;
+  }
+}
+
+function lockedAbiHash(lock: RuntimeStandardsLock, chainId: number): string | null {
+  const value = lock.networks?.[String(chainId)]?.erc8004?.abiHashes?.identityRegistry;
+  return typeof value === "string" && /^[0-9a-f]{64}$/iu.test(value) ? value.toLowerCase() : null;
+}
+
+function rpcEndpoint(chainId: number): string | undefined {
+  return optionalText(chainId === 56 ? "BSC_MAINNET_RPC_URL" : "BSC_TESTNET_RPC_URL");
+}
+
+function manualIdentityFromKey(value: string, chainId: number, registry: string): Erc8004Identity {
+  const match = /^([^:]+):([0-9]+):(0x[0-9a-f]{40}):([0-9]+)$/iu.exec(value.trim());
+  if (match === null) throw new Error("MANUAL_IDENTITY_INVALID");
+  const identity = normalizeErc8004Identity({
+    namespace: match[1],
+    chainId: Number(match[2]),
+    identityRegistry: match[3],
+    agentId: match[4]
+  });
+  if (identity.chainId !== chainId || identity.identityRegistry !== registry) throw new Error("MANUAL_IDENTITY_NETWORK_MISMATCH");
+  return identity;
+}
+
+function manualImportCandidate(value: unknown, chainId: number, registry: string, index: number): IdentityCandidate {
+  const adapter = new ManualImportAdapter();
+  if (typeof value === "string") {
+    const identity = manualIdentityFromKey(value, chainId, registry);
+    return adapter.normalize({ identity, importReference: `manual:${erc8004IdentityKey(identity)}:${index}` });
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("MANUAL_IMPORT_INVALID");
+  const record = value as Record<string, unknown>;
+  const identityValue = typeof record.identity === "string"
+    ? manualIdentityFromKey(record.identity, chainId, registry)
+    : record.identity;
+  const identity = normalizeErc8004Identity(identityValue);
+  if (identity.chainId !== chainId || identity.identityRegistry !== registry) throw new Error("MANUAL_IDENTITY_NETWORK_MISMATCH");
+  const importReference = typeof record.importReference === "string" && record.importReference.trim().length > 0
+    ? record.importReference
+    : `manual:${erc8004IdentityKey(identity)}:${index}`;
+  return adapter.normalize({
+    identity,
+    importReference,
+    ...(record.importedAt === undefined ? {} : { importedAt: new Date(String(record.importedAt)) }),
+    ...(record.metadata === undefined ? {} : { metadata: record.metadata as Readonly<Record<string, unknown>> }),
+    ...(record.services === undefined ? {} : { services: record.services as readonly unknown[] }),
+    ...(record.capabilityManifest === undefined ? {} : { capabilityManifest: record.capabilityManifest })
+  });
+}
+
+function parseManualCandidates(chainId: number, registry: string): readonly IdentityCandidate[] {
+  const raw = optionalText("ERC8004_MANUAL_IDENTITIES");
+  if (raw === undefined) return [];
+  let values: readonly unknown[];
+  if (raw.startsWith("[")) {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) throw new Error("MANUAL_IMPORT_INVALID");
+    values = parsed;
+  } else {
+    values = raw.split(/[\n,]/u).map((value) => value.trim()).filter((value) => value.length > 0);
+  }
+  if (values.length > 20) throw new Error("MANUAL_IMPORT_BOUND_EXCEEDED");
+  return values.map((value, index) => manualImportCandidate(value, chainId, registry, index));
+}
+
+function candidateFromScanIdentity(identity: Erc8004Identity, observedAt: Date): IdentityCandidate {
+  return {
+    identity,
+    source: "8004scan",
+    sourceReference: `agent:${identity.chainId}:${identity.identityRegistry}:${identity.agentId}`,
+    observedAt,
+    normalizedIngestionVersion: "8004scan-openapi-0.4.363-v1"
+  };
+}
+
+async function persistedCandidates(
+  repository: PostgresIngestionRepository,
+  chainId: number,
+  registry: string,
+  excludeKeys: ReadonlySet<string>,
+  maxCandidates: number
+): Promise<readonly IdentityCandidate[]> {
+  const identities = [...await repository.listIdentities({ chainId, identityRegistry: registry })]
+    .sort((left, right) => left.updatedAt.getTime() - right.updatedAt.getTime() || erc8004IdentityKey(left.identity).localeCompare(erc8004IdentityKey(right.identity)));
+  const candidates: IdentityCandidate[] = [];
+  for (const record of identities) {
+    const key = erc8004IdentityKey(record.identity);
+    if (excludeKeys.has(key)) continue;
+    const sources = (await repository.listSources(key))
+      .filter((source) => allowedPersistedSources.has(source.source))
+      .sort((left, right) => sourcePriority[left.source] - sourcePriority[right.source] || right.lastObservedAt.getTime() - left.lastObservedAt.getTime() || left.sourceReference.localeCompare(right.sourceReference));
+    const source = sources[0];
+    if (source === undefined) continue;
+    candidates.push({
+      identity: record.identity,
+      source: source.source,
+      sourceReference: source.sourceReference,
+      observedAt: source.lastObservedAt,
+      ...(source.rawResponseDigest === null ? {} : { rawResponseDigest: source.rawResponseDigest }),
+      normalizedIngestionVersion: source.normalizedIngestionVersion
+    });
+    if (candidates.length >= maxCandidates) break;
+  }
+  return candidates;
+}
+
+function buildRegistryReader(lock: RuntimeStandardsLock, chainId: number, registry: string): { readonly reader: RegistryChainReader | undefined; readonly summary: RegistrySummary } {
+  const endpoint = rpcEndpoint(chainId);
+  const abiHash = lockedAbiHash(lock, chainId);
+  if (endpoint === undefined) return { reader: undefined, summary: { configured: false, readConsistency: "provisional", reason: "RPC_ENDPOINT_MISSING" } };
+  if (abiHash === null) return { reader: undefined, summary: { configured: false, readConsistency: "provisional", reason: "ABI_HASH_UNRESOLVED" } };
+  try {
+    const definitions = createOfficialErc8004RegistryReadDefinitions({ expectedAbiSha256: abiHash });
+    return {
+      reader: new JsonRpcRegistryChainReader({
+        chainId,
+        identityRegistry: registry,
+        client: new JsonRpcClient(endpoint, { timeoutMs: boundedNumber("ERC8004_RPC_TIMEOUT_MS", 15_000, 250, 120_000) }),
+        ...definitions,
+        // Finality is intentionally unresolved in standards.lock.json. Reads
+        // are exact-block and truthfully provisional until that gate closes.
+        readConsistency: "provisional"
+      }),
+      summary: { configured: true, readConsistency: "provisional", reason: null }
+    };
+  } catch (error) {
+    return { reader: undefined, summary: { configured: false, readConsistency: "provisional", reason: safeErrorCode(error, "REGISTRY_READER_UNAVAILABLE") } };
+  }
+}
+
+function sanitizedScan(result: {
+  readonly status: "disabled" | "completed" | "partial";
+  readonly metrics: { readonly pagesFetched: number; readonly candidatesFetched: number; readonly candidatesCommitted: number };
+  readonly checkpoint: { readonly pagesProcessed: number; readonly candidatesProcessed: number; readonly cursorVersion: number; readonly completedAt: Date | null } | null;
+}): ScanSummary {
+  return {
+    status: result.status,
+    errorCode: null,
+    pagesFetched: result.metrics.pagesFetched,
+    candidatesFetched: result.metrics.candidatesFetched,
+    candidatesCommitted: result.metrics.candidatesCommitted,
+    checkpoint: result.checkpoint === null ? null : {
+      pagesProcessed: result.checkpoint.pagesProcessed,
+      candidatesProcessed: result.checkpoint.candidatesProcessed,
+      cursorVersion: result.checkpoint.cursorVersion,
+      completedAt: result.checkpoint.completedAt?.toISOString() ?? null
+    }
+  };
+}
+
+async function main(): Promise<void> {
+  const runtime = loadRuntimeConfig(process.env);
+  const gates = readErc8004PipelineGates(process.env);
+  if (!gates.ERC8004_INGESTION_ENABLED) {
+    process.stdout.write(`${JSON.stringify({ status: "disabled", reason: "ERC8004_INGESTION_DISABLED" })}\n`);
+    return;
+  }
+  if (runtime.databaseUrl === undefined) throw new Error("DATABASE_URL is required for marketplace ingestion");
+
+  const chainId = boundedNumber("ERC8004_SCAN_CHAIN_ID", runtime.bscChainId, 1, 2_147_483_647);
+  const lock = await readStandardsLock();
+  const registry = lockedRegistry(lock, chainId);
+  if (registry === null) throw new Error("REGISTRY_NOT_RESOLVED_FROM_STANDARDS_LOCK");
+  const maxCandidates = boundedNumber("ERC8004_MARKETPLACE_MAX_CANDIDATES", 20, 1, 20);
+  const manual = parseManualCandidates(chainId, registry);
+  const { reader: registryReader, summary: registrySummary } = buildRegistryReader(lock, chainId, registry);
+  const repository = new PostgresIngestionRepository(runtime.databaseUrl, { ssl: runtime.databaseSsl });
+  const { pool } = createDb(runtime.databaseUrl, { ssl: runtime.databaseSsl });
+  let scanSummary: ScanSummary = {
+    status: gates.ERC8004SCAN_DISCOVERY_ENABLED ? "failed" : "disabled",
+    errorCode: gates.ERC8004SCAN_DISCOVERY_ENABLED ? "SCAN_NOT_ATTEMPTED" : null,
+    pagesFetched: 0,
+    candidatesFetched: 0,
+    candidatesCommitted: 0,
+    checkpoint: null
+  };
+  try {
+    const scanCandidates: IdentityCandidate[] = [];
+    if (gates.ERC8004SCAN_DISCOVERY_ENABLED) {
+      try {
+        const client = EightHundredFourScanHttpClient.fromEnvironment(process.env);
+        const adapter = createEightHundredFourScanAdapter(client);
+        const job = new Erc8004ScanJob({
+          repository,
+          adapter,
+          gates: {
+            ERC8004_INGESTION_ENABLED: true,
+            ERC8004SCAN_DISCOVERY_ENABLED: true
+          }
+        });
+        const scan = await job.run({
+          scope: optionalText("ERC8004SCAN_JOB_SCOPE") ?? `erc8004scan:marketplace:${chainId}`,
+          maxPages: boundedNumber("ERC8004SCAN_MAX_PAGES", 1, 1, 100),
+          maxCandidates,
+          maxRunMs: boundedNumber("ERC8004SCAN_MAX_RUN_MS", 120_000, 250, 600_000),
+          query: {
+            chainId,
+            limit: boundedNumber("ERC8004SCAN_PAGE_SIZE", Math.min(20, maxCandidates), 1, Math.min(100, maxCandidates)),
+            ...(optionalText("ERC8004_SCAN_SEARCH") === undefined ? {} : { search: optionalText("ERC8004_SCAN_SEARCH") }),
+            ...(optionalText("ERC8004_SCAN_SUPPORTED_PROTOCOL") === undefined ? {} : { supportedProtocol: optionalText("ERC8004_SCAN_SUPPORTED_PROTOCOL") }),
+            ...(optionalText("ERC8004_SCAN_IS_TESTNET") === undefined ? {} : { isTestnet: parseBoolean("ERC8004_SCAN_IS_TESTNET", false) })
+          }
+        });
+        scanSummary = sanitizedScan(scan);
+        for (const candidate of scan.candidates) scanCandidates.push(candidateFromScanIdentity(candidate.identity.identity, new Date()));
+      } catch (error) {
+        scanSummary = { ...scanSummary, status: "failed", errorCode: safeErrorCode(error, "SCAN_JOB_FAILED") };
+      }
+    }
+
+    const selectedKeys = new Set<string>([...manual, ...scanCandidates].map((candidate) => erc8004IdentityKey(candidate.identity)));
+    const persisted = await persistedCandidates(repository, chainId, registry, selectedKeys, Math.max(0, maxCandidates - selectedKeys.size));
+    const candidates = [...manual, ...scanCandidates, ...persisted];
+    const metadataResolver = new BoundedMetadataResolver({
+      ipfsGateways: (optionalText("ERC8004_IPFS_GATEWAYS") ?? "").split(",").map((value) => value.trim()).filter((value) => value.length > 0)
+    });
+    const localProbeEscapes = runtime.nodeEnv === "test" || runtime.environment === "development";
+    const probeTransport = new HttpServiceProbeTransport({
+      allowPrivateAddresses: localProbeEscapes && parseBoolean("ERC8004_ALLOW_PRIVATE_ADDRESSES", false),
+      allowInsecureHttp: localProbeEscapes && parseBoolean("ERC8004_ALLOW_INSECURE_SERVICE_HTTP", false)
+    });
+    const serviceProbe = new BoundedServiceProbe(probeTransport, {
+      timeoutMs: boundedNumber("ERC8004_SERVICE_PROBE_TIMEOUT_MS", 5_000, 250, 30_000),
+      maxResponseBytes: boundedNumber("ERC8004_SERVICE_PROBE_MAX_BYTES", 64 * 1024, 1_024, 1_048_576)
+    });
+    const pipeline = new Erc8004Pipeline({
+      repository,
+      ...(registryReader === undefined ? {} : { registryReader }),
+      metadataResolver,
+      serviceProbe,
+      serviceProbeOptions: {
+        maxConcurrency: boundedNumber("ERC8004_SERVICE_PROBE_CONCURRENCY", 2, 1, 16),
+        minIntervalMs: boundedNumber("ERC8004_SERVICE_PROBE_INTERVAL_MS", 250, 0, 60_000),
+        maxServices: boundedNumber("ERC8004_SERVICE_PROBE_MAX_SERVICES", 32, 1, 256)
+      },
+      gates: {
+        ERC8004_INGESTION_ENABLED: true,
+        ERC8004SCAN_DISCOVERY_ENABLED: gates.ERC8004SCAN_DISCOVERY_ENABLED,
+        // T2 deliberately does not create embeddings; the semantic gate is
+        // never inherited from runtime env in this bounded command.
+        MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED: false
+      }
+    });
+    const publication = new PostgresMarketplacePublicationService(pool);
+    const categorySink = new PgCategoryPredictionSink(pool, publication.versionIdForIdentityKey);
+    const runner = new Erc8004MarketplaceCompositionRunner({
+      repository,
+      pipeline,
+      publisher: {
+        async publish(input): Promise<MarketplaceCompositionPublicationResult> {
+          const result = await publication.publish(input);
+          return {
+            status: result.status,
+            versionId: result.versionId,
+            diagnostics: result.diagnostics.map((diagnostic) => ({ code: diagnostic.code }))
+          };
+        }
+      },
+      categorySink,
+      maxCandidates
+    });
+    const composition = await runner.run({ candidates });
+    process.stdout.write(`${JSON.stringify({
+      status: composition.status,
+      registry: registrySummary,
+      scan: scanSummary,
+      composition: {
+        candidateCount: composition.candidateCount,
+        completedCount: composition.completedCount,
+        failedCount: composition.failedCount,
+        stageCounts: composition.stageCounts,
+        reasons: composition.reasons
+      }
+    })}\n`);
+  } finally {
+    await repository.close();
+    await pool.end();
+  }
+}
+
+main().catch((error: unknown) => {
+  process.stderr.write(`${JSON.stringify({ errorCode: safeErrorCode(error, "MARKETPLACE_INGESTION_FAILED") })}\n`);
+  process.exitCode = 1;
+});

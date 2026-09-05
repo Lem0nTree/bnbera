@@ -41,6 +41,16 @@ describe("reviewed 8004scan contract boundary", () => {
     expect(mapped.services).toEqual([{ kind: "a2a", url: "https://agent.example/a2a", protocolVersion: "1" }]);
   });
 
+  it("does not invent service versions or capability schemas from incomplete summaries", () => {
+    const mapped = mapOfficialEightHundredFourScanCandidate({
+      ...summary,
+      services: { a2a: { url: "https://agent.example/a2a" } },
+      capabilities: [{ id: "yield", description: "Optimize yield" }]
+    });
+    expect(mapped.services).toBeUndefined();
+    expect(mapped.capabilityManifest).toBeUndefined();
+  });
+
   it("uses offset pagination, server-only credential header, bounded pages, and retries 429", async () => {
     let calls = 0;
     const sleeps: number[] = [];

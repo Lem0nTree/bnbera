@@ -1,15 +1,16 @@
 import type { RuntimeConfig } from "@bnbera/config";
-import { erc8004IdentityKey, type Erc8004Identity } from "@bnbera/domain";
+import { erc8004IdentityKey, type CapabilityManifest, type Erc8004Identity } from "@bnbera/domain";
 import { ingestionError } from "./errors.js";
-import { AgentIngestionService } from "./ingestion.js";
+import { AgentIngestionService, type CandidateIngestionResult } from "./ingestion.js";
 import { BoundedMetadataResolver, parseAgentRegistrationMetadata } from "./metadata.js";
 import { normalizeCapabilityManifest, normalizeServices } from "./normalize.js";
 import { type CategoryClassification, type CategoryClassificationInput, DeterministicCategoryClassifier } from "./categorization.js";
 import { buildSemanticDocument, validateEmbeddingProvider, type EmbeddingProvider, type SemanticDocumentInput } from "./semantic.js";
 import type { EightHundredFourScanAdapter, EightHundredFourScanQuery } from "./adapters/8004scan.js";
 import type { RegistryChainReader } from "./adapters/registry.js";
-import type { IdentityCandidate, IdentityRecord, IngestionRepository } from "./types.js";
+import type { IdentityCandidate, IdentityRecord, IngestionRepository, ServiceObservation } from "./types.js";
 import { ensureSemanticVector, type SemanticVectorRepository, type SemanticVectorRecord } from "./vector.js";
+import { BoundedServiceProbe, type ServiceProbeBatchOptions, type ServiceProbeResult } from "./probe.js";
 import {
   createEmbeddingProviderFromRuntimeConfig,
   type EmbeddingSecretResolver,
@@ -52,6 +53,9 @@ export type Erc8004PipelineOptions = {
   readonly ingestion?: AgentIngestionService;
   readonly registryReader?: RegistryChainReader;
   readonly metadataResolver?: BoundedMetadataResolver;
+  /** Optional bounded transport for read-only service contract probes. */
+  readonly serviceProbe?: BoundedServiceProbe;
+  readonly serviceProbeOptions?: ServiceProbeBatchOptions;
   readonly categoryClassifier?: DeterministicCategoryClassifier;
   readonly categorySink?: PipelineCategorySink;
   readonly embeddingProvider?: EmbeddingProvider;
@@ -75,6 +79,12 @@ export type PipelineCandidateResult = {
   readonly ingestion: "completed" | "failed";
   readonly registry: "verified" | "skipped" | "failed";
   readonly metadata: "resolved" | "skipped" | "failed";
+  /** Resolved registration document, retained only as safe public metadata. */
+  readonly publicMetadata: Readonly<Record<string, unknown>> | null;
+  /** A validated manifest observed from the candidate or resolved document. */
+  readonly capabilityManifest: CapabilityManifest | null;
+  readonly services: readonly ServiceObservation[];
+  readonly probes: readonly ServiceProbeResult[];
   readonly category: CategoryClassification | null;
   readonly vector: { readonly record: SemanticVectorRecord; readonly generated: boolean } | null;
   readonly warnings: readonly string[];
@@ -103,6 +113,63 @@ function asWarning(error: unknown): string {
   return error instanceof Error ? error.message.slice(0, 300) : "pipeline stage failed";
 }
 
+function emptyCandidateResult(identityKey: string, warning: string): PipelineCandidateResult {
+  return {
+    identityKey,
+    ingestion: "failed",
+    registry: "skipped",
+    metadata: "skipped",
+    publicMetadata: null,
+    capabilityManifest: null,
+    services: [],
+    probes: [],
+    category: null,
+    vector: null,
+    warnings: [warning]
+  };
+}
+
+function publicRecord(value: unknown): Readonly<Record<string, unknown>> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : null;
+}
+
+/**
+ * Registration documents use the ERC-8004 field names (`type` and `version`)
+ * while the ingestion schema deliberately uses normalized names. This is a
+ * field mapping only: missing protocol versions remain invalid instead of
+ * being filled with a guessed value.
+ */
+function registrationServiceInput(value: unknown): unknown {
+  const record = publicRecord(value);
+  if (record === null) return value;
+  return {
+    ...record,
+    ...(record.kind === undefined && record.type !== undefined ? { kind: record.type } : {}),
+    ...(record.protocolVersion === undefined && record.protocol_version !== undefined
+      ? { protocolVersion: record.protocol_version }
+      : record.protocolVersion === undefined && record.version !== undefined
+        ? { protocolVersion: record.version }
+        : {})
+  };
+}
+
+function explicitCapabilityManifest(value: unknown): unknown | undefined {
+  const record = publicRecord(value);
+  if (record === null) return undefined;
+  if (record.capabilityManifest !== undefined) return record.capabilityManifest;
+  if (record.capability_manifest !== undefined) return record.capability_manifest;
+  // Some registry documents use `capabilities` for a complete manifest. Only
+  // accept it when it already has the reviewed manifest shape; an array of
+  // descriptive strings is not promoted into fabricated JSON schemas.
+  const capabilities = record.capabilities;
+  if (publicRecord(capabilities)?.schemaVersion !== undefined && Array.isArray(publicRecord(capabilities)?.capabilities)) {
+    return capabilities;
+  }
+  return undefined;
+}
+
 function identityKey(identity: Erc8004Identity): string {
   return erc8004IdentityKey(identity);
 }
@@ -117,6 +184,8 @@ export class Erc8004Pipeline {
   private readonly ingestion: AgentIngestionService;
   private readonly registryReader: RegistryChainReader | undefined;
   private readonly metadataResolver: BoundedMetadataResolver | undefined;
+  private readonly serviceProbe: BoundedServiceProbe | undefined;
+  private readonly serviceProbeOptions: ServiceProbeBatchOptions;
   private readonly classifier: DeterministicCategoryClassifier;
   private readonly categorySink: PipelineCategorySink | undefined;
   private readonly embeddingProvider: EmbeddingProvider | undefined;
@@ -131,6 +200,8 @@ export class Erc8004Pipeline {
     this.ingestion = options.ingestion ?? new AgentIngestionService(options.repository);
     this.registryReader = options.registryReader;
     this.metadataResolver = options.metadataResolver;
+    this.serviceProbe = options.serviceProbe;
+    this.serviceProbeOptions = options.serviceProbeOptions ?? {};
     this.classifier = options.categoryClassifier ?? new DeterministicCategoryClassifier();
     this.categorySink = options.categorySink;
     this.embeddingProvider = options.embeddingProvider;
@@ -190,11 +261,15 @@ export class Erc8004Pipeline {
     const key = identityKey(candidate.identity);
     const warnings: string[] = [];
     let identityRecord: IdentityRecord | null = null;
+    let ingestionResult: CandidateIngestionResult;
     try {
-      identityRecord = (await this.ingestion.ingestCandidate(candidate)).identity;
+      ingestionResult = await this.ingestion.ingestCandidate(candidate);
+      identityRecord = ingestionResult.identity;
     } catch (error) {
-      return { identityKey: key, ingestion: "failed", registry: "skipped", metadata: "skipped", category: null, vector: null, warnings: [asWarning(error)] };
+      return emptyCandidateResult(key, "INGESTION_FAILED");
     }
+    if (ingestionResult.rejectedServices.length > 0) warnings.push("SERVICE_OBSERVATIONS_REJECTED");
+    if (ingestionResult.capabilityError !== null) warnings.push("CAPABILITY_OBSERVATION_REJECTED");
 
     let registry: PipelineCandidateResult["registry"] = "skipped";
     if (this.registryReader !== undefined) {
@@ -214,10 +289,29 @@ export class Erc8004Pipeline {
     }
 
     let metadata: PipelineCandidateResult["metadata"] = "skipped";
+    let publicMetadata: Readonly<Record<string, unknown>> | null = null;
+    let capabilityManifest: CapabilityManifest | null = null;
+    let capabilityDigest: string | null = null;
+    let services: readonly ServiceObservation[] = ingestionResult.services;
+    let probes: readonly ServiceProbeResult[] = [];
     let category: CategoryClassification | null = null;
     let vector: PipelineCandidateResult["vector"] = null;
     const agentUri = identityRecord.agentUri;
     let registration: ReturnType<typeof parseAgentRegistrationMetadata> | null = null;
+
+    // Candidate manifests have already passed the ingestion transaction when
+    // present. Normalize once more here so the composition result can pass
+    // the exact persisted shape to publication; invalid observations remain
+    // withheld and are never repaired by guessing fields.
+    if (candidate.capabilityManifest !== undefined) {
+      try {
+        const observation = normalizeCapabilityManifest(key, candidate.source, candidate.capabilityManifest, candidate.observedAt);
+        capabilityManifest = observation.capabilityManifest as CapabilityManifest;
+        capabilityDigest = observation.manifestDigest;
+      } catch {
+        warnings.push("CAPABILITY_OBSERVATION_REJECTED");
+      }
+    }
     if (this.metadataResolver !== undefined && agentUri !== null) {
       try {
         const resolution = await this.metadataResolver.resolve(agentUri, identityRecord.contentDigest);
@@ -226,16 +320,34 @@ export class Erc8004Pipeline {
         }
         registration = this.metadataResolver.parseRegistration(resolution);
         metadata = "resolved";
+        publicMetadata = publicRecord(resolution.document);
         warnings.push(...registration.warnings);
-        const capabilityManifest = candidate.capabilityManifest;
-        if (capabilityManifest !== undefined) {
+        const metadataCapabilityManifest = explicitCapabilityManifest(resolution.document);
+        if (metadataCapabilityManifest !== undefined) {
           try {
-            await this.repository.upsertCapabilities(normalizeCapabilityManifest(key, candidate.source, capabilityManifest, this.now()));
-          } catch (error) {
-            warnings.push(asWarning(error));
+            const observation = normalizeCapabilityManifest(key, candidate.source, metadataCapabilityManifest, this.now());
+            await this.repository.upsertCapabilities(observation);
+            // A manifest in the registry document is the authoritative
+            // enrichment for this read. A vendor candidate manifest remains
+            // separately persisted, but is not substituted for it.
+            capabilityManifest = observation.capabilityManifest as CapabilityManifest;
+            capabilityDigest = observation.manifestDigest;
+          } catch {
+            warnings.push("CAPABILITY_OBSERVATION_REJECTED");
           }
         }
-        const normalizedServices = normalizeServices(key, candidate.source, registration.services, null, this.now());
+        const normalizedServices = normalizeServices(
+          key,
+          candidate.source,
+          registration.services.map(registrationServiceInput),
+          capabilityDigest,
+          this.now()
+        );
+        const mergedServices = new Map<string, ServiceObservation>(
+          services.map((service) => [`${service.kind}:${service.url}`, service])
+        );
+        for (const service of normalizedServices.accepted) mergedServices.set(`${service.kind}:${service.url}`, service);
+        services = [...mergedServices.values()].sort((left, right) => `${left.kind}:${left.url}`.localeCompare(`${right.kind}:${right.url}`));
         for (const service of normalizedServices.accepted) await this.repository.upsertService(service);
         for (const rejected of normalizedServices.rejected) warnings.push(`SERVICE_REJECTED:${rejected.reason.slice(0, 160)}`);
       } catch (error) {
@@ -248,6 +360,18 @@ export class Erc8004Pipeline {
       warnings.push("METADATA_RESOLVER_NOT_CONFIGURED");
     }
 
+    // Probe every explicitly observed service, including one supplied by a
+    // manual/import candidate when metadata resolution is unavailable. The
+    // transport remains bounded and the probe result is persisted as an
+    // observation; a probe never upgrades an identity or listing state.
+    if (this.serviceProbe !== undefined && services.length > 0) {
+      try {
+        probes = await this.serviceProbe.probeManyAndPersist(this.repository, services, this.serviceProbeOptions);
+      } catch {
+        warnings.push("SERVICE_PROBE_FAILED");
+      }
+    }
+
     try {
       const categoryInput: CategoryClassificationInput = {
         ...(registration?.name === null || registration?.name === undefined
@@ -257,8 +381,12 @@ export class Erc8004Pipeline {
           ? candidate.metadata?.description === undefined ? {} : { description: candidate.metadata.description }
           : { description: registration.description }),
         protocols: [...(registration?.protocols ?? []), ...(registration?.skills ?? [])],
-        capabilities: candidate.capabilityManifest,
-        ...(candidate.metadata === undefined ? {} : { metadata: candidate.metadata })
+        capabilities: capabilityManifest,
+        ...(publicMetadata === null
+          ? candidate.metadata === undefined ? {} : { metadata: candidate.metadata }
+          : { metadata: publicMetadata }),
+        agentCard: probes.filter((probe) => probe.kind === "a2a").map((probe) => probe.safeCapabilityProbe).filter((probe) => probe !== null),
+        mcpCapabilities: probes.filter((probe) => probe.kind === "mcp").map((probe) => probe.safeCapabilityProbe).filter((probe) => probe !== null)
       };
       const categoryInputWithRegistration: CategoryClassificationInput = registration === null
         ? categoryInput
@@ -293,7 +421,7 @@ export class Erc8004Pipeline {
               ...semanticInput,
               ...(semanticName === undefined ? {} : { name: semanticName }),
               ...(semanticDescription === undefined ? {} : { description: semanticDescription }),
-              ...(candidate.capabilityManifest === undefined ? {} : { capabilityManifest: candidate.capabilityManifest }),
+              ...(capabilityManifest === null ? {} : { capabilityManifest }),
               ...(registration === null ? {} : {
                 protocols: registration.protocols,
                 actions: registration.skills,
@@ -312,7 +440,19 @@ export class Erc8004Pipeline {
     } else {
       warnings.push("MARKETPLACE_SEMANTIC_RETRIEVAL_DISABLED");
     }
-    return { identityKey: key, ingestion: "completed", registry, metadata, category, vector, warnings: [...new Set(warnings)] };
+    return {
+      identityKey: key,
+      ingestion: "completed",
+      registry,
+      metadata,
+      publicMetadata,
+      capabilityManifest,
+      services,
+      probes,
+      category,
+      vector,
+      warnings: [...new Set(warnings)]
+    };
   }
 }
 

@@ -22,4 +22,5 @@ export * from "./semantic.js";
 export * from "./vector.js";
 export * from "./pipeline.js";
 export * from "./scan-job.js";
+export * from "./composition.js";
 export * from "./embedding-backfill.js";

@@ -90,7 +90,7 @@ export class PgCategoryPredictionSink {
       `WITH prediction AS (
         INSERT INTO agent_category_predictions
           (id, agent_version_id, predicted_category, structured_score, semantic_score,
-           confidence, evidence, method, classifier_version, review_state, createdAt)
+           confidence, evidence, method, classifier_version, review_state, "createdAt")
         SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
          WHERE NOT EXISTS (
            SELECT 1
