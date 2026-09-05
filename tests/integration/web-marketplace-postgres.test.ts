@@ -10,6 +10,7 @@ import {
 } from "../../apps/web/src/lib/marketplace-contract";
 
 const databaseUrl = process.env.DATABASE_URL?.trim() || null;
+const requireDatabaseTests = process.env.BNBERA_REQUIRE_DATABASE_TESTS === "true";
 const environmentKeys = [
   "NODE_ENV",
   "BNBERA_ENV",
@@ -219,7 +220,11 @@ async function removePostgresReadModel(pool: TestPool, seed: { readonly valid: S
 }
 
 describe("PostgreSQL-backed marketplace API", () => {
-  it.skipIf(databaseUrl === null)("reads live records and exposes empty, degraded, and detail states honestly", async () => {
+  it("requires an injected database URL when CI database coverage is enabled", () => {
+    if (requireDatabaseTests) expect(databaseUrl).not.toBeNull();
+  });
+
+  it.skipIf(databaseUrl === null && !requireDatabaseTests)("reads live records and exposes empty, degraded, and detail states honestly", async () => {
     configureLiveEnvironment();
     const pool = setupPool;
     if (pool === null) throw new Error("The PostgreSQL test pool was not initialized.");
@@ -227,9 +232,11 @@ describe("PostgreSQL-backed marketplace API", () => {
     const empty = await getMarketplace(new Request("https://bnbera.example/api/marketplace?q=qa-no-such-agent"));
     const emptyBody = marketplaceSearchResponseSchema.parse(await empty.json());
     expect(empty.status).toBe(200);
-    expect(emptyBody.status).toBe("empty");
+    // With synchronization disabled, the source truthfully reports stale
+    // projection state as degraded even when the query has no matching rows.
+    expect(["empty", "degraded"]).toContain(emptyBody.status);
     expect(emptyBody.agents).toEqual([]);
-    expect(emptyBody.mode === "empty" || emptyBody.mode === "live").toBe(true);
+    expect(["empty", "live", "degraded"]).toContain(emptyBody.mode);
 
     const seed = await seedPostgresReadModel(pool);
     try {
@@ -239,8 +246,13 @@ describe("PostgreSQL-backed marketplace API", () => {
       expect(browseBody.status).toBe("degraded");
       expect(browseBody.mode).toBe("degraded");
       expect(browseBody.agents.map((agent) => agent.slug)).toContain(seed.valid.slug);
-      expect(browseBody.agents.find((agent) => agent.slug === seed.valid.slug)?.dataProvenance.mode).toBe("degraded");
-      expect(browseBody.agents.find((agent) => agent.slug === seed.valid.slug)?.identity).toMatchObject({
+      const persistedAgent = browseBody.agents.find((agent) => agent.slug === seed.valid.slug);
+      expect(persistedAgent).toMatchObject({
+        category: "rebalancing",
+        dataProvenance: { mode: "degraded" },
+        name: "Disposable PostgreSQL Agent"
+      });
+      expect(persistedAgent?.identity).toMatchObject({
         namespace: "erc8004",
         chainId: 97,
         identityRegistry: `0x${"8".repeat(40)}`

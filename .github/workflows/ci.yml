@@ -10,6 +10,18 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      # This URL is intentionally test-only. The service uses trust
+      # authentication and is reachable only from the GitHub-hosted runner;
+      # no development or production credential is used by CI.
+      DATABASE_URL: postgresql://bnbera_ci@127.0.0.1:5432/bnbera_ci
+      DATABASE_SSL: "false"
+      BNBERA_REQUIRE_DATABASE_TESTS: "true"
+      BNBERA_DISPOSABLE_DB_TEST: "true"
+      MARKETPLACE_DATA_MODE: live
+      ERC8004_INGESTION_ENABLED: "false"
+      ERC8004SCAN_DISCOVERY_ENABLED: "false"
+      MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED: "false"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -25,6 +37,24 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Build database test dependencies
+        run: pnpm --filter @bnbera/domain --filter @bnbera/config build
+      - name: Wait for disposable PostgreSQL service
+        run: |
+          for attempt in $(seq 1 30); do
+            if pg_isready -h 127.0.0.1 -p 5432 -U bnbera_ci -d bnbera_ci; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "PostgreSQL service did not become ready" >&2
+          exit 1
+      - name: Apply database migrations
+        run: pnpm db:migrate
+      - name: Verify disposable fresh and ADR 0003 legacy migrations
+        run: pnpm exec tsx scripts/db-migration-legacy-smoke.ts
+      - name: Run PostgreSQL ingestion smoke
+        run: pnpm ops:ingestion-smoke
       - name: Build
         run: pnpm build
       - name: Lint
@@ -33,5 +63,50 @@ jobs:
         run: pnpm typecheck
       - name: Test
         run: pnpm test
+      - name: Run cross-package integration and security tests
+        run: pnpm exec vitest run --config tests/vitest.config.ts
       - name: Check database migrations
         run: pnpm db:check
+      - name: Validate offline release evidence
+        run: pnpm evidence:release-check
+      - name: Build and verify production web runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --filter @bnbera/web build
+          web_log="${RUNNER_TEMP}/bnbera-web.log"
+          PORT=3000 pnpm --filter @bnbera/web start >"${web_log}" 2>&1 &
+          web_pid=$!
+          cleanup() {
+            kill "${web_pid}" 2>/dev/null || true
+            wait "${web_pid}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:3000/api/marketplace >/dev/null; then
+              break
+            fi
+            if [[ "${attempt}" == "30" ]]; then
+              sed -n '1,160p' "${web_log}" >&2 || true
+              exit 1
+            fi
+            sleep 1
+          done
+          BNBERA_MARKETPLACE_API_URL=http://127.0.0.1:3000/api/marketplace \
+            pnpm exec tsx scripts/marketplace-readiness.ts
+
+    services:
+      postgres:
+        image: pgvector/pgvector@sha256:3f0a88823465866f5f48e3c91edd273fb883a8715367e80b0d314b68fa592989
+        env:
+          POSTGRES_DB: bnbera_ci
+          POSTGRES_USER: bnbera_ci
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - "127.0.0.1:5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U bnbera_ci -d bnbera_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 10s
