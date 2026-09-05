@@ -19,3 +19,4 @@ coverage/
 *.log
 pnpm-debug.log*
 .worktrees/
+.runtime/

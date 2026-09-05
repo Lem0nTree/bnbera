@@ -250,7 +250,9 @@ function latestProbeForService(
  * listing healthy; an unrelated newer failure must not mask it. If every
  * current transport is degraded, expose the newest degraded observation.
  */
-const endpointHealthMaxAgeMs = 60_000;
+// Minute-based health cron observations remain browse-usable for two ticks.
+// Execution paths must still perform their own immediate check.
+const endpointHealthMaxAgeMs = 120_000;
 
 function healthFromProbes(probes: readonly ServiceProbeRecord[], now: Date): MarketplaceHealth {
   const latestByService = new Map<string, ServiceProbeRecord>();
