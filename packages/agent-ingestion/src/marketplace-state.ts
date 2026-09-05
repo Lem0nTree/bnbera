@@ -39,6 +39,28 @@ export type MarketplaceRetryAttempt = {
   readonly retryMaxDelayMs?: number;
 };
 
+export type MarketplaceRotation<T> = {
+  readonly selected: readonly T[];
+  readonly startOffset: number;
+  readonly nextOffset: number;
+};
+
+/** Select a bounded circular batch without making the first page privileged. */
+export function rotateMarketplaceBatch<T>(items: readonly T[], offset: number, limit: number): MarketplaceRotation<T> {
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1) {
+    throw new Error("MARKETPLACE_ROTATION_CONFIGURATION_INVALID");
+  }
+  if (items.length === 0) return { selected: [], startOffset: 0, nextOffset: 0 };
+  const startOffset = offset >= items.length ? 0 : offset;
+  const count = Math.min(limit, items.length);
+  const selected = Array.from({ length: count }, (_, index) => items[(startOffset + index) % items.length]!);
+  return {
+    selected,
+    startOffset,
+    nextOffset: (startOffset + count) % items.length
+  };
+}
+
 type DiscoveryCursorRow = {
   scope: string;
   chain_id: number | string;
@@ -242,13 +264,35 @@ export class PostgresMarketplaceIngestionState {
     const retryDelay = Math.min(retryMaxDelayMs, retryBaseDelayMs * (2 ** Math.max(0, attemptCount - 1)));
     const nextAttemptAt = new Date(attempt.attemptedAt.getTime() + (successful ? successDelayMs : retryDelay));
     const lastErrorCode = successful ? null : errorCode(attempt.errorCode);
-    const identityRow = await this.queryable.query<IdentityRow>(
+    const identityRows = await this.queryable.query<IdentityRow>(
       `SELECT id, concat(namespace, ':', chain_id, ':', identity_registry, ':', agent_id) AS identity_key
          FROM erc8004_identities
         WHERE namespace = $1 AND chain_id = $2 AND identity_registry = $3 AND agent_id = $4`,
       [identity.namespace, identity.chainId, identity.identityRegistry, identity.agentId]
     );
-    const row = identityRow.rows[0];
+    // A composition timeout can be observed before the normal ingestion
+    // transaction creates its identity row. Materialize only the full tuple
+    // (with all state axes left at their schema defaults) so its retry state
+    // survives the restart; this never fabricates verification or listing.
+    let row = identityRows.rows[0];
+    if (row === undefined) {
+      const inserted = await this.queryable.query<IdentityRow>(
+        `INSERT INTO erc8004_identities (namespace, chain_id, identity_registry, agent_id)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (namespace, chain_id, identity_registry, agent_id) DO NOTHING
+         RETURNING id, concat(namespace, ':', chain_id, ':', identity_registry, ':', agent_id) AS identity_key`,
+        [identity.namespace, identity.chainId, identity.identityRegistry, identity.agentId]
+      );
+      row = inserted.rows[0];
+      if (row === undefined) {
+        row = (await this.queryable.query<IdentityRow>(
+          `SELECT id, concat(namespace, ':', chain_id, ':', identity_registry, ':', agent_id) AS identity_key
+             FROM erc8004_identities
+            WHERE namespace = $1 AND chain_id = $2 AND identity_registry = $3 AND agent_id = $4`,
+          [identity.namespace, identity.chainId, identity.identityRegistry, identity.agentId]
+        )).rows[0];
+      }
+    }
     if (row === undefined) throw new Error("MARKETPLACE_RETRY_IDENTITY_MISSING");
     const result = await this.queryable.query<RetryRow>(
       `INSERT INTO marketplace_ingestion_retries

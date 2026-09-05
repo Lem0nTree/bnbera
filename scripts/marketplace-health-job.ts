@@ -3,6 +3,8 @@ import {
   BoundedServiceProbe,
   HttpServiceProbeTransport,
   PostgresIngestionRepository,
+  PostgresMarketplaceIngestionState,
+  rotateMarketplaceBatch,
   readErc8004PipelineGates
 } from "../packages/agent-ingestion/src/index.ts";
 import { erc8004IdentityKey } from "../packages/domain/src/index.ts";
@@ -14,6 +16,8 @@ type AdvisoryPool = {
     release(): void;
   }>;
 };
+
+const healthCursorRegistry = "0x0000000000000000000000000000000000000000";
 
 function optionalText(name: string): string | undefined {
   const value = process.env[name]?.trim();
@@ -84,14 +88,27 @@ async function main(): Promise<void> {
   const localProbeEscapes = runtime.nodeEnv === "test" || runtime.environment === "development";
   const { pool } = createDb(runtime.databaseUrl, { ssl: runtime.databaseSsl });
   const repository = new PostgresIngestionRepository(pool, { ssl: runtime.databaseSsl });
+  const state = new PostgresMarketplaceIngestionState(pool);
+  const cursorScope = `marketplace-health:${runtime.bscChainId}`;
+  let healthCursor: Awaited<ReturnType<PostgresMarketplaceIngestionState["ensureDiscoveryCursor"]>>;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), runMs);
   try {
+    // Keep the cursor page size stable while maxAgents remains an operational
+    // batch bound; this permits a safe env tuning without resetting rotation.
+    healthCursor = await state.ensureDiscoveryCursor({
+      scope: cursorScope,
+      chainId: runtime.bscChainId,
+      identityRegistry: healthCursorRegistry,
+      pageSize: 500
+    });
     const result = await withAdvisoryLock(pool, "bnbera:marketplace:health", async () => {
       const identities = (await repository.listIdentities({ chainId: runtime.bscChainId }))
         .filter((identity) => identity.state.listingStatus === "published")
         .sort((left, right) => left.updatedAt.getTime() - right.updatedAt.getTime() || erc8004IdentityKey(left.identity).localeCompare(erc8004IdentityKey(right.identity)))
-        .slice(0, maxAgents);
+      const totalIdentities = identities.length;
+      const rotation = rotateMarketplaceBatch(identities, healthCursor.nextOffset, maxAgents);
+      const selected = rotation.selected;
       const transport = new HttpServiceProbeTransport({
         allowPrivateAddresses: localProbeEscapes && process.env.ERC8004_ALLOW_PRIVATE_ADDRESSES === "true",
         allowInsecureHttp: localProbeEscapes && process.env.ERC8004_ALLOW_INSECURE_SERVICE_HTTP === "true"
@@ -101,11 +118,13 @@ async function main(): Promise<void> {
       let healthyCount = 0;
       let unhealthyCount = 0;
       let skippedCount = 0;
-      for (const identity of identities) {
+      let processedCount = 0;
+      for (const identity of selected) {
         if (controller.signal.aborted) break;
         const services = (await repository.listServices(erc8004IdentityKey(identity.identity))).slice(0, maxServices);
         if (services.length === 0) {
           skippedCount += 1;
+          processedCount += 1;
           continue;
         }
         const results = await probe.probeManyAndPersist(repository, services, {
@@ -117,10 +136,23 @@ async function main(): Promise<void> {
         serviceCount += results.length;
         healthyCount += results.filter((result) => result.validationStatus === "healthy").length;
         unhealthyCount += results.filter((result) => result.validationStatus !== "healthy").length;
+        processedCount += 1;
+      }
+      if (processedCount > 0 || totalIdentities === 0) {
+        const nextOffset = totalIdentities === 0
+          ? 0
+          : (rotation.startOffset + processedCount) % totalIdentities;
+        await state.advanceDiscoveryCursor({
+          scope: cursorScope,
+          expectedOffset: healthCursor.nextOffset,
+          nextOffset,
+          total: totalIdentities,
+          pageAt: new Date()
+        });
       }
       return {
         status: controller.signal.aborted ? "partial" : "completed",
-        agents: identities.length,
+        agents: processedCount,
         services: serviceCount,
         healthy: healthyCount,
         unhealthy: unhealthyCount,

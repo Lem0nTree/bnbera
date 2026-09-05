@@ -16,6 +16,7 @@ import {
   PgVectorSemanticRepository,
   PostgresIngestionRepository,
   PostgresMarketplaceIngestionState,
+  recordMarketplaceRetries,
   createEightHundredFourScanAdapter,
   createOfficialErc8004RegistryReadDefinitions,
   createEmbeddingProviderFromRuntimeConfig,
@@ -330,6 +331,10 @@ async function main(): Promise<void> {
   const maxCandidates = boundedNumber("ERC8004_MARKETPLACE_MAX_CANDIDATES", 20, 1, 20);
   const pageSize = boundedNumber("ERC8004_SCAN_PAGE_SIZE", Math.min(20, maxCandidates), 1, Math.min(100, maxCandidates));
   const cursorScope = optionalText("ERC8004_MARKETPLACE_DISCOVERY_SCOPE") ?? `erc8004scan:marketplace:${chainId}`;
+  // The discovery wrapper stops at 240 seconds (with a 20 second kill grace).
+  // Leave enough time to reconcile candidate retry state before that outer
+  // timeout rather than letting the wrapper terminate the process mid-write.
+  const endToEndRunMs = boundedNumber("ERC8004_MARKETPLACE_MAX_RUN_MS", 180_000, 1_000, 220_000);
   const manual = parseManualCandidates(chainId, registry);
   const { reader: registryReader, summary: registrySummary } = buildRegistryReader(lock, chainId, registry);
   const repository = new PostgresIngestionRepository(runtime.databaseUrl, { ssl: runtime.databaseSsl });
@@ -350,6 +355,8 @@ async function main(): Promise<void> {
     diagnostics: []
   };
   let cursor: Awaited<ReturnType<PostgresMarketplaceIngestionState["ensureDiscoveryCursor"]>>;
+  const runController = new AbortController();
+  const runTimeout = setTimeout(() => runController.abort(), endToEndRunMs);
   try {
     cursor = await state.ensureDiscoveryCursor({
       scope: cursorScope,
@@ -373,12 +380,17 @@ async function main(): Promise<void> {
             ERC8004SCAN_DISCOVERY_ENABLED: true
           }
         });
-        const scanScope = `${cursorScope.slice(0, 96)}:sweep:${cursor.sweep}:offset:${cursor.nextOffset}`;
+        // A caller-provided scope is only a stable prefix. Appending the
+        // persisted sweep/offset prevents a completed checkpoint from
+        // freezing the external cursor on the next scheduled invocation.
+        const scanScopePrefix = optionalText("ERC8004SCAN_JOB_SCOPE") ?? cursorScope;
+        const scanScope = `${scanScopePrefix.slice(0, 96)}:sweep:${cursor.sweep}:offset:${cursor.nextOffset}`;
         const scan = await job.run({
-          scope: optionalText("ERC8004SCAN_JOB_SCOPE") ?? scanScope,
+          scope: scanScope,
           maxPages: boundedNumber("ERC8004SCAN_MAX_PAGES", 1, 1, 100),
           maxCandidates,
           maxRunMs: boundedNumber("ERC8004SCAN_MAX_RUN_MS", 120_000, 250, 600_000),
+          signal: runController.signal,
           query: {
             chainId,
             limit: pageSize,
@@ -415,14 +427,14 @@ async function main(): Promise<void> {
       } catch (error) {
         scanSummary = { ...scanSummary, status: "failed", errorCode: safeErrorCode(error, "SCAN_JOB_FAILED") };
       }
-      if (discoveryAdapter !== undefined) {
+      if (discoveryAdapter !== undefined && !runController.signal.aborted) {
         try {
           const semantic = await new Erc8004SemanticCandidateCollector({
             adapter: discoveryAdapter,
             maxCandidatesPerCategory: boundedNumber("ERC8004SCAN_SEMANTIC_PAGE_SIZE", Math.min(5, maxCandidates), 1, 20),
             maxCandidates,
             maxRunMs: boundedNumber("ERC8004SCAN_SEMANTIC_MAX_RUN_MS", 120_000, 250, 600_000)
-          }).collect({ chainId, isTestnet: chainId === 97 });
+          }).collect({ chainId, isTestnet: chainId === 97, signal: runController.signal });
           semanticSummary = sanitizedSemantic({
             status: semantic.status,
             candidates: semantic.candidates.length,
@@ -465,7 +477,8 @@ async function main(): Promise<void> {
     });
     const serviceProbe = new BoundedServiceProbe(probeTransport, {
       timeoutMs: boundedNumber("ERC8004_SERVICE_PROBE_TIMEOUT_MS", 5_000, 250, 30_000),
-      maxResponseBytes: boundedNumber("ERC8004_SERVICE_PROBE_MAX_BYTES", 64 * 1024, 1_024, 1_048_576)
+      maxResponseBytes: boundedNumber("ERC8004_SERVICE_PROBE_MAX_BYTES", 64 * 1024, 1_024, 1_048_576),
+      signal: runController.signal
     });
     const pipeline = new Erc8004Pipeline({
       repository,
@@ -519,18 +532,11 @@ async function main(): Promise<void> {
       ...(vectorRepository === undefined ? {} : { vectorRepository }),
       maxCandidates
     });
-    const composition = await runner.run({ candidates });
-    let retryRecorded = 0;
-    for (const candidate of composition.candidates) {
-      await state.recordRetry(candidate.identityKey, {
-        stage: candidate.status,
-        errorCode: candidate.diagnostics[0] ?? null,
-        attemptedAt
-      });
-      retryRecorded += 1;
-    }
+    const composition = await runner.run({ candidates, signal: runController.signal });
+    const retrySummary = await recordMarketplaceRetries(state, composition.candidates, attemptedAt);
     process.stdout.write(`${JSON.stringify({
       status: composition.status,
+      budgetExpired: runController.signal.aborted,
       registry: registrySummary,
       scan: scanSummary,
       semanticDiscovery: semanticSummary,
@@ -538,12 +544,15 @@ async function main(): Promise<void> {
         candidateCount: composition.candidateCount,
         completedCount: composition.completedCount,
         failedCount: composition.failedCount,
-        retryRecorded,
+        retryRecorded: retrySummary.recorded,
+        retryRecordFailures: retrySummary.failures,
+        retryRecordFailureCodes: retrySummary.failureCodes,
         stageCounts: composition.stageCounts,
         reasons: composition.reasons
       }
     })}\n`);
   } finally {
+    clearTimeout(runTimeout);
     await repository.close();
     await pool.end();
   }

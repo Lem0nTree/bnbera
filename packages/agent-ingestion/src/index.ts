@@ -28,3 +28,4 @@ export * from "./registry-sync-config.js";
 export * from "./registry-sync-job.js";
 export * from "./semantic-discovery.js";
 export * from "./marketplace-state.js";
+export * from "./marketplace-retry.js";
