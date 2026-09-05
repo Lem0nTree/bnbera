@@ -288,4 +288,3 @@ history. If this report is rejected, revert only its documentation commit;
 there is no database or runtime rollback. Do not drop the PostgreSQL volume,
 delete identity rows, or bypass publication diagnostics to make the preview
 non-empty.
-
