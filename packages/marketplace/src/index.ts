@@ -5,3 +5,4 @@ export * from "./read-model.js";
 export * from "./source.js";
 export * from "./types.js";
 export * from "./hybrid.js";
+export * from "./publication.js";
