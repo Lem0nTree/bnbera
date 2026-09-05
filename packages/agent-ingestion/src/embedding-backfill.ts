@@ -7,7 +7,7 @@ import {
   type AgentCategory,
   type Erc8004Identity
 } from "@bnbera/domain";
-import { AppError } from "@bnbera/config";
+import { AppError, validateSemanticEmbeddingLock, type RuntimeConfig } from "@bnbera/config";
 import { ingestionError } from "./errors.js";
 import {
   buildSemanticDocument,
@@ -146,6 +146,10 @@ export type EmbeddingBackfillJobOptions = {
   readonly checkpointRepository?: EmbeddingBackfillCheckpointRepository;
   /** Optional so a disabled gate does not require provider configuration. */
   readonly provider?: EmbeddingProvider;
+  /** Required for the production OpenRouter entry point when semantic gates
+   * are enabled. Test providers remain injectable without the release lock. */
+  readonly standardsLock?: unknown;
+  readonly runtimeConfig?: RuntimeConfig;
   readonly gates?: Partial<EmbeddingBackfillGates>;
   readonly now?: () => Date;
   readonly sleep?: (milliseconds: number) => Promise<void>;
@@ -416,6 +420,8 @@ export class EmbeddingBackfillJob {
   private readonly vectorRepository: SemanticVectorRepository;
   private readonly checkpointRepository: EmbeddingBackfillCheckpointRepository;
   private readonly provider: EmbeddingProvider | undefined;
+  private readonly standardsLock: unknown;
+  private readonly runtimeConfig: RuntimeConfig | undefined;
   private readonly gates: EmbeddingBackfillGates;
   private readonly now: () => Date;
   private readonly sleep: (milliseconds: number) => Promise<void>;
@@ -426,6 +432,8 @@ export class EmbeddingBackfillJob {
     this.vectorRepository = options.vectorRepository;
     this.checkpointRepository = options.checkpointRepository ?? new InMemoryEmbeddingBackfillRepository();
     this.provider = options.provider === undefined ? undefined : validateEmbeddingProvider(options.provider);
+    this.standardsLock = options.standardsLock;
+    this.runtimeConfig = options.runtimeConfig;
     this.gates = normalizeGates(options.gates);
     this.now = options.now ?? (() => new Date());
     this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
@@ -459,6 +467,16 @@ export class EmbeddingBackfillJob {
       throw ingestionError("EMBEDDING_BACKFILL_CONFIG_INVALID", "Embedding backfill requires a configured provider.", "configure_embedding_provider");
     }
     const provider = this.provider;
+    if (provider.provider === "openrouter") {
+      if (this.runtimeConfig === undefined || this.standardsLock === undefined) {
+        throw ingestionError("EMBEDDING_CONFIG_INVALID", "OpenRouter embedding backfill requires the checked-in embedding standards lock.", "configure_embedding_lock");
+      }
+      try {
+        validateSemanticEmbeddingLock(this.standardsLock, this.runtimeConfig);
+      } catch (error) {
+        throw ingestionError("EMBEDDING_CONFIG_INVALID", "The embedding backfill standards lock is unresolved or disabled.", "configure_embedding_lock", error);
+      }
+    }
     const budget: RunBudget = {
       pageSize: boundedInteger(options.pageSize, defaultPageSize, 1, maxPageSize, "page size"),
       maxPages: boundedInteger(options.maxPages, defaultPagesPerRun, 1, maxPagesPerRun, "page count"),

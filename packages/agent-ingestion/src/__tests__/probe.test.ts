@@ -99,6 +99,9 @@ describe("bounded advertised-service probes", () => {
         contract: "agent-card",
         skillCount: 1,
         interfaceCount: 1,
+        cardUrl: "https://agent.example/.well-known/agent-card.json",
+        invocationUrls: ["https://agent.example/a2a"],
+        capabilityEvidence: "advertised-only",
         skills: [{ id: "status", name: "Status", description: "Reports status.", tags: ["health"] }]
       }
     });
@@ -108,6 +111,63 @@ describe("bounded advertised-service probes", () => {
       lookup: async () => [{ address: "93.184.216.34", family: 4 }]
     });
     await expect(genericJson.probe({ kind: "a2a", url: "https://agent.example/.well-known/agent-card.json", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
+      .rejects.toMatchObject({ code: "SERVICE_A2A_AGENT_CARD_INVALID" });
+  });
+
+  it("requires structured adapter capability evidence instead of marker-only JSON", async () => {
+    const invalid = new HttpServiceProbeTransport({
+      fetch: async () => new Response(JSON.stringify({ protocol: "vendor", capabilities: { status: true } }), { status: 200, headers: { "content-type": "application/json" } }),
+      lookup: async () => [{ address: "93.184.216.34", family: 4 }]
+    });
+    await expect(invalid.probe({ kind: "adapter", url: "https://agent.example/adapter", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
+      .rejects.toMatchObject({ code: "SERVICE_ADAPTER_CONTRACT_INVALID" });
+
+    const valid = new HttpServiceProbeTransport({
+      fetch: async () => new Response(JSON.stringify({
+        protocol: "vendor-read-only-v1",
+        capabilities: [{ id: "health", description: "Reports public health." }]
+      }), { status: 200, headers: { "content-type": "application/json" } }),
+      lookup: async () => [{ address: "93.184.216.34", family: 4 }]
+    });
+    await expect(valid.probe({ kind: "adapter", url: "https://agent.example/adapter", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
+      .resolves.toMatchObject({
+        contractStatus: "healthy",
+        safeCapabilityProbe: {
+          capabilityEvidence: "advertised-only",
+          capabilityCount: 1,
+          capabilityIds: ["health"]
+        }
+      });
+  });
+
+  it("rejects A2A invocation URLs that resolve to loopback or private targets", async () => {
+    const card = {
+      name: "Example agent",
+      description: "A public test agent.",
+      version: "1.0.0",
+      supportedInterfaces: [{
+        url: "https://127.0.0.1/invoke",
+        protocolBinding: "JSONRPC",
+        protocolVersion: "0.3"
+      }],
+      capabilities: { streaming: false },
+      skills: [{ id: "status", name: "Status", description: "Reports status.", tags: ["health"] }]
+    };
+    const loopback = new HttpServiceProbeTransport({
+      fetch: async () => new Response(JSON.stringify(card), { status: 200, headers: { "content-type": "application/a2a+json" } }),
+      lookup: async () => [{ address: "93.184.216.34", family: 4 }]
+    });
+    await expect(loopback.probe({ kind: "a2a", url: "https://agent.example/.well-known/agent-card.json", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
+      .rejects.toMatchObject({ code: "SERVICE_A2A_AGENT_CARD_INVALID" });
+
+    const privateHost = new HttpServiceProbeTransport({
+      fetch: async () => new Response(JSON.stringify({
+        ...card,
+        supportedInterfaces: [{ ...card.supportedInterfaces[0], url: "https://invoke.internal/a2a" }]
+      }), { status: 200, headers: { "content-type": "application/a2a+json" } }),
+      lookup: async (hostname) => [{ address: hostname === "invoke.internal" ? "10.0.0.7" : "93.184.216.34", family: 4 }]
+    });
+    await expect(privateHost.probe({ kind: "a2a", url: "https://agent.example/.well-known/agent-card.json", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
       .rejects.toMatchObject({ code: "SERVICE_A2A_AGENT_CARD_INVALID" });
   });
 
