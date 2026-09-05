@@ -143,13 +143,18 @@ async function makeLegacyShape(connectionString: string): Promise<void> {
         DROP COLUMN IF EXISTS "observed_block_hash" CASCADE,
         DROP COLUMN IF EXISTS "read_consistency" CASCADE;
 
+      -- 0002, 0003, and 0004 are deliberately rewound below. Remove both T1
+      -- scheduling tables from this disposable legacy shape so 0004 can be
+      -- replayed instead of colliding with its original CREATE statements.
+      DROP TABLE IF EXISTS "marketplace_ingestion_retries" CASCADE;
+      DROP TABLE IF EXISTS "marketplace_discovery_cursors" CASCADE;
       DROP TABLE IF EXISTS "scan_discovery_checkpoints" CASCADE;
       DELETE FROM drizzle.__drizzle_migrations
        WHERE id IN (
          SELECT id
            FROM drizzle.__drizzle_migrations
           ORDER BY id DESC
-          LIMIT 2
+          LIMIT 3
        );
     `);
   } catch {
@@ -185,15 +190,20 @@ async function verifyLegacyRepair(connectionString: string): Promise<void> {
     }
     assertCondition(!columnNames.has("payment_attempts.receipt_id"), "LEGACY_RECEIPT_LINK_REMAINS");
 
-    const table = await pool.query<{ readonly exists: boolean }>(`
-      SELECT to_regclass('public.scan_discovery_checkpoints') IS NOT NULL AS exists
+    const tables = await pool.query<{ readonly scan_exists: boolean; readonly discovery_exists: boolean; readonly retry_exists: boolean }>(`
+      SELECT
+        to_regclass('public.scan_discovery_checkpoints') IS NOT NULL AS scan_exists,
+        to_regclass('public.marketplace_discovery_cursors') IS NOT NULL AS discovery_exists,
+        to_regclass('public.marketplace_ingestion_retries') IS NOT NULL AS retry_exists
     `);
-    assertCondition(table.rows[0]?.exists === true, "SCAN_CHECKPOINT_MIGRATION_MISSING");
+    assertCondition(tables.rows[0]?.scan_exists === true, "SCAN_CHECKPOINT_MIGRATION_MISSING");
+    assertCondition(tables.rows[0]?.discovery_exists === true, "MARKETPLACE_DISCOVERY_CURSOR_MIGRATION_MISSING");
+    assertCondition(tables.rows[0]?.retry_exists === true, "MARKETPLACE_RETRY_MIGRATION_MISSING");
 
     const journal = await pool.query<{ readonly count: string }>(`
       SELECT count(*)::text AS count FROM drizzle.__drizzle_migrations
     `);
-    assertCondition(journal.rows[0]?.count === "4", "MIGRATION_JOURNAL_INCOMPLETE");
+    assertCondition(journal.rows[0]?.count === "5", "MIGRATION_JOURNAL_INCOMPLETE");
   } catch (error) {
     if (error instanceof MigrationSmokeError) throw error;
     throw new MigrationSmokeError("LEGACY_REPAIR_VERIFICATION_FAILED");

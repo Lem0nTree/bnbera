@@ -216,7 +216,7 @@ type VersionSelection = {
 const safeUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const controlPattern = /[\u0000-\u001f\u007f]/u;
 const sensitiveKeyPattern = /(private[_-]?key|secret|password|mnemonic|seed phrase|access[_-]?token|api[_-]?key|authorization|credential)/iu;
-const defaultServiceHealthMaxAgeMs = 60_000;
+const defaultServiceHealthMaxAgeMs = 120_000;
 
 function diagnostic(code: PublicationDiagnosticCode): PublicationDiagnostic {
   return { code, message: diagnosticMessages[code] };

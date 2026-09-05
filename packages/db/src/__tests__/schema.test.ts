@@ -21,6 +21,8 @@ import {
   evidenceObjects,
   evidencePublicationAttempts,
   evidenceVerificationResults,
+  marketplaceDiscoveryCursors,
+  marketplaceIngestionRetries,
   paymentAttempts,
   paymentReceipts,
   schemaTables
@@ -169,6 +171,15 @@ describe("combined Wave 1 database schema", () => {
     );
   });
 
+  it("exports persistent marketplace scheduling state", () => {
+    expect(Object.keys(marketplaceDiscoveryCursors)).toEqual(
+      expect.arrayContaining(["scope", "chainId", "identityRegistry", "pageSize", "nextOffset", "total", "sweep", "lastPageAt"])
+    );
+    expect(Object.keys(marketplaceIngestionRetries)).toEqual(
+      expect.arrayContaining(["identityId", "attemptCount", "nextAttemptAt", "lastAttemptAt", "lastSuccessAt", "lastStage", "lastErrorCode"])
+    );
+  });
+
   it("keeps the generated baseline plus an ordered legacy repair and no drop of the circular FK", () => {
     const sqlFiles = readdirSync(migrationsPath)
       .filter((file) => /^\d+_.*\.sql$/u.test(file))
@@ -178,7 +189,8 @@ describe("combined Wave 1 database schema", () => {
       "0000_round_wallflower.sql",
       "0001_wave1_combined.sql",
       "0002_wave1_legacy_repair.sql",
-      "0003_scan_discovery_checkpoint.sql"
+      "0003_scan_discovery_checkpoint.sql",
+      "0004_swift_silverclaw.sql"
     ]);
     expect(wave1Files).toEqual(["0001_wave1_combined.sql"]);
 
@@ -191,5 +203,9 @@ describe("combined Wave 1 database schema", () => {
     const scanCheckpoint = readFileSync(join(migrationsPath, "0003_scan_discovery_checkpoint.sql"), "utf8");
     expect(scanCheckpoint).toContain('CREATE TABLE "scan_discovery_checkpoints"');
     expect(scanCheckpoint).not.toContain('DROP CONSTRAINT "agents_current_version_id_agent_versions_id_fk"');
+    const marketplaceScheduling = readFileSync(join(migrationsPath, "0004_swift_silverclaw.sql"), "utf8");
+    expect(marketplaceScheduling).toContain('CREATE TABLE "marketplace_discovery_cursors"');
+    expect(marketplaceScheduling).toContain('CREATE TABLE "marketplace_ingestion_retries"');
+    expect(marketplaceScheduling).not.toContain('DROP CONSTRAINT "agents_current_version_id_agent_versions_id_fk"');
   });
 });
