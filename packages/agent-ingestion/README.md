@@ -107,10 +107,11 @@ the last checkpoint and normalized records; disable
 `classifyAgent` and `DeterministicCategoryClassifier` combine verified public
 metadata, OASF skills/domains, A2A Agent Cards, MCP capability descriptors,
 protocols, and actions. The ruleset is versioned as
-`deterministic-rules-v1`, records bounded evidence and a digest, and leaves
+`deterministic-rules-v2`, records bounded evidence and a digest, and leaves
 description-only or ambiguous records as `uncategorized`. `PgCategoryPredictionSink`
 persists append-only predictions idempotently and only refreshes the current
-agent-version projection.
+agent-version projection. The classifier-version idempotency key leaves
+historical `deterministic-rules-v1` rows intact when v2 predictions are added.
 
 `EmbeddingBackfillJob` reads verified agent versions in stable UUID order,
 builds the allow-listed `bnbera-agent-semantic-v1` document, calls the injected

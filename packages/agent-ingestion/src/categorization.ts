@@ -2,7 +2,7 @@ import { agentCategorySchema, canonicalSha256Hex, type AgentCategory } from "@bn
 import { ingestionError } from "./errors.js";
 import { assertSafePublicValue } from "./normalize.js";
 
-export const categoryClassifierVersion = "deterministic-rules-v1" as const;
+export const categoryClassifierVersion = "deterministic-rules-v2" as const;
 export const categoryReviewStates = ["auto", "needs_review"] as const;
 export type CategoryReviewState = (typeof categoryReviewStates)[number];
 
@@ -33,6 +33,7 @@ export type CategoryEvidence = {
 };
 
 export type CategoryClassification = {
+  /** Highest-scoring primary label; evidence.candidates retains other matches. */
   readonly category: AgentCategory;
   /** 0..100 score from structured protocol/capability fields. */
   readonly structuredScore: number;
@@ -74,6 +75,11 @@ const categoryRules: readonly CategoryRule[] = [
     weights: { capability: 28, protocol: 18, skill: 18, advertisedSkill: 26, domain: 18, name: 10, description: 8 }
   }
 ];
+
+// These labels are useful hints but are too generic to promote a category on
+// their own. Compound/category-specific labels such as `grid-trading` and
+// `yield` remain eligible advertised evidence.
+const weakAdvertisedTerms = new Set(["maker", "vault"]);
 
 const publicText = (value: unknown, max = 2_000): string => {
   if (typeof value !== "string") return "";
@@ -221,16 +227,16 @@ function normalizeInput(input: CategoryClassificationInput): Readonly<Record<str
     ...textList(metadataRecord.domains, 128),
     ...textList(metadataRecord.oasf && typeof metadataRecord.oasf === "object" ? (metadataRecord.oasf as Record<string, unknown>).domains : undefined, 128)
   ].join(" ");
-  return {
+  const fields: Readonly<Record<string, string>> = {
     name: publicText(input.name, 160),
     description: publicText(input.description, 2_000),
     protocol: protocols,
     skill: skills,
-    advertisedSkill,
     domain: domains,
     capability: capabilities,
     metadata: metadataText
   };
+  return advertisedSkill.length === 0 ? fields : { ...fields, advertisedSkill };
 }
 
 function confidenceFor(best: CategoryEvidence, second: CategoryEvidence | undefined, structuredPresent: boolean): number {
@@ -253,7 +259,11 @@ export function classifyAgent(input: CategoryClassificationInput): CategoryClass
   if (best === undefined) throw ingestionError("CATEGORY_CLASSIFICATION_FAILED", "No category rules are configured.", "configure_classifier");
   const structuredPresent = (fields.capability ?? "").length > 0 || (fields.protocol ?? "").length > 0 || (fields.skill ?? "").length > 0 || (fields.advertisedSkill ?? "").length > 0 || (fields.domain ?? "").length > 0;
   const confidence = confidenceFor(best, second, structuredPresent);
-  const promote = best.structuredScore >= 25 && best.matchedTerms.length > 0 && confidence >= 0.55 && best.structuredScore > (second?.structuredScore ?? 0) + 4;
+  const hasOnlyWeakAdvertisedEvidence = best.structuredMatches.length > 0 && best.structuredMatches.every((match) => {
+    const [field, term] = match.split(":", 2);
+    return field === "advertisedSkill" && term !== undefined && weakAdvertisedTerms.has(term);
+  });
+  const promote = !hasOnlyWeakAdvertisedEvidence && best.structuredScore >= 25 && best.matchedTerms.length > 0 && confidence >= 0.55 && best.structuredScore > (second?.structuredScore ?? 0) + 4;
   const category: AgentCategory = promote ? best.category : "uncategorized";
   agentCategorySchema.parse(category);
   const evidenceDigest = canonicalSha256Hex({ fields, evidence });

@@ -165,6 +165,18 @@ describe("bounded advertised-service probes", () => {
     });
     await expect(missingTags.probe({ kind: "a2a", url: "https://agent.example/.well-known/agent-card.json", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
       .rejects.toMatchObject({ code: "SERVICE_A2A_AGENT_CARD_INVALID" });
+
+    for (const invalidTag of ["grid\u0000trading", "grid\ntrading"]) {
+      const controls = new HttpServiceProbeTransport({
+        fetch: async () => new Response(JSON.stringify({
+          ...card,
+          skills: [{ ...card.skills[0], tags: [invalidTag] }]
+        }), { status: 200, headers: { "content-type": "application/a2a+json" } }),
+        lookup: async () => [{ address: "93.184.216.34", family: 4 }]
+      });
+      await expect(controls.probe({ kind: "a2a", url: "https://agent.example/.well-known/agent-card.json", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
+        .rejects.toMatchObject({ code: "SERVICE_A2A_AGENT_CARD_INVALID" });
+    }
   });
 
   it("requires structured adapter capability evidence instead of marker-only JSON", async () => {

@@ -94,7 +94,7 @@ function normalizedContentType(value: string | null | undefined): string {
 }
 
 function publicString(value: unknown, maximum = 256): string | null {
-  return typeof value === "string" && value.trim().length > 0 && value.length <= maximum
+  return typeof value === "string" && value.trim().length > 0 && value.length <= maximum && !controlPattern.test(value)
     ? value.trim()
     : null;
 }

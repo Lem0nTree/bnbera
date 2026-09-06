@@ -95,6 +95,8 @@ export class PgCategoryPredictionSink {
                $6::numeric, $7::jsonb, $8::varchar, $9::varchar, $10::varchar,
                $11::timestamptz
          WHERE NOT EXISTS (
+           -- Keep classifier version in the idempotency key: historical v1
+           -- predictions remain append-only rows when v2 is introduced.
            SELECT 1
              FROM agent_category_predictions AS existing
             WHERE existing.agent_version_id = $2
