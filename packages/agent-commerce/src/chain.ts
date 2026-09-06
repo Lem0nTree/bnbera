@@ -52,6 +52,7 @@ export interface Erc8183DeploymentVerification {
   readonly routerProxy: Address;
   readonly policy: Address;
   readonly paymentToken: Address;
+  readonly paymentDecimals: number;
   readonly commerceImplementation: Address;
   readonly routerImplementation: Address;
   readonly paymentTokenImplementation: Address;
@@ -61,10 +62,104 @@ export interface Erc8183DeploymentVerification {
   readonly paymentTokenRuntimeSha256: string;
   readonly commerceImplementationRuntimeSha256: string;
   readonly routerImplementationRuntimeSha256: string;
-  readonly paymentTokenImplementationRuntimeSha256: string;
+  /** The current standards lock records the token implementation address but
+   * does not yet record its runtime hash. Do not invent one at composition
+   * time; a future lock may add this field before it is enforced. */
+  readonly paymentTokenImplementationRuntimeSha256?: string;
   readonly paymentTokenSymbol?: string;
   readonly paymentTokenName?: string;
   readonly implementationSlot?: Hex;
+}
+
+export interface Erc8183DeploymentLockConfig {
+  readonly chainId: 97;
+  readonly enabled: boolean;
+  readonly releaseEnabled: boolean;
+  readonly verification: Erc8183DeploymentVerification;
+}
+
+function lockRecord(value: unknown, label: string): Readonly<Record<string, unknown>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new CommerceError({ code: "COMMERCE_DISABLED", message: `The standards lock has no valid ${label} record.`, nextAction: "verify_standards_lock" });
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function lockString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new CommerceError({ code: "COMMERCE_DISABLED", message: `The standards lock has no valid ${label}.`, nextAction: "verify_standards_lock" });
+  }
+  return value;
+}
+
+function lockBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new CommerceError({ code: "COMMERCE_DISABLED", message: `The standards lock has no valid ${label} flag.`, nextAction: "verify_standards_lock" });
+  }
+  return value;
+}
+
+function lockAddress(value: unknown, label: string): Address {
+  try { return normalizeAddress(lockString(value, label), label) as Address; } catch (cause) {
+    if (cause instanceof CommerceError && cause.code === "COMMERCE_DISABLED") throw cause;
+    throw new CommerceError({ code: "COMMERCE_DISABLED", message: `The standards lock has an invalid ${label} address.`, nextAction: "verify_standards_lock", cause });
+  }
+}
+
+function lockHash(value: unknown, label: string): string {
+  try { return assertSha256(lockString(value, label), label); } catch (cause) {
+    if (cause instanceof CommerceError) throw cause;
+    throw new CommerceError({ code: "COMMERCE_DISABLED", message: `The standards lock has an invalid ${label} runtime hash.`, nextAction: "verify_standards_lock", cause });
+  }
+}
+
+/**
+ * Compose the runtime deployment observations from the checked-in standards
+ * lock. The resolver intentionally preserves the lock's disabled/release
+ * flags; callers cannot enable commerce by passing this projection alone.
+ * Runtime bytecode, proxy slots, token metadata and router/policy links are
+ * still read by `verifyNetwork` immediately before any SDK write.
+ */
+export function resolveErc8183DeploymentVerification(lock: unknown, chainId = 97): Erc8183DeploymentLockConfig {
+  if (chainId !== 97) throw new CommerceError({ code: "INVALID_CHAIN", message: "The ERC-8183 standards lock only defines the BSC testnet deployment." });
+  const root = lockRecord(lock, "root");
+  const networks = lockRecord(root.networks, "networks");
+  const network = lockRecord(networks[String(chainId)], `network ${chainId}`);
+  const deployment = lockRecord(network.erc8183, `network ${chainId} ERC-8183 deployment`);
+  const runtime = lockRecord(deployment.runtimeSha256, "ERC-8183 runtime hash");
+  const abiHashes = lockRecord(deployment.abiHashes, "ERC-8183 ABI hash");
+  const commerceAbi = lockString(abiHashes.commerce, "commerce ABI hash");
+  if (!/^[0-9a-f]{64}$/iu.test(commerceAbi) || commerceAbi.toLowerCase() !== REVIEWED_APEX_COMMERCE_ABI_SHA256) {
+    throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The standards-locked commerce ABI is not the reviewed APEX v1 ABI.", nextAction: "verify_standards_lock" });
+  }
+  const verification: Erc8183DeploymentVerification = {
+    commerceProxy: lockAddress(deployment.commerceProxy, "commerce proxy"),
+    routerProxy: lockAddress(deployment.routerProxy, "router proxy"),
+    policy: lockAddress(deployment.policy, "policy"),
+    paymentToken: lockAddress(deployment.paymentToken, "payment token"),
+    paymentDecimals: (() => {
+      const value = deployment.paymentDecimals;
+      if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 255) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The standards lock has invalid payment-token decimals.", nextAction: "verify_standards_lock" });
+      return value;
+    })(),
+    commerceImplementation: lockAddress(deployment.commerceImplementation, "commerce implementation"),
+    routerImplementation: lockAddress(deployment.routerImplementation, "router implementation"),
+    paymentTokenImplementation: lockAddress(deployment.paymentTokenImplementation, "payment token implementation"),
+    commerceProxyRuntimeSha256: lockHash(runtime.commerceProxy, "commerce proxy"),
+    routerProxyRuntimeSha256: lockHash(runtime.routerProxy, "router proxy"),
+    policyRuntimeSha256: lockHash(runtime.policy, "policy"),
+    paymentTokenRuntimeSha256: lockHash(runtime.paymentToken, "payment token"),
+    commerceImplementationRuntimeSha256: lockHash(runtime.commerceImplementation, "commerce implementation"),
+    routerImplementationRuntimeSha256: lockHash(runtime.routerImplementation, "router implementation"),
+    ...(deployment.paymentTokenSymbol === undefined ? {} : { paymentTokenSymbol: lockString(deployment.paymentTokenSymbol, "payment token symbol") }),
+    ...(deployment.paymentTokenName === undefined ? {} : { paymentTokenName: lockString(deployment.paymentTokenName, "payment token name") })
+  };
+  return {
+    chainId: 97,
+    enabled: lockBoolean(deployment.enabled, "enabled"),
+    releaseEnabled: lockBoolean(deployment.releaseEnabled, "releaseEnabled"),
+    verification
+  };
 }
 
 export interface Erc8183AltanaSdk {
@@ -84,6 +179,10 @@ export interface Erc8183AltanaAdapterOptions {
   /** Injected only for deterministic tests or a platform-owned read client. */
   readonly receiptReader?: Erc8183ReceiptReader;
   readonly deploymentReader?: Erc8183DeploymentReader;
+  /** The checked-in lock is the only supported source for runtime pins in
+   * production composition. Explicit verification remains available to
+   * deterministic tests and a platform-owned composition layer. */
+  readonly standardsLock?: unknown;
   readonly deploymentVerification?: Erc8183DeploymentVerification;
   readonly sdk?: Partial<Erc8183AltanaSdk>;
 }
@@ -505,17 +604,22 @@ function recoverCreatedJobId(receipt: Erc8183RpcReceipt, commerceContract: Addre
   try { return eventBigInt(event.args, "jobId", "hire", receipt.transactionHash).toString(10); } catch { return null; }
 }
 
-const STATUS_ORDER: Readonly<Record<Erc8183OnchainStatus, number>> = {
-  OPEN: 0,
-  FUNDED: 1,
-  SUBMITTED: 2,
-  COMPLETED: 3,
-  REJECTED: 4,
-  EXPIRED: 5
+const ACCEPTED_LATER_STATES: Readonly<Record<Erc8183OnchainStatus, readonly Erc8183OnchainStatus[]>> = {
+  OPEN: ["OPEN"],
+  FUNDED: ["FUNDED", "SUBMITTED", "COMPLETED", "REJECTED", "EXPIRED"],
+  SUBMITTED: ["SUBMITTED", "COMPLETED", "REJECTED", "EXPIRED"],
+  COMPLETED: ["COMPLETED"],
+  REJECTED: ["REJECTED"],
+  EXPIRED: ["EXPIRED"]
 };
 
-function isAtOrAfterStatus(actual: Erc8183OnchainStatus, expected: Erc8183OnchainStatus): boolean {
-  return STATUS_ORDER[actual] >= STATUS_ORDER[expected];
+/**
+ * State advancement is operation-specific. In particular, terminal states
+ * are not ordered numerically: REJECTED and EXPIRED are valid observations
+ * after a submit, but neither is "later than" COMPLETED for every action.
+ */
+function acceptsState(actual: Erc8183OnchainStatus, expected: Erc8183OnchainStatus): boolean {
+  return ACCEPTED_LATER_STATES[expected].includes(actual);
 }
 
 function withExecutionContext(cause: unknown, execution: { readonly callsId: Hex; readonly transactionHash: Hex | null }, action: string): CommerceError {
@@ -594,6 +698,8 @@ export class Erc8183AltanaAdapter {
   private readonly receiptReader: Erc8183ReceiptReader;
   private readonly deploymentReader: Erc8183DeploymentReader;
   private readonly deploymentVerification: Erc8183DeploymentVerification | undefined;
+  private readonly standardsLockEnabled: boolean | undefined;
+  private readonly standardsLockReleaseEnabled: boolean | undefined;
 
   public constructor(options: Erc8183AltanaAdapterOptions) {
     this.pin = assertSdkDeploymentMatchesPin(options.pin);
@@ -611,7 +717,10 @@ export class Erc8183AltanaAdapter {
     this.sdk = { ...SDK_DEFAULTS, execute: defaultExecute, ...(options.sdk ?? {}) };
     this.receiptReader = options.receiptReader ?? createReceiptReader(this.network);
     this.deploymentReader = options.deploymentReader ?? (publicClient as unknown as Erc8183DeploymentReader);
-    this.deploymentVerification = options.deploymentVerification;
+    const lockConfig = options.standardsLock === undefined ? undefined : resolveErc8183DeploymentVerification(options.standardsLock, this.pin.chainId);
+    this.deploymentVerification = lockConfig?.verification ?? options.deploymentVerification;
+    this.standardsLockEnabled = lockConfig?.enabled;
+    this.standardsLockReleaseEnabled = lockConfig?.releaseEnabled;
   }
 
   public async verifyNetwork(): Promise<Erc8183NetworkEvidence> {
@@ -651,13 +760,15 @@ export class Erc8183AltanaAdapter {
     assertImplementationSlot(await this.deploymentReader.getStorageAt({ address: expected.paymentToken, slot }), expected.paymentTokenImplementation, "payment token");
     assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.commerceImplementation }), expected.commerceImplementationRuntimeSha256, "commerce implementation");
     assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.routerImplementation }), expected.routerImplementationRuntimeSha256, "router implementation");
-    assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.paymentTokenImplementation }), expected.paymentTokenImplementationRuntimeSha256, "payment token implementation");
+    if (expected.paymentTokenImplementationRuntimeSha256 !== undefined) {
+      assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.paymentTokenImplementation }), expected.paymentTokenImplementationRuntimeSha256, "payment token implementation");
+    }
     const paymentToken = asAddress(await this.deploymentReader.readContract({ address: expected.commerceProxy, abi: ERC8183_COMMERCE_LINK_ABI as unknown as Abi, functionName: "paymentToken" }), "commerce payment token");
     if (paymentToken.toLowerCase() !== expected.paymentToken.toLowerCase()) throw new CommerceError({ code: "INVALID_TOKEN", message: "The commerce proxy paymentToken does not match the standards-locked token.", nextAction: "verify_standards_lock" });
     const decimalsValue = await this.deploymentReader.readContract({ address: expected.paymentToken, abi: ERC20_METADATA_ABI as unknown as Abi, functionName: "decimals" });
     let decimals: bigint;
     try { decimals = BigInt(decimalsValue as bigint | number | string); } catch (cause) { throw new CommerceError({ code: "INVALID_TOKEN", message: "The standards-locked payment token returned an invalid decimals value.", nextAction: "verify_standards_lock", cause }); }
-    if (decimals !== BigInt(this.pin.paymentDecimals)) throw new CommerceError({ code: "INVALID_TOKEN", message: "The payment-token decimals do not match the standards lock.", nextAction: "verify_standards_lock" });
+    if (decimals !== BigInt(expected.paymentDecimals) || decimals !== BigInt(this.pin.paymentDecimals)) throw new CommerceError({ code: "INVALID_TOKEN", message: "The payment-token decimals do not match the standards lock.", nextAction: "verify_standards_lock" });
     if (expected.paymentTokenSymbol !== undefined) {
       const symbol = await this.deploymentReader.readContract({ address: expected.paymentToken, abi: ERC20_METADATA_ABI as unknown as Abi, functionName: "symbol" });
       if (symbol !== expected.paymentTokenSymbol) throw new CommerceError({ code: "INVALID_TOKEN", message: "The payment-token symbol does not match the standards lock.", nextAction: "verify_standards_lock" });
@@ -680,6 +791,7 @@ export class Erc8183AltanaAdapter {
       if (cause instanceof CommerceError) throw cause;
       throw new CommerceError({ code: "CHAIN_PROVIDER_INVALID", message: "The standards-lock deployment could not be verified by the configured RPC.", nextAction: "verify_standards_lock", cause });
     }
+    if (this.standardsLockEnabled === false || this.standardsLockReleaseEnabled === false) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "ERC-8183 writes remain disabled by the standards lock until the authorized canary is accepted.", nextAction: "verify_standards_lock" });
   }
 
   public async readJob(jobId: string | bigint): Promise<Erc8183OnchainJob> {
@@ -764,7 +876,7 @@ export class Erc8183AltanaAdapter {
       const receipt = assertReceipt(await this.requireReceipt(transactionHash, "submit"), transactionHash, "submit");
       this.assertSubmitReceipt(receipt, jobId, authorityAddress(input.authority), chainDeliverable);
       const job = await this.readJob(jobId);
-      if (!isAtOrAfterStatus(job.status, "SUBMITTED") || job.chainDeliverable.toLowerCase() !== chainDeliverable.toLowerCase() || job.provider.toLowerCase() !== authorityAddress(input.authority).toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed submit did not produce the requested provider, deliverable, and valid post-submit state.", transactionHash, nextAction: "reconcile_transaction" });
+      if (!acceptsState(job.status, "SUBMITTED") || job.chainDeliverable.toLowerCase() !== chainDeliverable.toLowerCase() || job.provider.toLowerCase() !== authorityAddress(input.authority).toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed submit did not produce the requested provider, deliverable, and valid post-submit state.", transactionHash, nextAction: "reconcile_transaction" });
       return { ...execution, transactionHash, jobId, resultDigest: input.resultDigest.toLowerCase(), chainDeliverable, job, receipt, ...(raw.manifestText === undefined ? {} : { manifestText: raw.manifestText }) };
     } catch (cause) {
       throw withExecutionContext(cause, execution, "submit");
@@ -788,7 +900,7 @@ export class Erc8183AltanaAdapter {
       const job = await this.readJob(jobId);
       this.assertSettleReceipt(receipt, jobId, action, authorityAddress(authority), job);
       if (action === "approve" && job.status !== "COMPLETED") throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed approval did not produce COMPLETED protocol state.", transactionHash, nextAction: "reconcile_transaction" });
-      if (action === "dispute" && !isAtOrAfterStatus(job.status, "SUBMITTED")) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed dispute did not leave the job in a valid post-submit state.", transactionHash, nextAction: "reconcile_transaction" });
+      if (action === "dispute" && !acceptsState(job.status, "SUBMITTED")) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed dispute did not leave the job in a valid post-submit state.", transactionHash, nextAction: "reconcile_transaction" });
       return { ...execution, transactionHash, jobId, action, job, receipt };
     } catch (cause) {
       throw withExecutionContext(cause, execution, "settle");
@@ -842,7 +954,7 @@ export class Erc8183AltanaAdapter {
       const event = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobSubmitted", this.pin.commerceContract as Address, "submit");
       this.assertSubmitEvent(event, id, signer, input.expectation?.digest, input.transactionHash);
       if (job === null) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled submit has no readable protocol job.", transactionHash: input.transactionHash, nextAction: "manual_review" });
-      if (!isAtOrAfterStatus(job.status, "SUBMITTED")) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled submit job has not reached SUBMITTED or a later state.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+      if (!acceptsState(job.status, "SUBMITTED")) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled submit job has not reached SUBMITTED or a later state.", transactionHash: input.transactionHash, nextAction: "manual_review" });
       if (input.expectation?.digest !== undefined && job.chainDeliverable.toLowerCase() !== input.expectation.digest.toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled job deliverable does not match the committed Keccak digest.", transactionHash: input.transactionHash, nextAction: "manual_review" });
     } else if (input.kind === "settle") {
       const id = requireOperationJobId(input.jobId, input.transactionHash);
@@ -865,7 +977,7 @@ export class Erc8183AltanaAdapter {
         const disputed = requireReceiptEvent(receipt, ERC8183_POLICY_EVENTS_ABI, "Disputed", this.policyContract, "dispute");
         assertEventBigInt(eventBigInt(disputed.args, "jobId", "dispute", input.transactionHash), BigInt(id), "dispute job ID", input.transactionHash);
         assertEventAddress(eventAddress(disputed.args, "client", "dispute", input.transactionHash), signer ?? job.client, "dispute client", input.transactionHash);
-        if (!isAtOrAfterStatus(job.status, "SUBMITTED")) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled dispute job is not in a valid post-submit state.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+        if (!acceptsState(job.status, "SUBMITTED")) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled dispute job is not in a valid post-submit state.", transactionHash: input.transactionHash, nextAction: "manual_review" });
       }
     } else if (input.kind === "claim_refund") {
       const id = requireOperationJobId(input.jobId, input.transactionHash);
@@ -911,7 +1023,7 @@ export class Erc8183AltanaAdapter {
   }
 
   private assertHireState(job: Erc8183OnchainJob, expectation: Erc8183OperationExpectation | null | undefined, transactionHash: Hex): void {
-    if (!isAtOrAfterStatus(job.status, "FUNDED")) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled hire job has not reached FUNDED or a later valid state.", transactionHash, nextAction: "manual_review" });
+    if (!acceptsState(job.status, "FUNDED")) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled hire job has not reached FUNDED or a later valid state.", transactionHash, nextAction: "manual_review" });
     if (expectation?.providerAddress !== undefined) assertEventAddress(job.provider, expectation.providerAddress, "job provider", transactionHash);
     if (expectation?.amountAtomic !== undefined && job.budgetAtomic !== expectation.amountAtomic) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled hire budget does not match the operation expectation.", transactionHash, nextAction: "manual_review" });
   }
@@ -956,7 +1068,7 @@ export class Erc8183AltanaAdapter {
   }
 
   private assertHiredJob(job: Erc8183OnchainJob, client: Address, provider: Address, budget: bigint, expiredAtUnix: number): void {
-    if (!isAtOrAfterStatus(job.status, "FUNDED") || job.client.toLowerCase() !== client.toLowerCase() || job.provider.toLowerCase() !== provider.toLowerCase() || job.evaluator.toLowerCase() !== this.routerContract.toLowerCase() || job.hook.toLowerCase() !== this.routerContract.toLowerCase() || job.budgetAtomic !== budget.toString(10) || job.expiredAtUnix !== expiredAtUnix) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed hire did not match the requested client, provider, evaluator, hook, budget, expiry, and valid funded-or-later state.", nextAction: "reconcile_transaction" });
+    if (!acceptsState(job.status, "FUNDED") || job.client.toLowerCase() !== client.toLowerCase() || job.provider.toLowerCase() !== provider.toLowerCase() || job.evaluator.toLowerCase() !== this.routerContract.toLowerCase() || job.hook.toLowerCase() !== this.routerContract.toLowerCase() || job.budgetAtomic !== budget.toString(10) || job.expiredAtUnix !== expiredAtUnix) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed hire did not match the requested client, provider, evaluator, hook, budget, expiry, and valid funded-or-later state.", nextAction: "reconcile_transaction" });
   }
 }
 

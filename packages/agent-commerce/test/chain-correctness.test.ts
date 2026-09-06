@@ -75,6 +75,12 @@ describe("ERC-8183 operation-specific receipt correctness", () => {
     expect(result.job?.status).toBe("COMPLETED");
   });
 
+  it("does not treat FUNDED as a later valid state for a submitted operation", async () => {
+    const submitted = logFor(ERC8183_COMMERCE_EVENTS_ABI as unknown as Abi, "JobSubmitted", { jobId: 7n, provider: PROVIDER }, [{ type: "bytes32" }], [DIGEST]);
+    const instance = adapter(job("FUNDED"), receipt([submitted]));
+    await expect(instance.verifyReceiptForOperation({ transactionHash: TX, kind: "submit", jobId: "7", signerAddress: PROVIDER, expectation: { digest: DIGEST, expectedState: "SUBMITTED" } })).rejects.toMatchObject({ code: "ONCHAIN_MISMATCH" });
+  });
+
   it("recovers a hired job identity from canonical events after an adapter restart", async () => {
     const created = logFor(ERC8183_COMMERCE_EVENTS_ABI as unknown as Abi, "JobCreated", { jobId: 7n, client: CLIENT, provider: PROVIDER }, [{ type: "address" }, { type: "uint256" }, { type: "address" }], [ROUTER, 2_000_600n, ROUTER]);
     const funded = logFor(ERC8183_COMMERCE_EVENTS_ABI as unknown as Abi, "JobFunded", { jobId: 7n, client: CLIENT, provider: PROVIDER }, [{ type: "uint256" }], [1000n]);

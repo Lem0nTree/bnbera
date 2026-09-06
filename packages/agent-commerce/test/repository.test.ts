@@ -3,6 +3,7 @@ import { canonicalSha256Hex } from "@bnbera/domain";
 import {
   CommerceError,
   InMemoryErc8183Repository,
+  approveErc8183Result,
   createErc8183JobEvent,
   erc8183DeploymentPinDigest,
   erc8183JobRecordSchema,
@@ -129,6 +130,14 @@ describe("ERC-8183 repository idempotency", () => {
     expect((await repository.appendEvent(event)).replayed).toBe(true);
     await expect(repository.appendEvent({ ...event, payloadDigest: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" })).rejects.toThrow(/event key/i);
     await expect(repository.appendEvent({ ...event, eventKey: "unknown-job-event", jobKey: { ...event.jobKey, jobId: "99" } })).rejects.toThrow(/unknown job/i);
+  });
+
+  it("keeps buyer approval bound to the local SHA-256 result digest", () => {
+    const localDigest = "c".repeat(64);
+    const submitted = erc8183JobRecordSchema.parse({ ...JOB, state: "submitted", deliverableDigest: localDigest });
+    const approved = approveErc8183Result({ job: submitted, actorAddress: JOB.terms.clientAddress, resultDigest: localDigest, nowUnix: 2_000_200 });
+    expect(approved.buyerApproval?.resultDigest).toBe(localDigest);
+    expect(() => approveErc8183Result({ job: submitted, actorAddress: JOB.terms.clientAddress, resultDigest: "d".repeat(64), nowUnix: 2_000_200 })).toThrow(/submitted deliverable digest/i);
   });
 
   it("does not permit an unvalidated event append and rolls back an event conflict", async () => {

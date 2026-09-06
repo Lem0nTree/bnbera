@@ -172,7 +172,6 @@ export class Erc8183OperationCoordinator {
       const result = await input.run();
       await this.operations.attachCallsId({ operationId: reservation.operation.operationId, callsId: result.callsId });
       if (result.status !== "CONFIRMED" || result.transactionHash === null || result.receipt === null) {
-        if (input.operation.kind === "create" && result.jobId !== "") await this.persistCanonicalPendingHire(reservation.operation, result as unknown as Erc8183HireResult);
         if (result.transactionHash !== null) await this.operations.markSubmitted({ operationId: reservation.operation.operationId, transactionHash: result.transactionHash });
         await this.operations.markUnknown({ operationId: reservation.operation.operationId, failureCode: result.status === "PENDING" ? "RELAY_PENDING" : "CONFIRMATION_HASH_MISSING" });
         throw new CommerceError({ code: "TRANSACTION_UNKNOWN", message: "The Altana operation is not durably confirmed; do not resend before reconciliation.", nextAction: "reconcile_transaction", ...(result.transactionHash === null ? {} : { transactionHash: result.transactionHash }), relayCallsId: result.callsId });
@@ -222,9 +221,15 @@ export class Erc8183OperationCoordinator {
       });
       await this.operations.markReceipt({ operationId, status: "confirmed", transactionHash: checked.receipt.transactionHash, blockNumber: checked.receipt.blockNumber.toString(10), blockHash: checked.receipt.blockHash, failureCode: null });
       if (existing.jobId === null && checked.job !== null) await this.operations.attachJobId({ operationId, jobId: checked.job.id });
+      // The canonical projection is repaired while the operation is still
+      // unresolved. If the process crashes after this point, a later
+      // reconciliation retries the idempotent projection instead of seeing a
+      // terminal operation and returning early with a missing job/result.
+      const afterReceipt = await this.operations.get(operationId);
+      if (afterReceipt === null) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled operation could not be reloaded before canonical persistence.", transactionHash: checked.receipt.transactionHash, nextAction: "manual_review" });
+      await this.persistCanonicalReconciliation(afterReceipt, checked.job, checked.receipt);
       const reconciled = await this.operations.reconcile({ operationId, status: "reconciled" });
-      await this.persistCanonicalReconciliation(existing, checked.job, checked.receipt);
-      return { operation: reconciled, result: { operation: this.operationFromRecord(existing), transactionHash: checked.receipt.transactionHash, receipt: checked.receipt, jobId: checked.job?.id ?? existing.jobId }, replayed: false };
+      return { operation: reconciled, result: { operation: this.operationFromRecord(reconciled), transactionHash: checked.receipt.transactionHash, receipt: checked.receipt, jobId: checked.job?.id ?? reconciled.jobId }, replayed: false };
     } catch (cause) {
       try { await this.operations.markManualReview({ operationId, failureCode: "RECEIPT_VALIDATION_FAILED" }); } catch { /* preserve original action */ }
       if (cause instanceof CommerceError) throw cause;
@@ -395,56 +400,16 @@ export class Erc8183OperationCoordinator {
     }
   }
 
-  private async persistCanonicalPendingHire(operation: Erc8183OperationRecord, result: Erc8183HireResult): Promise<void> {
-    if (this.jobs === undefined) return;
-    const parameters = operation.context?.parameters;
-    const commerceJobId = contextValue(parameters, "commerceJobId");
-    if (typeof commerceJobId !== "string" || commerceJobId.trim() === "") throw new CommerceError({ code: "INVALID_JOB", message: "A canonical ERC-8183 hire requires the owning commerce job ID before persistence.", nextAction: "configure_job_repository" });
-    const taskDigest = contextValue(parameters, "taskDigest");
-    const providerBinding = contextValue(parameters, "providerBinding");
-    const providerAddress = operation.context?.expectation?.providerAddress;
-    if (typeof taskDigest !== "string" || !/^[0-9a-f]{64}$/iu.test(taskDigest) || providerAddress === undefined) throw new CommerceError({ code: "INVALID_JOB", message: "The pending canonical hire is missing its task or provider identity." });
-    const binding = providerBinding === undefined || providerBinding === null ? null : erc8183ProviderBindingSchema.parse(providerBinding);
-    const createdAt = Math.max(1, Math.floor(operation.createdAtUnix));
-    const key = { chainId: this.adapter.pin.chainId, commerceContract: this.adapter.pin.commerceContract, jobId: result.jobId };
-    const existing = await this.jobs.get(key);
-    if (existing !== null) {
-      if (existing.state === "open" && existing.terms.clientAddress.toLowerCase() === operation.context?.signerAddress.toLowerCase() && existing.terms.providerAddress?.toLowerCase() === providerAddress.toLowerCase() && existing.terms.budgetAtomic === result.budgetAtomic) return;
-      if (existing.state === "funded" || existing.state === "submitted" || existing.state === "completed" || existing.state === "rejected" || existing.state === "expired") return;
-      throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The pending canonical ERC-8183 hire projection has conflicting terms." });
-    }
-    const canonical = erc8183JobRecordSchema.parse({
-      jobKey: key,
-      terms: { chainId: this.adapter.pin.chainId, commerceContract: this.adapter.pin.commerceContract, paymentToken: this.adapter.pin.paymentToken, paymentDecimals: this.adapter.pin.paymentDecimals, clientAddress: operation.context?.signerAddress, providerAddress, evaluatorAddress: this.adapter.routerContract, hookAddress: this.adapter.routerContract, budgetAtomic: result.budgetAtomic, descriptionDigest: taskDigest.toLowerCase(), expiresAtUnix: result.expiredAtUnix },
-      deploymentPin: this.adapter.pin,
-      deploymentPinDigest: erc8183DeploymentPinDigest(this.adapter.pin),
-      state: "open",
-      createdAtUnix: createdAt,
-      updatedAtUnix: Math.max(createdAt, nowUnix()),
-      deliverableDigest: null,
-      providerBinding: binding,
-      buyerApproval: null,
-      fundingTransactionHash: null,
-      submissionTransactionHash: null,
-      completionTransactionHash: null,
-      rejectionTransactionHash: null,
-      refundTransactionHash: null,
-      lastObservedBlock: null,
-      lastObservedBlockHash: null,
-      lastObservedAtUnix: null
-    });
-    const event = createErc8183JobEvent({ eventKey: `operation:${operation.context?.signerAddress ?? "unknown"}:${result.jobId}:hire-pending`, jobKey: key, eventType: "job_created", previousState: null, nextState: "open", ...(operation.context?.signerAddress === undefined ? {} : { actorAddress: operation.context.signerAddress }), transactionHash: result.transactionHash, confirmationState: "provisional", payload: { operation: "hire", taskDigest: taskDigest.toLowerCase(), providerBinding: binding, budgetAtomic: result.budgetAtomic, callsId: result.callsId }, correlationId: operation.context?.signerAddress ?? result.callsId, observedAtUnix: Math.max(createdAt, nowUnix()) });
-    await this.jobs.create({ commerceJobId, job: canonical, event });
-  }
-
   private async persistCanonicalSubmit(operation: Erc8183OperationRecord, onchain: NonNullable<Erc8183HireResult["job"]>, receipt: Erc8183RpcReceipt, submit: Pick<Erc8183SubmitResult, "resultDigest" | "chainDeliverable" | "manifestText">): Promise<void> {
     if (this.jobs === undefined) return;
     const current = await this.jobs.get({ chainId: this.adapter.pin.chainId, commerceContract: this.adapter.pin.commerceContract, jobId: onchain.id });
     if (current === null) throw new CommerceError({ code: "RECONCILIATION_REQUIRED", message: "The submitted on-chain result has no canonical hired job projection.", nextAction: "reconcile_job" });
+    const localResultDigest = submit.resultDigest.toLowerCase();
+    if (!/^[0-9a-f]{64}$/u.test(localResultDigest)) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The canonical submitted job is missing its local SHA-256 result digest." });
     const submittedDigest = submit.chainDeliverable.toLowerCase().replace(/^0x/u, "");
     if (!/^[0-9a-f]{64}$/u.test(submittedDigest)) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The canonical submitted job is missing its Keccak deliverable digest." });
     if (current.state !== "funded") {
-      if (current.state === "submitted" && current.deliverableDigest?.toLowerCase() === submittedDigest) return;
+      if (current.state === "submitted" && current.deliverableDigest?.toLowerCase() === localResultDigest) return;
       throw new CommerceError({ code: "STALE_JOB", message: "The canonical job is not in FUNDED state for submission.", retriable: true, nextAction: "reconcile_job" });
     }
     const updatedAt = Math.max(current.updatedAtUnix, nowUnix());
@@ -452,7 +417,10 @@ export class Erc8183OperationCoordinator {
       ...current,
       state: "submitted",
       updatedAtUnix: updatedAt,
-      deliverableDigest: submittedDigest,
+      // The legacy column is the buyer-facing local result identity. The
+      // protocol Keccak is retained separately in the durable operation/event
+      // JSON below and is the value verified against JobSubmitted.deliverable.
+      deliverableDigest: localResultDigest,
       submissionTransactionHash: receipt.transactionHash,
       lastObservedBlock: receipt.blockNumber.toString(10),
       lastObservedBlockHash: receipt.blockHash,

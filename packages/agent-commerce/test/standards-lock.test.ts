@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { erc8183Addresses } from "@altananetwork/sdk";
 import { describe, expect, it } from "vitest";
+import { resolveErc8183DeploymentVerification } from "../src/index.js";
 
 type Erc8183Lock = {
   readonly enabled?: unknown;
@@ -108,5 +109,27 @@ describe("T4 ERC-8183 standards lock", () => {
       policy: "4a17125e2600679a15b88acf8cd481f442d8056fd38da709a4a774e621258ed5",
       paymentToken: "1076ca0b58e992bba671ddbde6a9d96685c712113eee50caa891c458fc2b48a9"
     });
+  });
+
+  it("composes runtime verification from the lock without enabling release", () => {
+    const composed = resolveErc8183DeploymentVerification(lock, 97);
+
+    expect(composed.enabled).toBe(false);
+    expect(composed.releaseEnabled).toBe(false);
+    expect(composed.verification).toMatchObject({
+      commerceProxy: "0xa206c0517b6371c6638cd9e4a42cc9f02a33b0de",
+      routerProxy: "0xd7d36d66d2f1b608a0f943f722d27e3744f66f25",
+      policy: "0xd6a4217588f6b1f5657a92a3e94e6422ad771cea",
+      paymentToken: "0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565",
+      paymentDecimals: 18,
+      commerceImplementation: "0x153783ddbdf5233c591965f04644b1df2d1a7815",
+      routerImplementation: "0x40c0254610d92f1eb9c2d7d5d2114bc4c99d935e",
+      paymentTokenImplementation: "0x6b5c44cbd4bbddf11723557ba1b77ec5e33225cc",
+      paymentTokenSymbol: "U",
+      paymentTokenName: "United Stables"
+    });
+    // The lock has no token implementation runtime hash; composition must
+    // leave that optional until a reviewed lock update supplies one.
+    expect(composed.verification.paymentTokenImplementationRuntimeSha256).toBeUndefined();
   });
 });
