@@ -791,7 +791,7 @@ export class Erc8183AltanaAdapter {
       if (cause instanceof CommerceError) throw cause;
       throw new CommerceError({ code: "CHAIN_PROVIDER_INVALID", message: "The standards-lock deployment could not be verified by the configured RPC.", nextAction: "verify_standards_lock", cause });
     }
-    if (this.standardsLockEnabled === false || this.standardsLockReleaseEnabled === false) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "ERC-8183 writes remain disabled by the standards lock until the authorized canary is accepted.", nextAction: "verify_standards_lock" });
+    if (this.standardsLockEnabled !== true || this.standardsLockReleaseEnabled !== true) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "ERC-8183 writes remain disabled by the standards lock until the authorized canary is accepted.", nextAction: "verify_standards_lock" });
   }
 
   public async readJob(jobId: string | bigint): Promise<Erc8183OnchainJob> {
