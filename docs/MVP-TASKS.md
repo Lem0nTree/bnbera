@@ -1,6 +1,29 @@
 # MVP tasks and gates
 
-Active backlog for [MVP-MASTER-PLAN.md](MVP-MASTER-PLAN.md). Baseline `31d112f`; updated 2026-09-05. All tasks below are open integration work, even where components already exist. Two implementation agents maximum; coordinator reviews each handoff before dispatching its dependent replacement.
+Active backlog for [MVP-MASTER-PLAN.md](MVP-MASTER-PLAN.md). Current GitHub `main` baseline: `1c98ff4`; reconciled 2026-09-06. Two implementation agents maximum; coordinator reviews each handoff before dispatching its dependent replacement.
+
+## Current delivery status
+
+This table distinguishes code merged to GitHub `main`, retained-runtime evidence, and a gate that users can complete from a public browser. A task is not complete merely because a supporting package or unit test exists.
+
+| Task | Status | Current result | Remaining acceptance |
+| --- | --- | --- | --- |
+| T1 | Implemented; retained acceptance passed | Independent locked discovery and health cron, durable cursor/retry state, bounded work and freshness expiry are merged. | Reinstall from the final deployed checkout and keep operational evidence with T3. |
+| T2 | Core implemented; reputation remains | Real enrichment, multi-category evidence, persistent vectors, deterministic fallback and marketplace read models are merged. Retained processing produced a small truthful set of qualified listings; most discovered registrations did not pass service/capability/health gates. | Add provenance-safe ERC-8004 reputation ingestion/display, continue bounded supply growth, and keep production semantic mode disabled until its standards lock is released. |
+| T3 | In progress | Retained database pipeline, restart-safe cron behavior and local API path have been exercised. | Deploy a stable public HTTPS preview and verify browser -> API -> PostgreSQL plus restart, stale-health and fallback behavior at the deployed SHA. Create `MVP-STATUS.md`. |
+| T4 | Implemented on unmerged task branch; not accepted | ERC-8183 persistence, chain operations, receipt checks and safeguards exist on `task/t4-paid-hire`. | Rebase/review against current `main`, pin and wrap the supported Altana ERC-8183 API, expose the application API and complete one authorized real testnet cycle with distinct actors. |
+| T5 | Open | Existing detail page has a read-only/disabled activation surface. | Complete the browser hire/result/approval/settlement journey, confirmed-job projection and verified-purchase review. |
+| T6 | Open | Altana boundaries and pinned candidate package exist; no live authority proof. | Implement browser-controlled grant/status/revoke and prove allowed, revoked, expired and over-cap behavior. |
+| T7 | Open | No-code Creator is planned; no end-to-end Creator exists. | Use the pinned BNB Agent Studio CLI/runtime integration for one audited template, then register, publish and hire the created agent. |
+| T8 | Open | Publisher abstractions exist only. | Publish and verify one profile plus one completed-job bundle on Greenfield. |
+| T9 | Open | Requirements and gate structure exist. | Public walkthrough, current evidence/status, Agent Advantage Report and submission package. |
+
+### Immediate critical path
+
+1. Finish T3 public preview acceptance without weakening the truthful listing gate.
+2. Complete T4 and T5 as one browser-to-chain paid journey.
+3. Complete T6, then T7. **T7 is the task that uses BNB Agent Studio to let a user create an agent; T6 supplies the user-controlled Altana authority used during and after deployment.**
+4. Complete the bounded T8 integration and T9 submission evidence.
 
 Competition acceptance and partner-track distinctions are summarized in [HACKATHON-REQUIREMENTS.md](HACKATHON-REQUIREMENTS.md).
 
@@ -8,7 +31,9 @@ Competition acceptance and partner-track distinctions are summarized in [HACKATH
 
 ### T1 — Persistent cron and health refresh
 
-Owner: DATA/OPS. Start now. Paths: ingestion/composition scripts, job/repository code, cron/supervisor config. Risk: stateful; deployment/secret changes require the corresponding review.
+Status: implemented and retained-runtime accepted; final-host operation is recorded by T3.
+
+Owner: DATA/OPS. Paths: ingestion/composition scripts, job/repository code, cron/supervisor config. Risk: stateful; deployment/secret changes require the corresponding review.
 
 - Add two ordinary locked cron jobs: bounded discovery/enrichment every five minutes; published-service health every minute. Separate locks/timeouts so vendor discovery cannot block health. Reuse existing database/reader/probe/publication code.
 - Persist scan progress and per-identity retry state. Resume after restart, process more than one batch and do not repeatedly select only the same failures. Avoid overlapping invocations and log only safe counts/reasons.
@@ -20,11 +45,13 @@ Done: cron runs against retained data for 30 minutes, survives process restart, 
 
 ### T2 — Enriched listing, search and real metrics
 
+Status: core merged; bounded supply growth and ERC-8004 reputation projection remain.
+
 Owner: WEB/DATA. Parallel with T1; disjoint files agreed by coordinator. Paths: marketplace read/publication model, web API/components, scoped enrichment adapters. Shared schema/lock changes assigned to one owner.
 
 - Use current cards/detail/compare UI. Display category, public capabilities/services, current-data source/time, last check, observed uptime/window, real reviews, completed jobs and last result/price.
 - Normalize available ERC-8004/vendor feedback and external job statistics with provenance. Keep missing data explicit; BNBEra's own jobs/reviews arrive in T5. No invented ratings, revenue, task results or zero-price assumptions.
-- Ingest non-revoked ERC-8004 Reputation Registry feedback with reviewer, feedback index, fixed-point value/decimals, tags, URI/hash, block/time and revocation provenance. Keep raw permissionless feedback separate from recognized-reviewer/validator summaries; never expose a Sybil-prone unfiltered average as a trusted rating.
+- Ingest non-revoked ERC-8004 Reputation Registry feedback with reviewer, feedback index, fixed-point value/decimals, tags, URI/hash, block/time and revocation provenance. Show separate views for raw permissionless feedback, recognized reviewer/validator evidence, and the verified-purchase reviews created by T5; never expose a Sybil-prone unfiltered average as a trusted rating.
 - Distinguish card and invocation URL and advertised versus tested skills. Fix the latest adapter's broad-schema shortcut without requiring every agent to invent a BNBEra-specific manifest. A usable service check is separate from an Agent Card GET.
 - Enforce the same embedding lock at API/worker/backfill entry points. Verify current-version vectors and hard filters before semantic ranking; deterministic fallback must work.
 - Build a bounded four-category real-supply inventory. Check labels on representative agents and ambiguous cases; show truthful empty categories until qualified supply exists. Reuse external supply before proposing a new reference agent.
@@ -32,6 +59,8 @@ Owner: WEB/DATA. Parallel with T1; disjoint files agreed by coordinator. Paths: 
 Done: a real listing shows persisted enrichment and truthful metrics; semantic search retrieves it; refresh does not churn versions; unsupported skills are not described as tested. UI works for all four categories with explicit coverage gaps. Source-owned evidence changes coordinate with T1.
 
 ### T3 — G1 acceptance and running public preview
+
+Status: retained/local acceptance substantially passed; public HTTPS deployment and deployed browser acceptance remain.
 
 Owner: QA/OPS. After T1/T2. Paths: targeted integration/browser checks, deployment/runbook, `docs/MVP-STATUS.md` created by this task.
 
@@ -46,9 +75,11 @@ Done: G1 accepted for the actual demonstrated scope and public preview kept runn
 
 ### T4 — ERC-8183 escrow backend
 
+Status: implementation exists on `task/t4-paid-hire`, but it is unmerged and has not passed a real paid canary.
+
 Owner: COMMERCE. After G1; read-only contract feasibility can begin during T3. Paths: commerce package, persistent job repository, API/chain adapters; standards lock owned by coordinator.
 
-- Resolve official deployment/ABI/token/policy pins, including the existing conflicting policy addresses. Report an exact external blocker if unresolved; do not build another rail.
+- Resolve official deployment/ABI/token/policy pins, including the existing conflicting policy addresses. Wrap the supported Altana ERC-8183 SDK/API behind BNBEra's existing commerce interface while retaining PostgreSQL lifecycle state and independent receipt/event verification. If the pinned package does not expose the documented API, update the exact package/version/integrity through coordinator review. Do not build or deploy another rail for the MVP.
 - Wire quote, explicit buyer funding, provider work, deliverable submission, buyer approval and settlement into the existing lifecycle with PostgreSQL job/transaction persistence.
 - Validate actor/network/token/recipient/amount and confirmed receipts. Handle protocol-supported rejection/expiry/refund and unknown outcomes; prevent duplicate charge or auto-approval.
 - Return an input/output contract and a small real task fixture to T5. Use a service that produces a useful result; a funding acknowledgement is insufficient.
@@ -56,6 +87,8 @@ Owner: COMMERCE. After G1; read-only contract feasibility can begin during T3. P
 Done: real authorized testnet/sandbox paid cycle with receipt/result evidence plus duplicate/unknown-outcome recovery. No simulated escrow success.
 
 ### T5 — Hire UI, result, jobs and reviews
+
+Status: open; current activation remains read-only.
 
 Owner: WEB. Parallel with T4 after their API contract is agreed; real acceptance depends on T4. Paths: existing detail CTA, job/result routes, review/read-model projection.
 
@@ -72,6 +105,8 @@ Done: a user completes the real paid journey inside the app; job count and revie
 
 ### T6 — Altana wallet/session bootstrap
 
+Status: open; this task owns custody/session authority, not agent creation.
+
 Owner: CUSTODY. After G2. Paths: Altana package, existing Studio spike and a small authority UI; pins through coordinator.
 
 - Pin the SDK/runtime/contract details actually used. Prove user-controlled browser wallet, exact call/spend/expiry approval and bounded session handoff through the supported Studio secret path.
@@ -82,9 +117,12 @@ Done: real grant/action/revoke/deny evidence, public authority display and only 
 
 ### T7 — One-template no-code creation
 
+Status: open. **This is the BNB Agent Studio user-creation task.**
+
 Owner: CREATOR/WEB. After T6; form/template preparation can run in the second slot against agreed interfaces. Paths: Creator/deployment persistence, Studio integration, create/dashboard UI.
 
-- Use one audited template, ideally filling a supply gap. Accept validated parameters only; use Studio's supported deployment path rather than building a general orchestration service.
+- Use one audited template, ideally filling a supply gap. Accept validated parameters only; invoke the pinned `@bnbagent/studio-cli` / `@bnbagent/studio-runtime` supported deployment path rather than building a general orchestration service. Verify the runtime package integrity before enabling deployment.
+- Connect the user-controlled Altana grant from T6 to the Agent Studio deployment/runtime handoff. Store only secret references; external marketplace discovery and browsing must remain independent of Altana and Agent Studio.
 - Persist deploy progress/retries, intended ERC-8004 owner and agentWallet. Reuse G1 verification/publication and G2 hiring; no duplicate runtime or token on retry.
 - Provide authority status/expiry, pause, renewal and revoke controls. Keep one active created agent per wallet; no arbitrary user code.
 
@@ -99,6 +137,8 @@ ERC-8183 hire or create a second generic commerce subsystem.
 
 ### T8 — Publish two useful Greenfield artifacts
 
+Status: open.
+
 Owner: EVIDENCE. After G3. Paths: current evidence/Greenfield publisher, profile/job evidence panel; pins through coordinator.
 
 - Pin provider/SDK/network. Publish one public profile and one completed-job bundle with approved public fields, result digest and receipt references.
@@ -108,6 +148,8 @@ Owner: EVIDENCE. After G3. Paths: current evidence/Greenfield publisher, profile
 Done: two real verified artifacts visible in the app. Gate G4 passes without making storage availability a prerequisite for browsing or hiring.
 
 ### T9 — Final public walkthrough and submission
+
+Status: open.
 
 Owner: QA/RELEASE. Prepare in parallel with T8; final verification after all selected gates.
 
