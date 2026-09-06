@@ -487,6 +487,21 @@ export class PostgresErc8183OperationRepository {
     return result.rows[0] === undefined ? null : parseOperationRow(result.rows[0]);
   }
 
+  /** Public read-model support for reload recovery; context is still parsed
+   * server-side and never returned by the API projection. */
+  public async listForJob(input: { readonly chainId: BscChainId; readonly commerceContract: string; readonly jobId: string }): Promise<readonly Erc8183OperationRecord[]> {
+    const jobId = assertJobId(input.jobId);
+    if (jobId === null) throw new CommerceError({ code: "INVALID_JOB", message: "A commerce operation read requires a protocol job ID." });
+    const result = await this.pool.query<OperationRow>(`
+      SELECT id, idempotency_key, request_digest, chain_id, commerce_contract, erc8183_job_id, operation_kind, signer_role, status, transaction_hash, block_number, block_hash, log_index, failure_code, operation_context, created_at_unix, updated_at_unix
+      FROM erc8183_operations
+      WHERE chain_id = $1 AND commerce_contract = $2 AND erc8183_job_id = $3
+      ORDER BY created_at_unix ASC, id ASC
+      LIMIT 128
+    `, [input.chainId, normalizeAddress(input.commerceContract, "commerce contract"), jobId]);
+    return result.rows.map(parseOperationRow);
+  }
+
   public static requestDigest(value: unknown): string {
     assertPublicPayloadSafe(value, "operation");
     return canonicalSha256Hex(value);

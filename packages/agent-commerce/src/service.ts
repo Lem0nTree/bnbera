@@ -31,7 +31,8 @@ import {
   type Erc8183ProviderBinding
 } from "./types.js";
 import type { PersistentErc8183JobCreateInput, PersistentErc8183JobTransitionInput } from "./postgres-jobs.js";
-import { erc8183ManifestHash } from "@altananetwork/sdk";
+import { encodeErc8183Manifest, erc8183ManifestHash } from "@altananetwork/sdk";
+import { erc8183ProviderResultSchema } from "./provider.js";
 
 export interface Erc8183BuyerApprovalReader {
   assertBuyerApproval(input: { readonly chainId: 56 | 97; readonly commerceContract: string; readonly jobId: string }): Promise<void>;
@@ -279,10 +280,11 @@ export class Erc8183OperationCoordinator {
     if (operation.kind === "create") {
       await this.persistCanonicalHire(operation, job, receipt);
     } else if (operation.kind === "submit") {
+      const manifest = contextValue(operation.context?.parameters, "manifest");
       await this.persistCanonicalSubmit(operation, job, receipt, {
         resultDigest: String(contextValue(operation.context?.parameters, "resultDigest") ?? ""),
         chainDeliverable: job.chainDeliverable,
-        manifestText: undefined
+        ...(manifest === undefined || manifest === null ? {} : { manifestText: encodeErc8183Manifest(manifest as Parameters<typeof encodeErc8183Manifest>[0]) })
       } as unknown as Erc8183SubmitResult);
     } else if (operation.kind === "settle" && operation.context?.sdkAction === "settle") {
       await this.persistCanonicalTerminal(operation, job, receipt, "completed", "job_completed", "completionTransactionHash");
@@ -442,6 +444,8 @@ export class Erc8183OperationCoordinator {
         resultDigest: submit.resultDigest.toLowerCase(),
         chainDeliverable: submit.chainDeliverable.toLowerCase(),
         ...(submit.manifestText === undefined ? {} : { manifestText: submit.manifestText }),
+        ...(contextValue(operation.context?.parameters, "manifest") === undefined ? {} : { manifest: contextValue(operation.context?.parameters, "manifest") }),
+        ...(contextValue(operation.context?.parameters, "result") === undefined ? {} : { result: contextValue(operation.context?.parameters, "result") }),
         ...(contextValue(operation.context?.parameters, "deliverableUrl") === undefined ? {} : { deliverableUrl: contextValue(operation.context?.parameters, "deliverableUrl") })
       },
       correlationId: operation.operationId,
@@ -541,6 +545,13 @@ export class Erc8183CommerceService {
   public async submit(input: Erc8183SubmitServiceInput): Promise<Erc8183OperationCoordinatorResult<Erc8183SubmitResult>> {
     const actor = assertAuthenticatedRequester(input.requesterAddress, input.authority);
     const persisted = await this.assertPersistedActor(input.jobId, actor, "provider");
+    if (input.result !== undefined) {
+      try {
+        erc8183ProviderResultSchema.parse(input.result);
+      } catch (cause) {
+        throw new CommerceError({ code: "INVALID_JOB", message: "The submitted provider result is not a valid public result document.", cause });
+      }
+    }
     if (input.result !== undefined && input.result.resultDigest.toLowerCase() !== input.resultDigest.toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The submitted local result digest does not match the provider result payload." });
     const suppliedBinding = input.providerBinding === undefined ? undefined : erc8183ProviderBindingSchema.parse(input.providerBinding);
     if (suppliedBinding !== undefined && persisted !== null && persisted.providerBinding !== null && canonicalSha256Hex(suppliedBinding) !== canonicalSha256Hex(persisted.providerBinding)) throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The submitted provider identity/version does not match the canonical hired provider binding.", nextAction: "authenticate_actor" });
@@ -551,9 +562,9 @@ export class Erc8183CommerceService {
     if (chainDeliverable === null || !/^0x[0-9a-f]{64}$/iu.test(chainDeliverable)) throw new CommerceError({ code: "INVALID_JOB", message: "Submission requires an explicit Keccak chain deliverable in addition to the local SHA-256 result digest." });
     if (input.chainDeliverable !== undefined && manifestDigest !== null && input.chainDeliverable.toLowerCase() !== manifestDigest.toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The manifest Keccak digest does not match the supplied chain deliverable." });
     const commerceContract = normalizeAddress(this.options.adapter.pin.commerceContract, "commerce contract");
-    const requestDigest = PostgresErc8183OperationRepository.requestDigest({ operation: "submit", chainId: this.options.adapter.pin.chainId, commerceContract, jobId: input.jobId, actorAddress: actor, resultDigest: input.resultDigest.toLowerCase(), chainDeliverable: chainDeliverable.toLowerCase(), manifest: input.manifest ?? null, deliverableUrl: input.deliverableUrl ?? input.result?.deliverableUrl ?? null, optParams: input.optParams ?? null, providerBinding });
+    const requestDigest = PostgresErc8183OperationRepository.requestDigest({ operation: "submit", chainId: this.options.adapter.pin.chainId, commerceContract, jobId: input.jobId, actorAddress: actor, resultDigest: input.resultDigest.toLowerCase(), chainDeliverable: chainDeliverable.toLowerCase(), manifest: input.manifest ?? null, deliverableUrl: input.deliverableUrl ?? input.result?.deliverableUrl ?? null, result: input.result ?? null, optParams: input.optParams ?? null, providerBinding });
     const expectation: Erc8183OperationExpectation = { digest: chainDeliverable.toLowerCase() as `0x${string}`, expectedState: "SUBMITTED" };
-    const operation = preparedOperation({ kind: "submit", signerRole: "provider", chainId: this.options.adapter.pin.chainId, commerceContract, jobId: input.jobId, requestDigest, context: operationContext({ authority: input.authority, action: "submit", parameters: { resultDigest: input.resultDigest.toLowerCase(), chainDeliverable: chainDeliverable.toLowerCase(), deliverableUrl: input.deliverableUrl ?? input.result?.deliverableUrl ?? null, manifest: input.manifest ?? null, providerBinding }, expectation }), expectation });
+    const operation = preparedOperation({ kind: "submit", signerRole: "provider", chainId: this.options.adapter.pin.chainId, commerceContract, jobId: input.jobId, requestDigest, context: operationContext({ authority: input.authority, action: "submit", parameters: { resultDigest: input.resultDigest.toLowerCase(), chainDeliverable: chainDeliverable.toLowerCase(), deliverableUrl: input.deliverableUrl ?? input.result?.deliverableUrl ?? null, manifest: input.manifest ?? null, result: input.result ?? null, providerBinding }, expectation }), expectation });
     return this.coordinator.executeSdk({ operation, idempotencyKey: input.idempotencyKey, authority: input.authority, run: () => this.options.adapter.submit(input) });
   }
 
