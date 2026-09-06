@@ -87,7 +87,11 @@ async function main(): Promise<void> {
       identityRegistry: config.identityRegistry,
       reputationRegistry: config.reputationRegistry,
       client: new JsonRpcClient(endpoint, { timeoutMs: boundedNumber("ERC8004_RPC_TIMEOUT_MS", 15_000, 250, 120_000) }),
-      logTopics: decoder.logTopics,
+      // eth_getLogs treats each topic position as AND. Put both reviewed
+      // event signatures in topic0's nested array so NewFeedback OR
+      // FeedbackRevoked is requested without accidentally requiring a second
+      // topic position.
+      logTopics: [decoder.logTopics],
       decodeLog: decoder.decodeLog,
       maxLogResults: maxEvents
     });

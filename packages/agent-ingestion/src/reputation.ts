@@ -312,7 +312,7 @@ function bounded(value: number | undefined, fallback: number, maximum: number, f
 }
 
 function compareEventPosition(left: ReputationFeedbackEvent, right: ReputationFeedbackEvent): number {
-  return left.blockNumber - right.blockNumber || left.logIndex - right.logIndex || left.transactionHash.localeCompare(right.transactionHash);
+  return left.blockNumber - right.blockNumber || left.logIndex - right.logIndex || left.transactionHash.localeCompare(right.transactionHash) || left.blockHash.localeCompare(right.blockHash);
 }
 
 /** Bounded, finalized/reorg-aware event sync for one configured reputation registry. */
@@ -395,7 +395,7 @@ export class ReputationIngestionService {
         if (existingIdentity === null) await repository.upsertIdentity({ identity: normalized.identity, originType: "discovered" });
         const before = await repository.listReputationEvents({ chainId: options.chainId, identityRegistry, reputationRegistry, fromBlock: normalized.blockNumber, toBlock: normalized.blockNumber });
         const stored = await repository.appendReputationEvent(normalized);
-        if (before.some((candidate) => candidate.transactionHash === normalized.transactionHash && candidate.logIndex === normalized.logIndex)) {
+        if (before.some((candidate) => candidate.transactionHash === normalized.transactionHash && candidate.logIndex === normalized.logIndex && candidate.blockHash === normalized.blockHash)) {
           if (stored.payloadDigest !== normalized.payloadDigest) throw ingestionError("REPUTATION_DUPLICATE_CONFLICT", "A reputation log position was observed with conflicting data.", "reconcile_reputation");
         } else {
           insertedEventCount += 1;

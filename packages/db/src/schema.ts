@@ -426,7 +426,7 @@ export const erc8004ReputationEvents = pgTable(
     createdAt: now()
   },
   (table) => [
-    uniqueIndex("erc8004_reputation_event_log_unique").on(table.transactionHash, table.logIndex),
+    uniqueIndex("erc8004_reputation_event_log_unique").on(table.transactionHash, table.logIndex, table.blockHash),
     index("erc8004_reputation_event_identity_state_idx").on(table.identityId, table.confirmationState, table.blockNumber),
     index("erc8004_reputation_event_feedback_key_idx").on(table.identityId, table.clientAddress, table.feedbackIndex),
     check("erc8004_reputation_event_type_check", sql`${table.eventType} in ('NewFeedback', 'FeedbackRevoked')`),

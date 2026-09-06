@@ -63,8 +63,8 @@ function observationKey(transactionHash: string, logIndex: number): string {
   return `${transactionHash.toLowerCase()}:${logIndex}`;
 }
 
-function reputationEventKey(transactionHash: string, logIndex: number): string {
-  return `${transactionHash.toLowerCase()}:${logIndex}`;
+function reputationEventKey(transactionHash: string, logIndex: number, blockHash: string): string {
+  return `${transactionHash.toLowerCase()}:${logIndex}:${blockHash.toLowerCase()}`;
 }
 
 function sameReputationEvent(left: ReputationFeedbackEvent, right: ReputationFeedbackEvent): boolean {
@@ -90,7 +90,7 @@ function sameReputationEvent(left: ReputationFeedbackEvent, right: ReputationFee
 }
 
 function compareReputationEvents(left: ReputationFeedbackEvent, right: ReputationFeedbackEvent): number {
-  return left.blockNumber - right.blockNumber || left.logIndex - right.logIndex || left.transactionHash.localeCompare(right.transactionHash);
+  return left.blockNumber - right.blockNumber || left.logIndex - right.logIndex || left.transactionHash.localeCompare(right.transactionHash) || left.blockHash.localeCompare(right.blockHash);
 }
 
 function sourceKey(identityKey: IdentityKey, source: string, sourceReference: string): string {
@@ -471,7 +471,7 @@ export class InMemoryIngestionRepository implements IngestionRepository, ScanDis
     if (!this.identities.has(identityKey)) {
       throw ingestionError("REPUTATION_IDENTITY_NOT_FOUND", "The reputation event identity is not in the ingestion index.", "import_identity");
     }
-    const key = reputationEventKey(normalized.transactionHash, normalized.logIndex);
+    const key = reputationEventKey(normalized.transactionHash, normalized.logIndex, normalized.blockHash);
     const existing = this.reputationEvents.get(key);
     if (existing !== undefined) {
       if (!sameReputationEvent(existing, normalized)) {

@@ -99,6 +99,24 @@ describe("ERC-8004 Reputation Registry", () => {
     expect((await repository.listReputationEvents({ chainId: 97, identityRegistry: identity.identityRegistry, reputationRegistry })).length).toBe(2);
   });
 
+  it("retains an orphaned log when the same transaction/log is re-included on a replacement block", async () => {
+    const repository = new InMemoryIngestionRepository();
+    await repository.upsertIdentity({ identity, originType: "discovered" });
+    const transactionHash = `0x${"04".repeat(32)}`;
+    const original = event({ eventType: "NewFeedback", transactionHash, logIndex: 0, blockNumber: 10, blockHash: block10 });
+    const replacement = event({ eventType: "NewFeedback", transactionHash, logIndex: 0, blockNumber: 10, blockHash: `0x${"cc".repeat(32)}` });
+
+    await repository.appendReputationEvent(original);
+    await repository.markReputationOrphaned({ chainId: 97, identityRegistry: identity.identityRegistry, reputationRegistry, fromBlock: 10, occurredAt: new Date("2026-09-05T01:01:00.000Z") });
+    await expect(repository.appendReputationEvent(replacement)).resolves.toEqual(replacement);
+
+    expect(await repository.listReputationEvents({ chainId: 97, identityRegistry: identity.identityRegistry, reputationRegistry })).toHaveLength(2);
+    expect(await repository.listReputationEvents({ chainId: 97, identityRegistry: identity.identityRegistry, reputationRegistry, state: "orphaned" })).toMatchObject([{ transactionHash, blockHash: block10, confirmationState: "orphaned" }]);
+
+    await repository.markReputationCanonical({ chainId: 97, identityRegistry: identity.identityRegistry, reputationRegistry, throughBlock: 10, canonicalizedAt: new Date("2026-09-05T01:02:00.000Z") });
+    expect(await repository.listReputationFeedback(identity)).toMatchObject([{ feedbackTransactionHash: transactionHash, feedbackBlockHash: `0x${"cc".repeat(32)}`, revoked: false }]);
+  });
+
   it("rejects a reader event whose supplied digest does not match its public provenance", async () => {
     const repository = new InMemoryIngestionRepository();
     await repository.upsertIdentity({ identity, originType: "discovered" });

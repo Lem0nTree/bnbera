@@ -16,6 +16,8 @@ import {
   commerceJobs,
   erc8004ChainObservations,
   erc8004Identities,
+  erc8004ReputationEvents,
+  erc8004ReputationCheckpoints,
   erc8183Jobs,
   evidenceLocators,
   evidenceObjects,
@@ -123,6 +125,12 @@ describe("combined Wave 1 database schema", () => {
     expect(Object.keys(agentReorgReconciliations)).toEqual(
       expect.arrayContaining(["chainId", "identityRegistry", "commonAncestorBlock", "affectedIdentityKeys"])
     );
+    expect(Object.keys(erc8004ReputationEvents)).toEqual(
+      expect.arrayContaining(["transactionHash", "logIndex", "blockHash", "feedbackIndex", "payloadDigest"])
+    );
+    expect(Object.keys(erc8004ReputationCheckpoints)).toEqual(
+      expect.arrayContaining(["lastScannedBlockHash", "lastFinalizedBlockHash", "cursorVersion"])
+    );
   });
 
   it("keeps the ERC-8183 and B402 rails independently pinned", () => {
@@ -191,7 +199,8 @@ describe("combined Wave 1 database schema", () => {
       "0002_wave1_legacy_repair.sql",
       "0003_scan_discovery_checkpoint.sql",
       "0004_swift_silverclaw.sql",
-      "0005_outgoing_ezekiel.sql"
+      "0005_outgoing_ezekiel.sql",
+      "0006_reputation_replacement_log.sql"
     ]);
     expect(wave1Files).toEqual(["0001_wave1_combined.sql"]);
 
@@ -212,5 +221,8 @@ describe("combined Wave 1 database schema", () => {
     expect(reputation).toContain('CREATE TABLE "erc8004_reputation_events"');
     expect(reputation).toContain('CREATE TABLE "erc8004_reputation_checkpoints"');
     expect(reputation).not.toContain('DROP CONSTRAINT "agents_current_version_id_agent_versions_id_fk"');
+    const replacementLog = readFileSync(join(migrationsPath, "0006_reputation_replacement_log.sql"), "utf8");
+    expect(replacementLog).toContain('DROP INDEX IF EXISTS "erc8004_reputation_event_log_unique"');
+    expect(replacementLog).toContain('"transaction_hash","log_index","block_hash"');
   });
 });

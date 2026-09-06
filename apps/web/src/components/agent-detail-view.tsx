@@ -14,6 +14,65 @@ function reputationViewSummary(view: MarketplaceAgentReadModel["metrics"]["reput
   return view.reason ?? "Unavailable";
 }
 
+type ReputationView = MarketplaceAgentReadModel["metrics"]["reputation"]["rawPermissionless"];
+type ReputationFeedback = ReputationView["feedback"][number];
+
+/** Only HTTP(S) feedback URIs become links; every other URI stays inert text. */
+function safeFeedbackLink(value: string): string | null {
+  if (value.length === 0) return null;
+  try {
+    const parsed = new URL(value);
+    if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username !== "" || parsed.password !== "" || parsed.hostname === "") return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function FeedbackUri({ value }: { readonly value: string }) {
+  if (value.length === 0) return <span>Not observed</span>;
+  const href = safeFeedbackLink(value);
+  return href === null
+    ? <code>{value}</code>
+    : <a href={href} target="_blank" rel="noreferrer">{value}</a>;
+}
+
+function ReputationFeedbackRecord({ feedback }: { readonly feedback: ReputationFeedback }) {
+  const tags: Array<readonly [string, string]> = [
+    ["Indexed tag", feedback.indexedTag1] as const,
+    ["Tag 1", feedback.tag1] as const,
+    ["Tag 2", feedback.tag2] as const
+  ].filter((tag) => tag[1] !== undefined && tag[1].length > 0);
+  return (
+    <div className="capability-card">
+      <div className="detail-actions">
+        <StatusBadge value={feedback.revoked ? "Revoked" : "Active"} tone={feedback.revoked ? "danger" : "success"} />
+        <span className="muted-label">ERC-8004 feedback #{feedback.feedbackIndex}</span>
+      </div>
+      <div className="detail-kv"><span>Reviewer</span><span><code>{feedback.reviewerAddress}</code></span></div>
+      <div className="detail-kv"><span>Fixed-point value</span><span><code>{feedback.value}</code> · {feedback.valueDecimals} decimals</span></div>
+      <div className="detail-kv"><span>Tags</span><span>{tags.length > 0 ? tags.map(([label, value]) => `${label}: ${value}`).join(" · ") : "Not observed"}</span></div>
+      <div className="detail-kv"><span>Feedback block / time</span><span>#{feedback.feedbackBlockNumber} · {formatObservedAt(feedback.feedbackObservedAt)}</span></div>
+      <div className="detail-kv"><span>Feedback block hash</span><span><code>{feedback.feedbackBlockHash}</code></span></div>
+      <div className="detail-kv"><span>Feedback URI</span><span><FeedbackUri value={feedback.feedbackUri} /></span></div>
+      <div className="detail-kv"><span>Feedback hash</span><span><code>{feedback.feedbackHash ?? "Not observed"}</code></span></div>
+      {feedback.revoked && (
+        <div className="detail-kv"><span>Revocation provenance</span><span><code>{feedback.revocationTransactionHash}</code> · block #{feedback.revocationBlockNumber} · {formatObservedAt(feedback.revocationObservedAt)}</span></div>
+      )}
+    </div>
+  );
+}
+
+function ReputationFeedbackView({ label, view }: { readonly label: string; readonly view: ReputationView }) {
+  if (view.feedback.length === 0) return null;
+  return (
+    <div className="detail-section__body">
+      <div className="detail-actions"><strong>{label}</strong><span className="muted-label">{view.count ?? 0} active · {view.feedback.length} recorded</span></div>
+      {view.feedback.map((feedback) => <ReputationFeedbackRecord key={`${feedback.feedbackTransactionHash}-${feedback.feedbackLogIndex}-${feedback.feedbackBlockHash}`} feedback={feedback} />)}
+    </div>
+  );
+}
+
 export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentReadModel }) {
   const identityRead = agent.dataProvenance.identityRead;
   const identityConsistency = identityRead.readConsistency === null
@@ -168,6 +227,8 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
             <div className="detail-kv"><span>Last result</span><span>{agent.metrics.lastResult.summary ?? "Unavailable"}{agent.metrics.lastResult.reference === null ? "" : ` · ${agent.metrics.lastResult.reference}`}</span></div>
             <p className="muted-label">Metrics are observed from persisted probes/enrichment only; no live qualification or fabricated zero values are implied.</p>
           </div>
+          <ReputationFeedbackView label="Raw permissionless feedback provenance" view={agent.metrics.reputation.rawPermissionless} />
+          <ReputationFeedbackView label="Recognized reviewer / validator provenance" view={agent.metrics.reputation.recognizedReviewers} />
         </section>
 
         <section className="detail-section">

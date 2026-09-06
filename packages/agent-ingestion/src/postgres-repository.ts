@@ -811,13 +811,13 @@ export class PostgresIngestionRepository implements IngestionRepository, ScanDis
         tag2, endpoint, feedback_uri, feedback_hash, transaction_hash, log_index, block_number,
         block_hash, confirmation_state, observed_at, canonicalized_at, orphaned_at, payload_digest)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
-       ON CONFLICT (transaction_hash, log_index) DO NOTHING`,
+       ON CONFLICT (transaction_hash, log_index, block_hash) DO NOTHING`,
       [randomUUID(), identity.id, normalized.identity.namespace, normalized.identity.chainId, normalized.identity.identityRegistry, normalized.reputationRegistry, normalized.identity.agentId,
         normalized.eventType, normalized.clientAddress, normalized.feedbackIndex, normalized.value, normalized.valueDecimals, normalized.indexedTag1, normalized.tag1,
         normalized.tag2, normalized.endpoint, normalized.feedbackUri, normalized.feedbackHash, normalized.transactionHash, normalized.logIndex, normalized.blockNumber,
         normalized.blockHash, normalized.confirmationState, normalized.observedAt, normalized.canonicalizedAt, normalized.orphanedAt, normalized.payloadDigest]
     );
-    const stored = await this.query<ReputationEventDbRow>(`${reputationEventSelect()} WHERE r.transaction_hash=$1 AND r.log_index=$2`, [normalized.transactionHash, normalized.logIndex]);
+    const stored = await this.query<ReputationEventDbRow>(`${reputationEventSelect()} WHERE r.transaction_hash=$1 AND r.log_index=$2 AND r.block_hash=$3`, [normalized.transactionHash, normalized.logIndex, normalized.blockHash]);
     const row = stored.rows[0];
     if (row === undefined) throw ingestionError("REPOSITORY_FAILURE", "The reputation event was not readable after persistence.", "retry_repository");
     const existing = mapReputationEvent(row);
@@ -841,7 +841,7 @@ export class PostgresIngestionRepository implements IngestionRepository, ScanDis
               p.log_index, p.block_number, p.block_hash, p.confirmation_state,
               p.observed_at, p.canonicalized_at, p.orphaned_at, p.payload_digest
          FROM promoted p JOIN erc8004_identities i ON i.id=p.identity_id
-        ORDER BY p.block_number, p.log_index`,
+        ORDER BY p.block_number, p.log_index, p.transaction_hash, p.block_hash`,
       [input.canonicalizedAt, input.chainId, normalizeEvmAddress(input.identityRegistry), normalizeEvmAddress(input.reputationRegistry), input.throughBlock]
     );
     return result.rows.map(mapReputationEvent);
@@ -853,7 +853,7 @@ export class PostgresIngestionRepository implements IngestionRepository, ScanDis
     if (input.fromBlock !== undefined) { values.push(input.fromBlock); clauses.push(`r.block_number >= $${values.length}`); }
     if (input.toBlock !== undefined) { values.push(input.toBlock); clauses.push(`r.block_number <= $${values.length}`); }
     if (input.state !== undefined) { values.push(input.state); clauses.push(`r.confirmation_state = $${values.length}`); }
-    const result = await this.query<ReputationEventDbRow>(`${reputationEventSelect()} WHERE ${clauses.join(" AND ")} ORDER BY r.block_number, r.log_index`, values);
+    const result = await this.query<ReputationEventDbRow>(`${reputationEventSelect()} WHERE ${clauses.join(" AND ")} ORDER BY r.block_number, r.log_index, r.transaction_hash, r.block_hash`, values);
     return result.rows.map(mapReputationEvent);
   }
 
@@ -872,7 +872,7 @@ export class PostgresIngestionRepository implements IngestionRepository, ScanDis
     // The registry is a separate configured axis; callers of this method query
     // all rows for the identity below, then project canonical feedback. Keeping
     // the identity tuple in the WHERE clause prevents cross-agent joins.
-    const all = await this.query<ReputationEventDbRow>(`${reputationEventSelect()} WHERE i.namespace=$1 AND i.chain_id=$2 AND i.identity_registry=$3 AND i.agent_id=$4 ORDER BY r.block_number, r.log_index`, [normalizedIdentity.namespace, normalizedIdentity.chainId, normalizedIdentity.identityRegistry, normalizedIdentity.agentId]);
+    const all = await this.query<ReputationEventDbRow>(`${reputationEventSelect()} WHERE i.namespace=$1 AND i.chain_id=$2 AND i.identity_registry=$3 AND i.agent_id=$4 ORDER BY r.block_number, r.log_index, r.transaction_hash, r.block_hash`, [normalizedIdentity.namespace, normalizedIdentity.chainId, normalizedIdentity.identityRegistry, normalizedIdentity.agentId]);
     return projectReputationFeedback(all.rows.map(mapReputationEvent), normalizedIdentity, options);
   }
 

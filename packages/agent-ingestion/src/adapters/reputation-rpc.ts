@@ -15,6 +15,7 @@ export type ReputationRpcReaderOptions = {
   readonly identityRegistry: string;
   readonly reputationRegistry: string;
   readonly client: JsonRpcClient;
+  /** JSON-RPC topic positions. A nested array in a position means OR. */
   readonly logTopics?: readonly (string | null | readonly string[])[];
   readonly decodeLog?: ReputationLogDecoder;
   readonly maxLogResults?: number;
