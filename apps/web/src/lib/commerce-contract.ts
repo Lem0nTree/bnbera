@@ -48,12 +48,11 @@ export const erc8183ManifestSchema = z.object({
  */
 export const commerceHireRequestSchema = z.object({
   idempotencyKey: idempotencyKeySchema,
+  /** Stable persisted commerce_jobs.id; provider identity is never client supplied. */
   commerceJobId: z.string().uuid(),
-  providerAddress: evmAddressSchema,
   task: z.string().trim().min(1).max(4_096),
   budgetAtomic: decimalUintSchema,
-  deadlineSeconds: z.number().int().positive().max(365 * 24 * 60 * 60).optional(),
-  providerBinding: erc8183ProviderBindingSchema
+  deadlineSeconds: z.number().int().positive().max(365 * 24 * 60 * 60).optional()
 }).strict();
 export type CommerceHireRequest = z.infer<typeof commerceHireRequestSchema>;
 

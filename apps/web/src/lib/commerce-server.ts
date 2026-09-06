@@ -6,6 +6,7 @@
  * current web app has no such resolver, so its default composition remains a
  * truthful, explicit blocker and cannot be enabled by request data.
  */
+import { evmAddressSchema, type CommerceJobStatus } from "@bnbera/domain";
 import {
   CommerceError,
   Erc8183AltanaAdapter,
@@ -14,6 +15,7 @@ import {
   PostgresErc8183JobRepository,
   PostgresErc8183OperationRepository,
   erc8183JobKeySchema,
+  erc8183ProviderBindingSchema,
   type Erc8183AltanaAuthority,
   type Erc8183CommerceServiceOptions,
   type Erc8183JobKey,
@@ -44,20 +46,96 @@ export function commerceAuthorityBoundaryError(): CommerceError {
 }
 
 /**
- * The resolver is the only accepted source of request identity and execution
- * authority. It must validate the session/cookie server-side and return the
- * matching Altana SDK wallet or session in memory. No serialized session,
- * private key, or actor field is accepted by any API request body.
+ * Read identity is deliberately independent from an Altana signer. A
+ * concrete implementation must validate the server session/cookie and return
+ * only non-secret identity fields. No serialized session, private key, or
+ * actor field is accepted by any API request body.
  */
-export interface CommerceAuthorityResolver {
-  resolve(request: Request): Promise<AuthenticatedCommerceActor>;
+export interface CommerceIdentityResolver {
+  resolve(request: Request): Promise<AuthenticatedCommerceIdentity>;
 }
 
-export interface AuthenticatedCommerceActor {
+export interface AuthenticatedCommerceIdentity {
   readonly authenticated: true;
   readonly userId: string;
   readonly requesterAddress: string;
+}
+
+/**
+ * Mutation-only authority boundary. The resolver may return a wallet or
+ * bounded session from the pinned Altana SDK, but it must never derive that
+ * authority from request-body data. Keeping this separate lets status reloads
+ * work when a signer is unavailable.
+ */
+export interface CommerceAuthorityResolver {
+  resolve(request: Request, identity: AuthenticatedCommerceIdentity): Promise<Erc8183AltanaAuthority>;
+}
+
+/** Compatibility shape for callers that need to describe both boundaries. */
+export interface AuthenticatedCommerceActor extends AuthenticatedCommerceIdentity {
   readonly authority: Erc8183AltanaAuthority;
+}
+
+export interface CommerceParentHireResolutionInput {
+  /** Stable persisted `commerce_jobs.id`, not the protocol job ID. */
+  readonly commerceJobId: string;
+  readonly buyerUserId: string;
+  readonly task: string;
+  readonly budgetAtomic: string;
+  readonly chainId: 56 | 97;
+  readonly commerceContract: string;
+  readonly paymentToken: string;
+  readonly paymentDecimals: number;
+}
+
+export interface CommerceHireListingTerms {
+  readonly chainId: 56 | 97;
+  readonly commerceContract: string;
+  readonly paymentToken: string;
+  readonly paymentDecimals: number;
+  readonly priceAtomic: string;
+}
+
+/**
+ * Persistent marketplace binding returned by the parent-hire resolver. The
+ * resolver is expected to join `commerce_jobs`, `agents`,
+ * `erc8004_identities`, and the current `agent_versions` row. The composition
+ * validates the repeated values again before invoking the SDK.
+ */
+export interface CommerceEligibleHireListing {
+  readonly providerAddress: string;
+  readonly providerBinding: Erc8183ProviderBinding;
+  readonly terms: CommerceHireListingTerms;
+  /** Values come from the joined marketplace listing, never the request. */
+  readonly listingStatus: "published";
+  readonly verificationStatus: "verified";
+  readonly runtimeStatus: "live";
+  readonly authorityStatus: "active";
+  readonly version: { readonly id: string; readonly number: number };
+}
+
+export interface CommerceParentHireRecord {
+  readonly commerceJobId: string;
+  readonly buyerUserId: string | null;
+  readonly status: CommerceJobStatus;
+  readonly priceAtomic: string;
+  readonly taskInputDigest: string;
+  readonly fundingTransactionHash: string | null;
+  readonly fulfillmentTransactionHash: string | null;
+  readonly disputeTransactionHash: string | null;
+  readonly settlementTransactionHash: string | null;
+  readonly providerAddress: string;
+  readonly providerBinding: Erc8183ProviderBinding;
+  readonly listing: CommerceEligibleHireListing;
+}
+
+/**
+ * Required persistent seam for hire authorization. A missing resolver is a
+ * composition error; an unresolved row is a closed denial and must happen
+ * before `Erc8183CommerceService.hire` can reach the SDK.
+ */
+export interface CommerceParentHireResolver {
+  resolve(input: CommerceParentHireResolutionInput): Promise<CommerceParentHireRecord | null>;
 }
 
 export interface Erc8183CommerceCompositionOptions {
@@ -67,8 +145,12 @@ export interface Erc8183CommerceCompositionOptions {
   readonly pin: EnabledErc8183DeploymentPin;
   /** A persistent PostgreSQL pool; disposable/mocked pools are for tests only. */
   readonly pool: Erc8183OperationQueryPool;
-  /** Server-authenticated authority resolver. Required in every environment. */
-  readonly authorityResolver: CommerceAuthorityResolver;
+  /** Server-authenticated read identity resolver. Required in every environment. */
+  readonly identityResolver: CommerceIdentityResolver;
+  /** Mutation-only Altana authority. Status reads do not require this value. */
+  readonly authorityResolver?: CommerceAuthorityResolver;
+  /** Persistent parent/listing resolver; required before any hire write. */
+  readonly parentHireResolver?: CommerceParentHireResolver;
   /** Explicit constructor-only development/test canary opt-in. */
   readonly developmentCanaryEnabled?: boolean;
   readonly runtimeEnvironment?: "development" | "test" | "production";
@@ -97,21 +179,33 @@ function authorityExecutionAddress(authority: Erc8183AltanaAuthority): string {
   return authority.wallet.address;
 }
 
-function assertActorShape(actor: unknown): asserts actor is AuthenticatedCommerceActor {
-  if (typeof actor !== "object" || actor === null) throw commerceAuthorityBoundaryError();
-  const value = actor as Partial<AuthenticatedCommerceActor>;
+function assertIdentityShape(identity: unknown): asserts identity is AuthenticatedCommerceIdentity {
+  if (typeof identity !== "object" || identity === null) {
+    throw new CommerceError({
+      code: "UNAUTHORIZED_ACTOR",
+      message: "The server-authenticated requester identity is unavailable.",
+      nextAction: "authenticate_actor"
+    });
+  }
+  const value = identity as Partial<AuthenticatedCommerceIdentity>;
   if (
     value.authenticated !== true ||
     typeof value.userId !== "string" ||
     value.userId.trim() === "" ||
     typeof value.requesterAddress !== "string" ||
-    value.authority === undefined ||
-    typeof value.authority !== "object" ||
-    value.authority === null
-  ) throw commerceAuthorityBoundaryError();
+    !evmAddressSchema.safeParse(value.requesterAddress).success
+  ) throw new CommerceError({
+    code: "UNAUTHORIZED_ACTOR",
+    message: "The server-authenticated requester identity is invalid.",
+    nextAction: "authenticate_actor"
+  });
+}
+
+function assertAuthorityShape(authority: unknown): asserts authority is Erc8183AltanaAuthority {
+  if (typeof authority !== "object" || authority === null) throw commerceAuthorityBoundaryError();
   try {
-    const executionAddress = authorityExecutionAddress(value.authority as Erc8183AltanaAuthority);
-    if (typeof executionAddress !== "string" || executionAddress.trim() === "") throw new Error("missing execution address");
+    const executionAddress = authorityExecutionAddress(authority as Erc8183AltanaAuthority);
+    if (!evmAddressSchema.safeParse(executionAddress).success) throw new Error("missing execution address");
   } catch {
     throw commerceAuthorityBoundaryError();
   }
@@ -130,6 +224,92 @@ function assertJobActor(job: Erc8183JobRead, requesterAddress: string): void {
   }
 }
 
+function sameProviderBinding(a: Erc8183ProviderBinding, b: Erc8183ProviderBinding): boolean {
+  return a.agentVersionId.toLowerCase() === b.agentVersionId.toLowerCase() &&
+    a.agentVersion === b.agentVersion &&
+    a.identity.namespace === b.identity.namespace &&
+    a.identity.chainId === b.identity.chainId &&
+    a.identity.identityRegistry.toLowerCase() === b.identity.identityRegistry.toLowerCase() &&
+    a.identity.agentId === b.identity.agentId;
+}
+
+function assertParentHireAuthorization(
+  parent: CommerceParentHireRecord | null,
+  input: { readonly commerceJobId: string; readonly task: string; readonly budgetAtomic: string },
+  identity: AuthenticatedCommerceIdentity,
+  pin: EnabledErc8183DeploymentPin
+): CommerceParentHireRecord {
+  if (parent === null) {
+    throw new CommerceError({
+      code: "UNKNOWN_JOB",
+      message: "The requested parent commerce reservation is unavailable for this buyer.",
+      nextAction: "reload_quote"
+    });
+  }
+  if (parent.commerceJobId !== input.commerceJobId) {
+    throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The parent commerce reservation identity is inconsistent.", nextAction: "reload_quote" });
+  }
+  if (parent.buyerUserId === null || parent.buyerUserId !== identity.userId) {
+    throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The parent commerce reservation does not belong to the authenticated buyer.", nextAction: "authenticate_actor" });
+  }
+  if (!(parent.status === "draft" || parent.status === "negotiating") || parent.fundingTransactionHash !== null || parent.fulfillmentTransactionHash !== null || parent.disputeTransactionHash !== null || parent.settlementTransactionHash !== null) {
+    throw new CommerceError({ code: "STALE_JOB", message: "The parent commerce reservation is no longer unpaid and reservable.", nextAction: "reload_quote" });
+  }
+  if (parent.priceAtomic !== input.budgetAtomic) {
+    throw new CommerceError({ code: "INVALID_QUOTE", message: "The requested budget does not match the persisted parent quote.", nextAction: "reload_quote" });
+  }
+  if (parent.taskInputDigest.toLowerCase() !== taskDigest(input.task)) {
+    throw new CommerceError({ code: "INVALID_QUOTE", message: "The requested task does not match the persisted parent reservation.", nextAction: "reload_quote" });
+  }
+
+  const listing = parent.listing;
+  if (listing.listingStatus !== "published" || listing.verificationStatus !== "verified" || listing.runtimeStatus !== "live" || listing.authorityStatus !== "active") {
+    throw new CommerceError({ code: "STALE_JOB", message: "The provider marketplace listing is not currently eligible for execution.", nextAction: "reload_listing" });
+  }
+  try {
+    evmAddressSchema.parse(parent.providerAddress);
+    evmAddressSchema.parse(listing.providerAddress);
+    evmAddressSchema.parse(listing.terms.commerceContract);
+    evmAddressSchema.parse(listing.terms.paymentToken);
+    erc8183ProviderBindingSchema.parse(parent.providerBinding);
+    erc8183ProviderBindingSchema.parse(listing.providerBinding);
+  } catch (cause) {
+    throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted parent provider/listing binding is invalid.", nextAction: "manual_review", cause });
+  }
+  if (parent.providerAddress.toLowerCase() !== listing.providerAddress.toLowerCase() || !sameProviderBinding(parent.providerBinding, listing.providerBinding)) {
+    throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The parent provider does not match the eligible marketplace listing version.", nextAction: "reload_listing" });
+  }
+  if (listing.providerBinding.agentVersionId.toLowerCase() !== listing.version.id.toLowerCase() || listing.providerBinding.agentVersion !== listing.version.number) {
+    throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The marketplace listing version binding is inconsistent.", nextAction: "reload_listing" });
+  }
+  if (listing.providerBinding.identity.chainId !== pin.chainId || listing.terms.chainId !== pin.chainId) {
+    throw new CommerceError({ code: "INVALID_CHAIN", message: "The provider listing chain does not match the pinned ERC-8183 deployment." });
+  }
+  if (listing.terms.commerceContract.toLowerCase() !== pin.commerceContract.toLowerCase() || listing.terms.paymentToken.toLowerCase() !== pin.paymentToken.toLowerCase() || listing.terms.paymentDecimals !== pin.paymentDecimals) {
+    throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The provider listing terms do not match the pinned ERC-8183 deployment.", nextAction: "reload_listing" });
+  }
+  if (listing.terms.priceAtomic !== parent.priceAtomic) {
+    throw new CommerceError({ code: "INVALID_QUOTE", message: "The parent quote does not match the eligible listing terms.", nextAction: "reload_quote" });
+  }
+  try {
+    const amount = BigInt(parent.priceAtomic);
+    if (amount < BigInt(pin.minBudgetAtomic) || amount > BigInt(pin.maxBudgetAtomic)) {
+      throw new CommerceError({ code: "INVALID_AMOUNT", message: "The persisted parent quote is outside the standards-locked budget bounds." });
+    }
+  } catch (cause) {
+    if (cause instanceof CommerceError) throw cause;
+    throw new CommerceError({ code: "INVALID_AMOUNT", message: "The persisted parent quote is not a valid atomic budget.", cause });
+  }
+  return parent;
+}
+
+function taskDigest(task: string): string {
+  // The canonical digest is computed by the commerce package before the SDK
+  // call. The injected resolver must return the same persisted digest; this
+  // small seam avoids accepting a client-claimed provider/task binding.
+  return PostgresErc8183OperationRepository.requestDigest(task).toLowerCase();
+}
+
 function jobKeyFor(adapter: Erc8183AltanaAdapter, jobId: string): Erc8183JobKey {
   return erc8183JobKeySchema.parse({
     chainId: adapter.pin.chainId,
@@ -145,8 +325,9 @@ export type CommerceRefundCompositionResult = Erc8183OperationCoordinatorResult<
 
 /**
  * Composed T4 service used by route handlers. Construction is deliberately
- * strict: missing lock, pool, or authority boundary prevents the app from
- * reaching the Altana SDK at all.
+ * strict for the standards lock, persistent stores, and authenticated read
+ * boundary. Mutation-only seams fail closed at their call site so status
+ * reloads remain available without an Altana signer.
  */
 export class Erc8183CommerceComposition {
   public readonly adapter: Erc8183AltanaAdapter;
@@ -154,15 +335,21 @@ export class Erc8183CommerceComposition {
   public readonly jobs: PostgresErc8183JobRepository;
   public readonly service: Erc8183CommerceService;
   public readonly reads: Erc8183CommerceReadService;
-  private readonly authorityResolver: CommerceAuthorityResolver;
+  private readonly identityResolver: CommerceIdentityResolver;
+  private readonly authorityResolver: CommerceAuthorityResolver | undefined;
+  private readonly parentHireResolver: CommerceParentHireResolver | undefined;
 
   public constructor(options: Erc8183CommerceCompositionOptions) {
-    if (options.authorityResolver === undefined || typeof options.authorityResolver.resolve !== "function") throw commerceAuthorityBoundaryError();
     if (options.standardsLock === undefined || options.standardsLock === null) {
       throw invalidComposition("T4 production composition requires the authoritative standards.lock snapshot.", "verify_standards_lock");
     }
     assertPersistentPool(options.pool);
+    if (options.identityResolver === undefined || typeof options.identityResolver.resolve !== "function") {
+      throw invalidComposition("T4 production composition requires a server-authenticated read identity resolver.", "configure_auth_boundary");
+    }
+    this.identityResolver = options.identityResolver;
     this.authorityResolver = options.authorityResolver;
+    this.parentHireResolver = options.parentHireResolver;
     this.adapter = new Erc8183AltanaAdapter({
       pin: options.pin,
       standardsLock: options.standardsLock,
@@ -181,10 +368,28 @@ export class Erc8183CommerceComposition {
     this.reads = new Erc8183CommerceReadService(this.jobs, this.operations);
   }
 
-  private async actor(request: Request): Promise<AuthenticatedCommerceActor> {
-    let actor: unknown;
+  private async identity(request: Request): Promise<AuthenticatedCommerceIdentity> {
+    let identity: unknown;
     try {
-      actor = await this.authorityResolver.resolve(request);
+      identity = await this.identityResolver.resolve(request);
+    } catch (cause) {
+      if (cause instanceof CommerceError) throw cause;
+      throw new CommerceError({
+        code: "UNAUTHORIZED_ACTOR",
+        message: "The server-authenticated requester identity could not be resolved.",
+        nextAction: "authenticate_actor",
+        cause
+      });
+    }
+    assertIdentityShape(identity);
+    return identity;
+  }
+
+  private async authority(request: Request, identity: AuthenticatedCommerceIdentity): Promise<Erc8183AltanaAuthority> {
+    if (this.authorityResolver === undefined) throw commerceAuthorityBoundaryError();
+    let authority: unknown;
+    try {
+      authority = await this.authorityResolver.resolve(request, identity);
     } catch (cause) {
       if (cause instanceof CommerceError) throw cause;
       throw new CommerceError({
@@ -194,44 +399,76 @@ export class Erc8183CommerceComposition {
         cause
       });
     }
-    assertActorShape(actor);
-    const execution = authorityExecutionAddress(actor.authority).toLowerCase();
-    if (actor.requesterAddress.toLowerCase() !== execution) {
+    assertAuthorityShape(authority);
+    const execution = authorityExecutionAddress(authority).toLowerCase();
+    if (identity.requesterAddress.toLowerCase() !== execution) {
       throw new CommerceError({
         code: "UNAUTHORIZED_ACTOR",
         message: "The server-authenticated requester does not match the Altana execution wallet.",
         nextAction: "authenticate_actor"
       });
     }
-    return actor;
+    return authority;
+  }
+
+  private async resolveParentHire(identity: AuthenticatedCommerceIdentity, input: {
+    readonly commerceJobId: string;
+    readonly task: string;
+    readonly budgetAtomic: string;
+  }): Promise<CommerceParentHireRecord> {
+    if (this.parentHireResolver === undefined || typeof this.parentHireResolver.resolve !== "function") {
+      throw invalidComposition("T4 hire requires a persistent parent-hire/listing resolver before any SDK write.", "configure_parent_hire_repository");
+    }
+    let parent: CommerceParentHireRecord | null;
+    try {
+      parent = await this.parentHireResolver.resolve({
+        commerceJobId: input.commerceJobId,
+        buyerUserId: identity.userId,
+        task: input.task,
+        budgetAtomic: input.budgetAtomic,
+        chainId: this.adapter.pin.chainId,
+        commerceContract: this.adapter.pin.commerceContract,
+        paymentToken: this.adapter.pin.paymentToken,
+        paymentDecimals: this.adapter.pin.paymentDecimals
+      });
+    } catch (cause) {
+      if (cause instanceof CommerceError) throw cause;
+      throw new CommerceError({
+        code: "COMMERCE_DISABLED",
+        message: "The persistent parent-hire authorization could not be resolved; the SDK write is disabled.",
+        nextAction: "configure_parent_hire_repository",
+        cause
+      });
+    }
+    return assertParentHireAuthorization(parent, input, identity, this.adapter.pin);
   }
 
   public async status(request: Request, jobId: string): Promise<Erc8183JobRead> {
-    const actor = await this.actor(request);
+    const identity = await this.identity(request);
     const read = await this.reads.get(jobKeyFor(this.adapter, jobId));
-    assertJobActor(read, actor.requesterAddress);
+    assertJobActor(read, identity.requesterAddress);
     return read;
   }
 
   public async hire(request: Request, input: {
     readonly idempotencyKey: string;
     readonly commerceJobId: string;
-    readonly providerAddress: string;
     readonly task: string;
     readonly budgetAtomic: string;
     readonly deadlineSeconds?: number | undefined;
-    readonly providerBinding: Erc8183ProviderBinding;
   }): Promise<CommerceHireCompositionResult> {
-    const actor = await this.actor(request);
+    const identity = await this.identity(request);
+    const parent = await this.resolveParentHire(identity, input);
+    const authority = await this.authority(request, identity);
     return this.service.hire({
       idempotencyKey: input.idempotencyKey,
       commerceJobId: input.commerceJobId,
-      providerAddress: input.providerAddress,
+      providerAddress: parent.providerAddress,
       task: input.task,
       budgetAtomic: input.budgetAtomic,
-      providerBinding: input.providerBinding,
-      authority: actor.authority,
-      requesterAddress: actor.requesterAddress,
+      providerBinding: parent.providerBinding,
+      authority,
+      requesterAddress: identity.requesterAddress,
       ...(input.deadlineSeconds === undefined ? {} : { deadlineSeconds: input.deadlineSeconds })
     });
   }
@@ -247,13 +484,14 @@ export class Erc8183CommerceComposition {
     readonly task?: Erc8183ProviderTask | undefined;
     readonly result?: Erc8183ProviderResult | undefined;
   }): Promise<CommerceSubmitCompositionResult> {
-    const actor = await this.actor(request);
+    const identity = await this.identity(request);
+    const authority = await this.authority(request, identity);
     const submission = {
       jobId,
       resultDigest: input.resultDigest,
-      authority: actor.authority,
+      authority,
       idempotencyKey: input.idempotencyKey,
-      requesterAddress: actor.requesterAddress,
+      requesterAddress: identity.requesterAddress,
       ...(input.chainDeliverable === undefined ? {} : { chainDeliverable: input.chainDeliverable }),
       ...(input.deliverableUrl === undefined ? {} : { deliverableUrl: input.deliverableUrl }),
       ...(input.manifest === undefined ? {} : { manifest: input.manifest as Erc8183SubmitInput["manifest"] }),
@@ -266,51 +504,50 @@ export class Erc8183CommerceComposition {
   }
 
   public async approveOrDispute(request: Request, jobId: string, input: { readonly action: "approve" | "dispute"; readonly idempotencyKey: string; readonly resultDigest?: string | undefined }): Promise<{ readonly action: "approve" | "dispute"; readonly operation: CommerceSettleCompositionResult["operation"] | null; readonly replayed: boolean; readonly read: Erc8183JobRead }> {
-    const actor = await this.actor(request);
+    const identity = await this.identity(request);
+    const authority = await this.authority(request, identity);
     const jobKey = jobKeyFor(this.adapter, jobId);
     const current = await this.reads.get(jobKey);
-    assertJobActor(current, actor.requesterAddress);
+    assertJobActor(current, identity.requesterAddress);
     if (input.action === "approve") {
       if (input.resultDigest === undefined) throw new CommerceError({ code: "INVALID_JOB", message: "Buyer approval requires the submitted local result digest.", nextAction: "inspect_result" });
-      const approval = await this.service.approveResult({ jobKey, actorAddress: actor.requesterAddress, requesterAddress: actor.requesterAddress, resultDigest: input.resultDigest, nowUnix: Math.floor(Date.now() / 1_000) }) as { readonly replayed: boolean };
+      const approval = await this.service.approveResult({ jobKey, actorAddress: identity.requesterAddress, requesterAddress: identity.requesterAddress, resultDigest: input.resultDigest, nowUnix: Math.floor(Date.now() / 1_000) }) as { readonly replayed: boolean };
       return { action: "approve", operation: null, replayed: approval.replayed, read: await this.reads.get(jobKey) };
     }
-    const result = await this.service.settle({ idempotencyKey: input.idempotencyKey, authority: actor.authority, requesterAddress: actor.requesterAddress, jobId, action: "dispute" });
+    const result = await this.service.settle({ idempotencyKey: input.idempotencyKey, authority, requesterAddress: identity.requesterAddress, jobId, action: "dispute" });
     return { action: "dispute", operation: result.operation, replayed: result.replayed, read: await this.reads.get(jobKey) };
   }
 
   public async settle(request: Request, jobId: string, idempotencyKey: string): Promise<CommerceSettleCompositionResult> {
-    const actor = await this.actor(request);
-    return this.service.settle({ idempotencyKey, authority: actor.authority, requesterAddress: actor.requesterAddress, jobId, action: "approve" });
+    const identity = await this.identity(request);
+    const authority = await this.authority(request, identity);
+    return this.service.settle({ idempotencyKey, authority, requesterAddress: identity.requesterAddress, jobId, action: "approve" });
   }
 
   public async refund(request: Request, jobId: string, idempotencyKey: string): Promise<CommerceRefundCompositionResult> {
-    const actor = await this.actor(request);
-    return this.service.claimRefund({ idempotencyKey, authority: actor.authority, requesterAddress: actor.requesterAddress, jobId });
+    const identity = await this.identity(request);
+    const authority = await this.authority(request, identity);
+    return this.service.claimRefund({ idempotencyKey, authority, requesterAddress: identity.requesterAddress, jobId });
   }
 
   public async reconcile(request: Request, operationId: string): Promise<Erc8183OperationCoordinatorResult<unknown>> {
-    const actor = await this.actor(request);
+    const identity = await this.identity(request);
     // Authorize against the durable operation/job before touching the chain or
     // changing its reconciliation state. An unauthorized caller must not be
     // able to trigger a receipt read or repair another actor's operation.
     const existing = await this.operations.get(operationId);
     if (existing === null) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The requested commerce operation does not exist." });
-    if (existing.jobId === null && existing.context?.signerAddress === undefined) {
+    if (existing.context?.signerAddress === undefined) {
       throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The pending operation has no persisted execution-wallet binding.", nextAction: "manual_review" });
     }
-    if (existing.context?.signerAddress !== undefined && existing.context.signerAddress.toLowerCase() !== actor.requesterAddress.toLowerCase()) {
+    if (existing.context?.signerAddress !== undefined && existing.context.signerAddress.toLowerCase() !== identity.requesterAddress.toLowerCase()) {
       throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The authenticated requester does not match the operation execution wallet.", nextAction: "authenticate_actor" });
     }
-    if (existing.jobId !== null) {
-      const read = await this.reads.get(jobKeyFor(this.adapter, existing.jobId));
-      assertJobActor(read, actor.requesterAddress);
-    }
+    // Do not read the canonical projection before reconciliation. A confirmed
+    // receipt may be the only surviving evidence after a projection write was
+    // interrupted; the service must be allowed to rebuild it from that
+    // verified receipt.
     const result = await this.service.reconcile(operationId);
-    if (result.operation.jobId !== null) {
-      const read = await this.reads.get(jobKeyFor(this.adapter, result.operation.jobId));
-      assertJobActor(read, actor.requesterAddress);
-    }
     return result as Erc8183OperationCoordinatorResult<unknown>;
   }
 
@@ -326,6 +563,9 @@ export class Erc8183CommerceComposition {
  * writer.
  */
 export function createProductionCommerceComposition(options: Erc8183CommerceCompositionOptions): Erc8183CommerceComposition {
+  if (options.parentHireResolver === undefined || typeof options.parentHireResolver.resolve !== "function") {
+    throw invalidComposition("T4 production composition requires a persistent parent-hire/listing resolver before any SDK write.", "configure_parent_hire_repository");
+  }
   return new Erc8183CommerceComposition(options);
 }
 
