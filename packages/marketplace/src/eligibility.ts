@@ -331,7 +331,14 @@ function searchableText(listing: MarketplaceListingInput): string {
       capability.description,
       ...capability.requiredProtocols,
       ...capability.allowedActions
-    ])
+    ]),
+    ...(listing.serviceEvidence ?? []).flatMap((service) => service.advertisedSkills.flatMap((skill) => [
+      skill.id,
+      skill.name,
+      skill.description,
+      ...(skill.tags ?? []),
+      ...(skill.keywords ?? [])
+    ]))
   ].join(" ");
 }
 

@@ -16,6 +16,41 @@ describe("deterministic category assignment", () => {
     }).category).toBe("health-factor");
   });
 
+  it("uses normalized advertised A2A skill tags and keywords for category evidence", () => {
+    const cases = [
+      {
+        category: "grid-trading",
+        advertisedSkills: [{ id: "range-strategy", name: "Range strategy", description: "Automated strategy", tags: ["grid-trading"] }]
+      },
+      {
+        category: "yield-optimisation",
+        advertisedSkills: [{ id: "vault", name: "Vault", description: "Automated strategy", keywords: ["yield"] }]
+      },
+      {
+        category: "rebalancing",
+        advertisedSkills: [{ id: "portfolio", name: "Portfolio", description: "Automated strategy", keywords: ["portfolio rebalance"] }]
+      }
+    ] as const;
+
+    for (const input of cases) {
+      const result = classifyAgent({ advertisedSkills: input.advertisedSkills });
+      expect(result.category).toBe(input.category);
+      expect(result.evidence).toMatchObject({
+        structuredMatches: expect.arrayContaining([expect.stringContaining("advertisedSkill:")])
+      });
+    }
+  });
+
+  it("keeps ambiguous labels uncategorized and rejects unsafe advertised metadata", () => {
+    expect(classifyAgent({
+      advertisedSkills: [{ id: "generic", name: "Generic", description: "A general agent", tags: ["trading", "strategy"] }]
+    }).category).toBe("uncategorized");
+
+    expect(() => classifyAgent({
+      advertisedSkills: [{ id: "untrusted", name: "Untrusted", description: "A general agent", tags: [{ apiKey: "must-not-be-consumed" }] }]
+    })).toThrow(/credential|metadata|public/i);
+  });
+
   it("rejects credential-bearing capability metadata before classification", () => {
     expect(() => classifyAgent({
       mcpCapabilities: { apiKey: "must-not-be-consumed", tools: [{ name: "yield", description: "yield" }] }

@@ -99,6 +99,13 @@ function publicString(value: unknown, maximum = 256): string | null {
     : null;
 }
 
+function publicStringList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const normalized = value.map((entry) => publicString(entry, 128));
+  if (normalized.length > safeSummaryArrayLimit || normalized.some((entry) => entry === null)) return null;
+  return [...new Set(normalized.filter((entry): entry is string => entry !== null))];
+}
+
 function plainObject(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -324,11 +331,21 @@ function validateA2AAgentCard(
   const skillSummaries: Readonly<Record<string, unknown>>[] = [];
   for (const skill of body.skills) {
     const value = plainObject(skill);
-    if (value === null || publicString(value.id, 160) === null || publicString(value.name, 160) === null || publicString(value.description, 2_000) === null || !Array.isArray(value.tags)) {
+    const rawTags = value?.tags;
+    const rawKeywords = value?.keywords;
+    if (
+      value === null ||
+      publicString(value.id, 160) === null ||
+      publicString(value.name, 160) === null ||
+      publicString(value.description, 2_000) === null ||
+      !Array.isArray(rawTags) ||
+      (rawKeywords !== undefined && !Array.isArray(rawKeywords))
+    ) {
       throw protocolError("SERVICE_A2A_AGENT_CARD_INVALID", "The A2A Agent Card contains an invalid skill.", "repair_agent_card");
     }
-    const tags = value.tags.map((tag) => publicString(tag, 128));
-    if (tags.length > safeSummaryArrayLimit || tags.some((tag) => tag === null)) {
+    const tags = publicStringList(rawTags);
+    const keywords = rawKeywords === undefined ? [] : publicStringList(rawKeywords);
+    if (tags === null || keywords === null || tags.length + keywords.length > safeSummaryArrayLimit) {
       throw protocolError("SERVICE_A2A_AGENT_CARD_INVALID", "The A2A Agent Card contains invalid skill tags.", "repair_agent_card");
     }
     const inputModes = Array.isArray(value.inputModes) ? value.inputModes.map((mode) => publicString(mode, 128)) : [];
@@ -341,6 +358,7 @@ function validateA2AAgentCard(
       name: publicString(value.name, 160)!,
       description: publicString(value.description, 2_000)!,
       tags,
+      ...(rawKeywords === undefined ? {} : { keywords }),
       inputModes,
       outputModes
     });

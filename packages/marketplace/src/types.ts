@@ -229,7 +229,11 @@ export type MarketplaceMetrics = z.infer<typeof marketplaceMetricsSchema>;
 const marketplaceSkillEvidenceSchema = z.object({
   id: z.string().trim().min(1).max(160),
   name: z.string().trim().min(1).max(160),
-  description: z.string().trim().min(1).max(2_000)
+  description: z.string().trim().min(1).max(2_000),
+  /** Public A2A labels; these are advertised and not invocation evidence. */
+  tags: z.array(z.string().trim().min(1).max(128)).max(32).optional(),
+  /** Public card extensions normalized alongside standard tags. */
+  keywords: z.array(z.string().trim().min(1).max(128)).max(32).optional()
 });
 
 export const marketplaceServiceEvidenceSchema = z.object({

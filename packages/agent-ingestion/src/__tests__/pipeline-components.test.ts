@@ -84,7 +84,8 @@ describe("bounded ERC-8004 metadata resolution", () => {
               protocol: "a2a",
               valid: true,
               protocolVersion: "0.3.0",
-              skills: [{ id: "health", description: "Monitor liquidation health factor" }]
+              contract: "agent-card",
+              skills: [{ id: "grid-strategy", name: "Grid strategy", description: "A public grid strategy.", tags: ["grid-trading"] }]
             }
           };
         }
@@ -103,8 +104,9 @@ describe("bounded ERC-8004 metadata resolution", () => {
     expect(result.warnings).not.toContain("SERVICE_OBSERVATIONS_REJECTED");
     expect(result.capabilityManifest).toMatchObject({
       schemaVersion: "a2a-agent-card-0.3.0-adapter-v1",
-      capabilities: [{ id: "health", requiredProtocols: ["A2A/0.3.0"], allowedActions: ["message/send"] }]
+      capabilities: [{ id: "grid-strategy", requiredProtocols: ["A2A/0.3.0"], allowedActions: ["message/send"] }]
     });
+    expect(result.category?.category).toBe("grid-trading");
   });
 
   it("blocks private targets and validates redirects and MIME", async () => {

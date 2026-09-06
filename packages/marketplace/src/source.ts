@@ -365,7 +365,22 @@ function unknownMetrics(): MarketplaceMetrics {
   });
 }
 
-function skillEvidenceFrom(value: unknown): Array<{ readonly id: string; readonly name: string; readonly description: string }> {
+function publicSkillTerms(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0 && item.length <= 128 && !/[\u0000-\u001f\u007f]/u.test(item)))]
+    .slice(0, 32);
+}
+
+function skillEvidenceFrom(value: unknown): Array<{
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly tags?: readonly string[];
+  readonly keywords?: readonly string[];
+}> {
   if (!Array.isArray(value)) return [];
   return value
     .map((skill) => {
@@ -374,9 +389,19 @@ function skillEvidenceFrom(value: unknown): Array<{ readonly id: string; readonl
       const id = typeof record.id === "string" ? record.id.trim() : "";
       const name = typeof record.name === "string" ? record.name.trim() : "";
       const description = typeof record.description === "string" ? record.description.trim() : "";
-      return id && name && description ? { id, name, description } : null;
+      const tags = publicSkillTerms(record.tags);
+      const keywords = publicSkillTerms(record.keywords);
+      return id && name && description
+        ? {
+            id,
+            name,
+            description,
+            ...(tags.length === 0 ? {} : { tags }),
+            ...(keywords.length === 0 ? {} : { keywords })
+          }
+        : null;
     })
-    .filter((skill): skill is { readonly id: string; readonly name: string; readonly description: string } => skill !== null)
+    .filter((skill): skill is NonNullable<typeof skill> => skill !== null)
     .slice(0, 32);
 }
 
@@ -385,14 +410,27 @@ function serviceEvidenceFrom(
   probes: readonly ServiceProbeRecord[]
 ): readonly MarketplaceServiceEvidence[] {
   const latest = new Map<string, ServiceProbeRecord>();
+  const latestCard = new Map<string, ServiceProbeRecord>();
   for (const probe of probes) {
     const key = `${probe.kind}\u0000${probe.url}`;
     const previous = latest.get(key);
     latest.set(key, previous === undefined ? probe : latestProbeForService(previous, probe));
+    const summary = probe.safeCapabilityProbe;
+    const isCard = probe.kind === "a2a" &&
+      summary?.protocol === "a2a" &&
+      summary.contract === "agent-card" &&
+      summary.valid === true;
+    if (isCard) {
+      const previousCard = latestCard.get(key);
+      latestCard.set(key, previousCard === undefined ? probe : latestProbeForService(previousCard, probe));
+    }
   }
   return services.map((service) => {
-    const probe = latest.get(`${service.kind}\u0000${service.url}`);
-    const summary = probe?.safeCapabilityProbe ?? null;
+    const key = `${service.kind}\u0000${service.url}`;
+    const probe = latest.get(key);
+    // A later failed health check has no card body, but it must not erase the
+    // last bounded advertised-skill observation from the browse projection.
+    const summary = latestCard.get(key)?.safeCapabilityProbe ?? probe?.safeCapabilityProbe ?? null;
     const isCard = service.kind === "a2a" && summary?.protocol === "a2a" && summary.contract === "agent-card" && summary.valid === true;
     const invocationUrls = isCard && Array.isArray(summary.invocationUrls)
       ? summary.invocationUrls.filter((value): value is string => typeof value === "string").slice(0, 32)

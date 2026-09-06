@@ -226,6 +226,42 @@ function capabilityManifestFromA2AProbes(probes: readonly ServiceProbeResult[]):
   return null;
 }
 
+/**
+ * Keep the normalized A2A skill labels available to the classifier as their
+ * own advertised evidence. This is deliberately separate from the adapted
+ * protocol capability manifest and from tested/health observations.
+ */
+function advertisedSkillsFromA2AProbes(probes: readonly ServiceProbeResult[]): readonly Readonly<Record<string, unknown>>[] {
+  const skills: Readonly<Record<string, unknown>>[] = [];
+  for (const probe of probes) {
+    if (probe.kind !== "a2a" || probe.validationStatus !== "healthy") continue;
+    const summary = publicRecord(probe.safeCapabilityProbe);
+    if (summary?.valid !== true || summary.protocol !== "a2a" || !Array.isArray(summary.skills)) continue;
+    for (const skill of summary.skills) {
+      const value = publicRecord(skill);
+      const id = typeof value?.id === "string" ? value.id.trim() : "";
+      const name = typeof value?.name === "string" ? value.name.trim() : "";
+      const description = typeof value?.description === "string" ? value.description.trim() : "";
+      if (id.length === 0 || name.length === 0 || description.length === 0) continue;
+      const tags = Array.isArray(value?.tags)
+        ? value.tags.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter((item) => item.length > 0).slice(0, 32)
+        : [];
+      const keywords = Array.isArray(value?.keywords)
+        ? value.keywords.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter((item) => item.length > 0).slice(0, 32)
+        : [];
+      skills.push({
+        id,
+        name,
+        description,
+        tags,
+        keywords
+      });
+      if (skills.length >= 128) return skills;
+    }
+  }
+  return skills;
+}
+
 function identityKey(identity: Erc8004Identity): string {
   return erc8004IdentityKey(identity);
 }
@@ -457,6 +493,7 @@ export class Erc8004Pipeline {
     }
 
     try {
+      const advertisedSkills = advertisedSkillsFromA2AProbes(probes);
       const categoryInput: CategoryClassificationInput = {
         ...(registration?.name === null || registration?.name === undefined
           ? candidate.metadata?.name === undefined ? {} : { name: candidate.metadata.name }
@@ -470,7 +507,8 @@ export class Erc8004Pipeline {
           ? candidate.metadata === undefined ? {} : { metadata: candidate.metadata }
           : { metadata: publicMetadata }),
         agentCard: probes.filter((probe) => probe.kind === "a2a").map((probe) => probe.safeCapabilityProbe).filter((probe) => probe !== null),
-        mcpCapabilities: probes.filter((probe) => probe.kind === "mcp").map((probe) => probe.safeCapabilityProbe).filter((probe) => probe !== null)
+        mcpCapabilities: probes.filter((probe) => probe.kind === "mcp").map((probe) => probe.safeCapabilityProbe).filter((probe) => probe !== null),
+        ...(advertisedSkills.length === 0 ? {} : { advertisedSkills })
       };
       const categoryInputWithRegistration: CategoryClassificationInput = registration === null
         ? categoryInput
