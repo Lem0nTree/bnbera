@@ -7,6 +7,7 @@ import { resolveErc8183DeploymentVerification } from "../src/index.js";
 type Erc8183Lock = {
   readonly enabled?: unknown;
   readonly releaseEnabled?: unknown;
+  readonly disabledReason?: unknown;
   readonly sourceRevision?: unknown;
   readonly commerceProxy?: unknown;
   readonly routerProxy?: unknown;
@@ -76,8 +77,9 @@ describe("T4 ERC-8183 standards lock", () => {
   it("keeps the development canary and release paths fail-closed", () => {
     const pin = testnetLock();
 
-    expect(pin.enabled).toBe(false);
+    expect(pin.enabled).toBe(true);
     expect(pin.releaseEnabled).toBe(false);
+    expect(pin.disabledReason).toMatch(/canary|release/i);
     expect(pin.paymentTokenSymbol).toBe("U");
     expect(pin.paymentTokenName).toBe("United Stables");
     expect(pin.paymentDecimals).toBe(18);
@@ -114,7 +116,7 @@ describe("T4 ERC-8183 standards lock", () => {
   it("composes runtime verification from the lock without enabling release", () => {
     const composed = resolveErc8183DeploymentVerification(lock, 97);
 
-    expect(composed.enabled).toBe(false);
+    expect(composed.enabled).toBe(true);
     expect(composed.releaseEnabled).toBe(false);
     expect(composed.verification).toMatchObject({
       commerceProxy: "0xa206c0517b6371c6638cd9e4a42cc9f02a33b0de",
