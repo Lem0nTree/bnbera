@@ -219,9 +219,9 @@
         "verificationStatus": "verified-read-only-bytecode-and-abi"
       },
       "erc8183": {
-        "enabled": false,
+        "enabled": true,
         "releaseEnabled": false,
-        "disabledReason": "Testnet token-control risk acceptance and the bounded paid canary remain pending.",
+        "disabledReason": "The authorized development canary and release enablement remain pending.",
         "specRevision": "a078cab5cc8e9581c15f76c091ed96eed28f02f7",
         "sourceRevision": "b40b18011407ba13516661d3784bcb727a0c7794",
         "commerceProxy": "0xa206c0517b6371c6638cd9e4a42cc9f02a33b0de",

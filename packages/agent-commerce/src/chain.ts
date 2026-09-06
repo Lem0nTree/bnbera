@@ -78,6 +78,8 @@ export interface Erc8183DeploymentLockConfig {
   readonly verification: Erc8183DeploymentVerification;
 }
 
+export type Erc8183RuntimeEnvironment = "development" | "test" | "production";
+
 function lockRecord(value: unknown, label: string): Readonly<Record<string, unknown>> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new CommerceError({ code: "COMMERCE_DISABLED", message: `The standards lock has no valid ${label} record.`, nextAction: "verify_standards_lock" });
@@ -184,6 +186,10 @@ export interface Erc8183AltanaAdapterOptions {
    * deterministic tests and a platform-owned composition layer. */
   readonly standardsLock?: unknown;
   readonly deploymentVerification?: Erc8183DeploymentVerification;
+  /** Explicit process-level canary opt-in; never accepted in a request. */
+  readonly developmentCanaryEnabled?: boolean;
+  /** The process configuration in which the canary is composed. */
+  readonly runtimeEnvironment?: Erc8183RuntimeEnvironment;
   readonly sdk?: Partial<Erc8183AltanaSdk>;
 }
 
@@ -700,6 +706,8 @@ export class Erc8183AltanaAdapter {
   private readonly deploymentVerification: Erc8183DeploymentVerification | undefined;
   private readonly standardsLockEnabled: boolean | undefined;
   private readonly standardsLockReleaseEnabled: boolean | undefined;
+  private readonly developmentCanaryEnabled: boolean;
+  private readonly runtimeEnvironment: Erc8183RuntimeEnvironment;
 
   public constructor(options: Erc8183AltanaAdapterOptions) {
     this.pin = assertSdkDeploymentMatchesPin(options.pin);
@@ -721,6 +729,11 @@ export class Erc8183AltanaAdapter {
     this.deploymentVerification = lockConfig?.verification ?? options.deploymentVerification;
     this.standardsLockEnabled = lockConfig?.enabled;
     this.standardsLockReleaseEnabled = lockConfig?.releaseEnabled;
+    const runtimeEnvironment = options.runtimeEnvironment ?? "production";
+    if (runtimeEnvironment !== "development" && runtimeEnvironment !== "test" && runtimeEnvironment !== "production") throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The ERC-8183 runtime environment is invalid for the commerce canary.", nextAction: "verify_standards_lock" });
+    this.runtimeEnvironment = runtimeEnvironment;
+    this.developmentCanaryEnabled = options.developmentCanaryEnabled ?? false;
+    if (this.developmentCanaryEnabled && (this.pin.chainId !== 97 || (this.runtimeEnvironment !== "development" && this.runtimeEnvironment !== "test"))) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The ERC-8183 development canary is only allowed on chain 97 in development or test configuration.", nextAction: "verify_standards_lock" });
   }
 
   public async verifyNetwork(): Promise<Erc8183NetworkEvidence> {
@@ -791,7 +804,7 @@ export class Erc8183AltanaAdapter {
       if (cause instanceof CommerceError) throw cause;
       throw new CommerceError({ code: "CHAIN_PROVIDER_INVALID", message: "The standards-lock deployment could not be verified by the configured RPC.", nextAction: "verify_standards_lock", cause });
     }
-    if (this.standardsLockEnabled !== true || this.standardsLockReleaseEnabled !== true) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "ERC-8183 writes remain disabled by the standards lock until the authorized canary is accepted.", nextAction: "verify_standards_lock" });
+    if (this.standardsLockEnabled !== true || (this.standardsLockReleaseEnabled !== true && !this.developmentCanaryEnabled)) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "ERC-8183 writes remain disabled by the standards lock until the authorized canary or release gate is accepted.", nextAction: "verify_standards_lock" });
   }
 
   public async readJob(jobId: string | bigint): Promise<Erc8183OnchainJob> {
