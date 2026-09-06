@@ -330,6 +330,11 @@ async function main(): Promise<void> {
   if (registry === null) throw new Error("REGISTRY_NOT_RESOLVED_FROM_STANDARDS_LOCK");
   const maxCandidates = boundedNumber("ERC8004_MARKETPLACE_MAX_CANDIDATES", 20, 1, 20);
   const pageSize = boundedNumber("ERC8004_SCAN_PAGE_SIZE", Math.min(20, maxCandidates), 1, Math.min(100, maxCandidates));
+  // Semantic candidate discovery is an optional provider fan-out. It is not
+  // required for the ordinary scan -> enrichment -> category -> vector path,
+  // and must not consume the bounded run budget when semantic retrieval is
+  // disabled or when a cron run is operating in deterministic mode.
+  const semanticDiscoveryEnabled = parseBoolean("ERC8004SCAN_SEMANTIC_DISCOVERY_ENABLED", false);
   const cursorScope = optionalText("ERC8004_MARKETPLACE_DISCOVERY_SCOPE") ?? `erc8004scan:marketplace:${chainId}`;
   // The discovery wrapper stops at 240 seconds (with a 20 second kill grace).
   // Leave enough time to reconcile candidate retry state before that outer
@@ -427,7 +432,7 @@ async function main(): Promise<void> {
       } catch (error) {
         scanSummary = { ...scanSummary, status: "failed", errorCode: safeErrorCode(error, "SCAN_JOB_FAILED") };
       }
-      if (discoveryAdapter !== undefined && !runController.signal.aborted) {
+      if (discoveryAdapter !== undefined && semanticDiscoveryEnabled && !runController.signal.aborted) {
         try {
           const semantic = await new Erc8004SemanticCandidateCollector({
             adapter: discoveryAdapter,
