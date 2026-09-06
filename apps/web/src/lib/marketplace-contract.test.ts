@@ -8,6 +8,7 @@ import {
 import { normalizePersistedMarketplaceMetrics } from "./marketplace-server";
 import {
   mapMarketplaceSearchResponse,
+  marketplaceSearchResponseSchema,
   parseMarketplaceSearchParams,
   readMarketplace,
   readMarketplaceAgent
@@ -133,6 +134,23 @@ describe("marketplace web adapter", () => {
       }]
     });
     expect(secondary.agents.map((agent) => agent.slug)).toEqual(["fixture-web-grid-yield"]);
+  });
+
+  it("accepts legacy API records without reputation and marks the views explicitly", async () => {
+    process.env.MARKETPLACE_DATA_MODE = "fixture";
+    const current = await readMarketplace({ limit: 1 });
+    const agent = current.agents[0]!;
+    const { reputation: _reputation, ...legacyMetrics } = agent.metrics;
+    const legacy = marketplaceSearchResponseSchema.parse({
+      ...current,
+      agents: [{ ...agent, metrics: legacyMetrics }]
+    });
+
+    expect(legacy.agents[0]?.metrics.reputation).toMatchObject({
+      rawPermissionless: { status: "unknown", count: null },
+      recognizedReviewers: { status: "unavailable", count: null },
+      verifiedPurchases: { status: "unavailable", count: null }
+    });
   });
 
   it("exposes deterministic loading and empty state previews", async () => {

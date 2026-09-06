@@ -241,6 +241,38 @@ export const marketplaceReputationSchema = z.object({
 
 export type MarketplaceReputation = z.infer<typeof marketplaceReputationSchema>;
 
+/**
+ * Keep older listing/read-model producers valid after reputation was added to
+ * the metrics contract. The explicit states make the absence of feedback
+ * visible without turning it into a zero rating or fabricated review count.
+ */
+const defaultMarketplaceReputation: MarketplaceReputation = {
+  rawPermissionless: {
+    status: "unknown",
+    count: null,
+    feedback: [],
+    source: null,
+    observedAt: null,
+    reason: "No canonical ERC-8004 feedback has been observed."
+  },
+  recognizedReviewers: {
+    status: "unavailable",
+    count: null,
+    feedback: [],
+    source: null,
+    observedAt: null,
+    reason: "No recognized reviewer or validator allowlist is configured."
+  },
+  verifiedPurchases: {
+    status: "unavailable",
+    count: null,
+    feedback: [],
+    source: null,
+    observedAt: null,
+    reason: "BNBEra verified-purchase reviews are enabled by G2."
+  }
+};
+
 export const marketplaceJobMetricsSchema = z.object({
   status: marketplaceMetricStatusSchema,
   completedCount: z.number().int().nonnegative().nullable(),
@@ -277,7 +309,7 @@ export type MarketplaceCurrentData = z.infer<typeof marketplaceCurrentDataSchema
 export const marketplaceMetricsSchema = z.object({
   uptime: marketplaceUptimeSchema,
   reviews: marketplaceReviewMetricsSchema,
-  reputation: marketplaceReputationSchema,
+  reputation: marketplaceReputationSchema.default(defaultMarketplaceReputation),
   completedJobs: marketplaceJobMetricsSchema,
   lastResult: marketplaceLastResultSchema,
   currentData: marketplaceCurrentDataSchema
@@ -325,11 +357,7 @@ function unknownMarketplaceMetrics(): MarketplaceMetrics {
       source: null
     },
     reviews: { status: "unavailable", count: null, averageScore: null, source: null, observedAt: null },
-    reputation: {
-      rawPermissionless: { status: "unknown", count: null, feedback: [], source: null, observedAt: null, reason: "No canonical ERC-8004 feedback has been observed." },
-      recognizedReviewers: { status: "unavailable", count: null, feedback: [], source: null, observedAt: null, reason: "No recognized reviewer or validator allowlist is configured." },
-      verifiedPurchases: { status: "unavailable", count: null, feedback: [], source: null, observedAt: null, reason: "BNBEra verified-purchase reviews are enabled by G2." }
-    },
+    reputation: defaultMarketplaceReputation,
     completedJobs: { status: "unavailable", completedCount: null, source: null, observedAt: null },
     lastResult: { status: "unavailable", summary: null, reference: null, source: null, observedAt: null },
     currentData: {

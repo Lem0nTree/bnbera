@@ -504,6 +504,83 @@ describe("MarketplaceReadService", () => {
       observedAt: new Date(observedAt.getTime() + 5_000)
     });
 
+    const reputationRegistry = "0x2222222222222222222222222222222222222222";
+    const recognizedReviewer = "0x00000000000000000000000000000000000000aa";
+    const unrecognizedReviewer = "0x00000000000000000000000000000000000000bb";
+    const feedbackHash = `0x${"f".repeat(64)}`;
+    await repository.appendReputationEvent({
+      identity: fixture.identity,
+      reputationRegistry,
+      eventType: "NewFeedback",
+      clientAddress: recognizedReviewer,
+      feedbackIndex: "7",
+      value: "8750",
+      valueDecimals: 2,
+      indexedTag1: "quality",
+      tag1: "accurate",
+      tag2: "defi",
+      endpoint: advertised.url,
+      feedbackUri: "ipfs://bafy-feedback-7",
+      feedbackHash,
+      transactionHash: `0x${"1".repeat(64)}`,
+      logIndex: 0,
+      blockNumber: 125,
+      blockHash: `0x${"2".repeat(64)}`,
+      confirmationState: "canonical",
+      observedAt: new Date(observedAt.getTime() + 40_000),
+      canonicalizedAt: new Date(observedAt.getTime() + 40_000),
+      orphanedAt: null,
+      payloadDigest: "a".repeat(64)
+    });
+    await repository.appendReputationEvent({
+      identity: fixture.identity,
+      reputationRegistry,
+      eventType: "FeedbackRevoked",
+      clientAddress: recognizedReviewer,
+      feedbackIndex: "7",
+      value: null,
+      valueDecimals: null,
+      indexedTag1: null,
+      tag1: null,
+      tag2: null,
+      endpoint: null,
+      feedbackUri: null,
+      feedbackHash: null,
+      transactionHash: `0x${"3".repeat(64)}`,
+      logIndex: 1,
+      blockNumber: 126,
+      blockHash: `0x${"4".repeat(64)}`,
+      confirmationState: "canonical",
+      observedAt: new Date(observedAt.getTime() + 41_000),
+      canonicalizedAt: new Date(observedAt.getTime() + 41_000),
+      orphanedAt: null,
+      payloadDigest: "b".repeat(64)
+    });
+    await repository.appendReputationEvent({
+      identity: fixture.identity,
+      reputationRegistry,
+      eventType: "NewFeedback",
+      clientAddress: unrecognizedReviewer,
+      feedbackIndex: "8",
+      value: "91",
+      valueDecimals: 0,
+      indexedTag1: null,
+      tag1: "fast",
+      tag2: "",
+      endpoint: advertised.url,
+      feedbackUri: "https://example.invalid/feedback/8",
+      feedbackHash: null,
+      transactionHash: `0x${"5".repeat(64)}`,
+      logIndex: 0,
+      blockNumber: 127,
+      blockHash: `0x${"6".repeat(64)}`,
+      confirmationState: "canonical",
+      observedAt: new Date(observedAt.getTime() + 42_000),
+      canonicalizedAt: new Date(observedAt.getTime() + 42_000),
+      orphanedAt: null,
+      payloadDigest: "c".repeat(64)
+    });
+
     const metadata = {
       ...metadataFromFixture(fixture),
       fixture: null
@@ -512,7 +589,7 @@ describe("MarketplaceReadService", () => {
     const source = new IngestionMarketplaceSource(
       repository,
       new InMemoryMarketplaceMetadataSource([metadata]),
-      { now: () => sourceNow }
+      { now: () => sourceNow, recognizedReviewerAddresses: [`0x${recognizedReviewer.slice(2).toUpperCase()}`] }
     );
     const snapshot = await source.read();
     expect(snapshot.records[0]?.identityKey).toBe(fixture.identityKey);
@@ -538,6 +615,45 @@ describe("MarketplaceReadService", () => {
       status: "unavailable",
       count: null,
       averageScore: null
+    });
+    expect(snapshot.records[0]?.metrics?.reputation.rawPermissionless).toMatchObject({
+      status: "available",
+      count: 1,
+      source: "erc8004-reputation-registry"
+    });
+    expect(snapshot.records[0]?.metrics?.reputation.recognizedReviewers).toMatchObject({
+      status: "available",
+      count: 0,
+      source: "erc8004-reputation-registry"
+    });
+    expect(snapshot.records[0]?.metrics?.reputation.rawPermissionless.feedback).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        feedbackIndex: "7",
+        reviewerAddress: recognizedReviewer,
+        value: "8750",
+        valueDecimals: 2,
+        indexedTag1: "quality",
+        tag1: "accurate",
+        tag2: "defi",
+        endpoint: advertised.url,
+        feedbackUri: "ipfs://bafy-feedback-7",
+        feedbackHash,
+        feedbackTransactionHash: `0x${"1".repeat(64)}`,
+        feedbackLogIndex: 0,
+        feedbackBlockNumber: 125,
+        feedbackBlockHash: `0x${"2".repeat(64)}`,
+        revoked: true,
+        revocationTransactionHash: `0x${"3".repeat(64)}`,
+        revocationLogIndex: 1,
+        revocationBlockNumber: 126,
+        revocationBlockHash: `0x${"4".repeat(64)}`
+      }),
+      expect.objectContaining({ feedbackIndex: "8", revoked: false, reviewerAddress: unrecognizedReviewer })
+    ]));
+    expect(snapshot.records[0]?.metrics?.reputation.verifiedPurchases).toMatchObject({
+      status: "unavailable",
+      count: null,
+      reason: "BNBEra verified-purchase reviews are enabled by G2."
     });
     expect(snapshot.records[0]?.serviceEvidence).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "mcp", advertisedUrl: alternateService.url, invocationUrls: [], testedSkills: [] })
@@ -571,6 +687,31 @@ describe("MarketplaceReadService", () => {
     expect(staleSnapshot.records[0]?.health).toMatchObject({
       endpointStatus: "unknown",
       source: "agent-ingestion-probe"
+    });
+
+    repository.listReputationFeedback = async () => {
+      throw new Error("reputation table temporarily unavailable");
+    };
+    const reputationDegradedSnapshot = await source.read();
+    expect(reputationDegradedSnapshot.status).toBe("degraded");
+    expect(reputationDegradedSnapshot.warning).toContain("ERC-8004 reputation was unavailable");
+    expect(reputationDegradedSnapshot.records[0]?.metrics?.reputation).toMatchObject({
+      rawPermissionless: { status: "unavailable", count: null },
+      recognizedReviewers: { status: "unavailable", count: null },
+      verifiedPurchases: { status: "unavailable", count: null }
+    });
+  });
+
+  it("fills an explicit reputation absence for legacy listings", async () => {
+    const fixture = developmentFixtureListings[0]!;
+    const { reputation: _reputation, ...legacyMetrics } = fixture.metrics!;
+    const listing = { ...fixture, metrics: legacyMetrics } as unknown as MarketplaceListingInput;
+    const source = new InMemoryMarketplaceSource([listing]);
+    const snapshot = await source.read();
+    expect(snapshot.records[0]?.metrics?.reputation).toMatchObject({
+      rawPermissionless: { status: "unknown", count: null },
+      recognizedReviewers: { status: "unavailable", count: null },
+      verifiedPurchases: { status: "unavailable", count: null }
     });
   });
 });

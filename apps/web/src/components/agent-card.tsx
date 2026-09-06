@@ -5,6 +5,11 @@ import { categoryLabel, compactAddress, formatObservedAt, joinOrFallback, status
 import { ActivationPanel } from "./activation-panel";
 import { CompareToggle } from "./compare-toggle";
 
+function reputationCountLabel(view: MarketplaceAgentReadModel["metrics"]["reputation"]["rawPermissionless"]): string {
+  if (view.count !== null) return `${view.count} active`;
+  return view.status === "unknown" ? "Unknown" : "Unavailable";
+}
+
 export function AgentCard({ agent }: { readonly agent: MarketplaceAgentReadModel }) {
   const identity = agent.identity;
   return (
@@ -36,7 +41,7 @@ export function AgentCard({ agent }: { readonly agent: MarketplaceAgentReadModel
         <span><b>Protocols</b> {joinOrFallback(agent.protocols, "Not observed")}</span>
         <span><b>Endpoint probe</b> {titleCase(agent.health.endpointStatus)} · {formatObservedAt(agent.health.observedAt)}{agent.health.latencyMs === null ? "" : ` · ${agent.health.latencyMs} ms`}</span>
         <span><b>Observed uptime samples</b> {agent.metrics.uptime.status === "observed" ? `${agent.metrics.uptime.successfulChecks}/${agent.metrics.uptime.attemptedChecks}` : "Not observed"}</span>
-        <span><b>Reputation views</b> raw {agent.metrics.reputation.rawPermissionless.count ?? "—"} · recognized {agent.metrics.reputation.recognizedReviewers.count ?? "—"} · verified {agent.metrics.reputation.verifiedPurchases.count ?? "—"}</span>
+        <span><b>Reputation views</b> raw {reputationCountLabel(agent.metrics.reputation.rawPermissionless)} · recognized {reputationCountLabel(agent.metrics.reputation.recognizedReviewers)} · verified {reputationCountLabel(agent.metrics.reputation.verifiedPurchases)}</span>
         <span><b>Completed jobs</b> {agent.metrics.completedJobs.completedCount ?? "Unavailable"}</span>
       </div>
       <StateAxisGrid axes={agent.stateAxes} compact />
