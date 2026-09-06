@@ -306,9 +306,96 @@ a standards-lock or migration failure. No fallback provider was invented.
   statuses were unchanged. Readiness database+web remained HTTP/API pass with
   7/7 migration hashes matching. The local process was stopped after checks.
 
-T2 reputation ingestion remains blocked on the configured provider's bounded
-`eth_getLogs`/finalized-state behavior. Raw, recognized-reviewer, and verified
-purchase views remain provenance-separated and explicitly unknown/unavailable;
-no rating or review count was fabricated. Retry after provider repair should
-resume from the still-empty checkpoint using the same finalized and bounded
-configuration.
+At the original configured provider, T2 reputation ingestion remains blocked
+on bounded `eth_getLogs`/finalized-state behavior. Raw, recognized-reviewer,
+and verified-purchase views remain provenance-separated and explicitly
+unknown/unavailable; no rating or review count was fabricated. The follow-up
+recovery addendum below records a successful process-only endpoint override.
+
+### RPC retry audit from the retained main environment
+
+Updated: `2026-09-06T15:08:00Z`
+
+The current main environment was inspected by variable name only. The HTTP
+candidate names present were `BSC_TESTNET_RPC_URL`; the configured transport
+name `BSC_TESTNET_WSS_URL` is not consumable by the read-only HTTP JSON-RPC
+client. `BSC_TESTNET_RPC_URL_SECONDARY` and `BSC_TESTNET_RPC_URL_2` were unset.
+No endpoint value, credential, or private key was printed.
+
+| Candidate | Chain ID | Head | Finalized | Latest `eth_getCode` | Finalized `eth_getCode` | One-block `eth_getLogs` |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| `BSC_TESTNET_RPC_URL` | `97` | `129467600` | `129467592` | pass; bytecode present (130 bytes) | `CHAIN_PROVIDER_ERROR` | `CHAIN_PROVIDER_ERROR` |
+| `BSC_TESTNET_RPC_URL_SECONDARY` | — | — | — | unset | unset | unset |
+| `BSC_TESTNET_RPC_URL_2` | — | — | — | unset | unset | unset |
+
+The log probe addressed the standards-locked chain-97 Reputation Registry for
+exactly the finalized block. Both the reviewed topic-filtered range query and
+the block-hash form also returned the same sanitized provider error. The
+candidate therefore proves head/finalized block reads and a head bytecode read,
+but cannot provide the finalized state and bounded log reads required by the
+locked `rpc-finalized-tag` sync policy.
+
+Two bounded sync attempts used the finalized policy, start block
+`129462600`, max range `10,000`, and max events `10,000`. Both exited `1` with
+only `{"errorCode":"CHAIN_PROVIDER_ERROR"}`. A read-only retained-DB query
+after the first and retry attempts reported `erc8004_reputation_events=0`,
+`erc8004_reputation_checkpoints=0`, and `erc8004_identities=2120`; no partial
+transaction was committed. The current command's exact unblock requirement is
+an HTTPS/HTTP endpoint in `BSC_TESTNET_RPC_URL` that serves chain `97`, the
+locked registry bytecode at `finalized`, and bounded one-block `eth_getLogs`.
+Secondary variable names are not currently consumed by this reputation-sync
+script, so merely adding one does not silently change provider selection.
+
+The read-only API projection was checked on port `3111` before and after
+stopping/restarting only the local web process. Both checks returned HTTP `200`
+with degraded live mode, `25` published records, and the representative full
+tuple `eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:2097`. Its raw
+permissionless reputation view remained `unknown`; recognized-reviewer and
+verified-purchase views remained `unavailable` with their explicit reasons.
+This confirms the RPC failure did not alter marketplace identity/listing data
+or collapse the three reputation provenance views.
+
+## T2 reputation RPC recovery and retained sync
+
+Updated: `2026-09-06T15:12:08Z`
+
+The coordinator supplied an official BSC testnet HTTPS endpoint as a
+process-only `BSC_TESTNET_RPC_URL` override. The repository `.env` was not
+modified, and the endpoint value was not emitted or persisted. The existing
+`scripts/erc8004-reputation-sync.ts` already consumes this supported variable,
+so no source fallback or additional configuration was necessary.
+
+Sanitized preflight for the override passed chain ID `97`, head block
+`129468538`, finalized block `129468537`, finalized Reputation Registry
+`eth_getCode` with bytecode present (130 bytes), and one-block
+`eth_getLogs` against the locked registry (`0` logs). The standards lock's
+`rpc-finalized-tag` policy remained in force; no write-capable RPC method or
+private key was used.
+
+The first bounded sync used start block `129463537`, max range `10,000`, and
+max events `10,000`. It completed with `scannedThroughBlock=129468571`,
+`insertedEventCount=0`, `promotedEventCount=0`, and a checkpoint at block
+`129468571` (`cursorVersion=1`). The immediate idempotent replay scanned only
+newly finalized blocks `129468572` through `129468601`, again inserted and
+promoted `0` events, and advanced the same checkpoint stream to
+`cursorVersion=2`. No duplicate events were created.
+
+The retained read-only DB check after both runs reported `events=0`,
+`canonical_events=0`, `checkpoints=1`, `last_scanned_block=129468601`,
+`cursor_version=2`, and `identities=2120`. Migration journal/hash verification
+remained `7/7`; retained history and the pre-existing backup were preserved.
+
+The API projection after the successful sync and a local web-process restart
+remained HTTP `200`, degraded/live, with `25` published listings and the full
+representative tuple
+`eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:2097`. Because the
+bounded finalized window contained no feedback, raw permissionless reputation
+remained `unknown`; recognized-reviewer and verified-purchase views remained
+`unavailable` with explicit reasons. To enable retained cron operation, replace
+the failing repository value under the already-supported `BSC_TESTNET_RPC_URL`
+name only after the authorized environment owner approves that configuration
+change; do not add a second provider silently.
+
+Focused verification after the recovery passed: agent-ingestion `111/111`
+tests, database schema/legacy tests `17/17`, and `pnpm db:check` (`Everything's
+fine`).
