@@ -2,7 +2,7 @@
 
 Status: active scope, following the user's simplified MVP direction. Updated: 2026-09-05.
 Implementation baseline: `31d112fdcb3e6b99032f479a9274472e910cf445`, `codex/erc8004-pipeline`.
-This plan supersedes the archived plans. It defines the intended MVP; unchecked gates below are not implementation claims.
+This plan supersedes the archived plans. It defines the intended MVP; unchecked gates below are not implementation claims. The source-of-truth interpretation of the competition rubric is [HACKATHON-REQUIREMENTS.md](HACKATHON-REQUIREMENTS.md).
 
 ## Product and delivery order
 
@@ -52,7 +52,7 @@ The web/API and workers must use the same pinned embedding provider/model/versio
 | Current agent/protocol data | Timestamped provider response or verified protocol read; include units/network/block when relevant; unavailable is explicit |
 | Availability | Last real service check and its result; distinguish card reachability from tested task availability |
 | Uptime | Successful checks / attempted checks for a displayed monitoring window, plus sample count/coverage. Missing periods are unknown; never imply a continuous record from one probe |
-| Reviews/reputation | Real ERC-8004 feedback or supported vendor data labeled by source; after G2, one authenticated buyer review per completed marketplace job. No fabricated stars or review counts |
+| Reviews/reputation | Keep three provenance-separated views: non-revoked raw ERC-8004 feedback, feedback from allowlisted/recognized reviewers or validators, and BNBEra verified-purchase reviews bound to a confirmed G2 job/result. Show score/count/tags/reviewer/observation time and revocation status when available. Never present an unfiltered permissionless aggregate as a trusted rating or mix vendor feedback with verified jobs |
 | Completed jobs | Confirmed BNBEra job results/settlements from G2; external counts may be shown separately with their source. Do not mix sources or count registrations/acknowledgements as completed work |
 | Price, recent result and receipt | Advertised/confirmed quote and actual task/chain records. Unknown price is not free |
 
@@ -60,9 +60,17 @@ Proposed cron-friendly policy: mark **browse availability** stale after two minu
 
 **Gate G1:** a real fetched identity survives cron and web restarts; enrichment/category/vector are persisted and shown through API and UI; unchanged refresh creates no duplicate identities/versions; failed candidates are isolated; fresh healthy supply stays visible for a 30-minute run; stopping health checks makes availability stale. Semantic query and deterministic fallback both work. Four category routes work, a category supply report exists, and missing external reviews/jobs/data are honestly labeled. Public preview setup starts here.
 
+### ERC-8004 reputation projection
+
+Ingest Reputation Registry feedback by the full identity scope and configured registry address. Preserve `clientAddress`, `feedbackIndex`, signed fixed-point value/decimals, tags, revocation state, feedback URI/hash and observation block/time. A feedback URI is evidence, not trusted application data; fetch it through the same bounded public-URL safety controls as other metadata. Index chain events incrementally and make replay/reorg handling idempotent.
+
+Permissionless feedback is Sybil-prone. The UI may show its raw count and distribution, but the primary trust panel must distinguish: **raw on-chain feedback**, **recognized-reviewer/validator evidence**, and **verified BNBEra job reviews**. A verified-job review requires the authenticated G2 buyer, a confirmed completed settlement, the matching agent identity/version and result digest, and at most one active review per job. Revoked feedback is excluded from active aggregates but retained in history. Do not collapse these sources into one star rating.
+
 ## G2 — Hire, escrow, result, settlement
 
 Implement **one ERC-8183 rail** using reviewed official deployment/ABI/token/policy pins. Resolve the existing testnet policy-address conflict before writes. Reuse the existing commerce lifecycle, add PostgreSQL persistence and verified chain adapters. Do not add x402/B402 to this MVP.
+
+ERC-8183 is selected because this milestone sells outcome-based work: escrowed budget, named client/provider/evaluator, explicit `Open -> Funded -> Submitted -> terminal` state, deliverable digest, rejection and expiry/refund. Those records map directly to completed-job evidence and an ERC-8004 verified review. The official Altana track also names ERC-8183 hiring as a bonus. x402 is an HTTP payment challenge/authorization mechanism optimized for paying to access a request or resource; by itself it does not provide the job, result acceptance, dispute or refund lifecycle required here. Keep it out of G2, then add at most one bounded paid capability after the core hire and Altana session flow if time permits; this targets the separate x402/B402 partner bonus without replacing ERC-8183.
 
 User flow: select agent -> enter task -> review quote/budget -> explicitly fund escrow -> agent performs work -> result/deliverable appears -> buyer verifies and approves -> settlement confirmed. Persist job ID, buyer/provider, full agent identity/version, quote, status, transaction hashes, output digest and result URL. Use IPFS only if the selected Studio/ERC-8183 deliverable path needs it; Greenfield comes later.
 
@@ -94,6 +102,6 @@ Keep later gates disabled until they pass. Record a short result per gate: code/
 
 Use clearly labeled testnet for authorized paid/Creator canaries. The existing main-track chain-56/97 question remains unresolved: obtain organizer acceptance of chain 97 or use verified chain-56 supply for main-track claims. Read-only mainnet discovery is allowed; it does not authorize mainnet payments or strategy writes. No invented contract pins or automatic use of paid resources.
 
-Before demo: public production build, persistent DB and cron, all four categories with useful real supply and activation evidence, one paid cycle, one Creator flow and two Greenfield links. Run relevant build/tests plus one real browser walkthrough. Back up the retained DB before migrations, verify any changed migration on disposable data, and preserve the existing forward-repair history. Keep all six state axes and secret-reference boundaries. Remaining cosmetic polish is deferred.
+Before demo: public production build, persistent DB and cron, all four categories with useful real supply and activation evidence, one paid cycle, one Creator flow and the required three-task Agent Advantage Report. Add the two Greenfield links and one x402 seller canary only after that core path works. Run relevant build/tests plus one real browser walkthrough. Back up the retained DB before migrations, verify any changed migration on disposable data, and preserve the existing forward-repair history. Keep all six state axes and secret-reference boundaries. Remaining cosmetic polish is deferred.
 
 Tasks: [MVP-TASKS.md](MVP-TASKS.md). Operations: [MVP-RUNBOOK.md](MVP-RUNBOOK.md).
