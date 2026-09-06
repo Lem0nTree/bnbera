@@ -288,6 +288,36 @@ function parseOperationRow(row: OperationRow): Erc8183OperationRecord {
   };
 }
 
+function sameNullableJobId(left: string | null, right: string | null): boolean {
+  return left === right;
+}
+
+/**
+ * The database uniqueness constraint is intentionally only on the client
+ * supplied idempotency key. A replay must still prove that the key belongs to
+ * the same protocol identity, actor, operation and public parameters; a
+ * request digest alone is not enough to protect legacy callers that omitted a
+ * material field from their digest.
+ */
+function assertReplayIdentity(existing: Erc8183OperationRecord, input: ReserveErc8183OperationInput, requestDigest: string, commerceContract: string, jobId: string | null, context: Erc8183OperationContext | null): void {
+  if (
+    existing.requestDigest !== requestDigest ||
+    existing.chainId !== input.chainId ||
+    existing.commerceContract.toLowerCase() !== commerceContract.toLowerCase() ||
+    !sameNullableJobId(existing.jobId, jobId) ||
+    existing.kind !== input.kind ||
+    existing.signerRole !== input.signerRole
+  ) throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The idempotency key is bound to a different chain, contract, job, actor role, operation or material commerce input." });
+  const existingContext = existing.context;
+  if ((existingContext === null) !== (context === null)) throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The idempotency key is bound to a different authenticated actor context." });
+  if (existingContext !== null && context !== null) {
+    if (existingContext.signerAddress.toLowerCase() !== context.signerAddress.toLowerCase()) throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The idempotency key is bound to a different authenticated execution wallet." });
+    if (existingContext.sdkAction !== context.sdkAction || canonicalSha256Hex(existingContext.parameters ?? null) !== canonicalSha256Hex(context.parameters ?? null) || canonicalSha256Hex(existingContext.expectation ?? null) !== canonicalSha256Hex(context.expectation ?? null)) {
+      throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The idempotency key is bound to different SDK action parameters." });
+    }
+  }
+}
+
 function safeFailureCode(value: string | null | undefined): string | null {
   if (value === undefined || value === null || value.trim() === "") return null;
   const normalized = value.trim().slice(0, 80);
@@ -321,7 +351,7 @@ export class PostgresErc8183OperationRepository {
     if (inserted.rows[0] !== undefined) return { operation: parseOperationRow(inserted.rows[0]), replayed: false };
     const existing = await this.getByIdempotencyKey(idempotencyKey);
     if (existing === null) throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The operation reservation disappeared during replay." });
-    if (existing.requestDigest !== requestDigest) throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The idempotency key was reused for different commerce input." });
+    assertReplayIdentity(existing, input, requestDigest, commerceContract, jobId, context);
     return { operation: existing, replayed: true };
   }
 

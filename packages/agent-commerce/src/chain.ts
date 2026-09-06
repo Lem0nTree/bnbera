@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   BNB_TESTNET,
   buildClaimRefundCall,
@@ -6,6 +7,9 @@ import {
   hireErc8183Agent,
   settleErc8183Job,
   submitErc8183Deliverable,
+  encodeErc8183Manifest,
+  erc8183ManifestHash,
+  verifyErc8183ManifestText,
   createClient,
   type Erc8183DeliverableManifest,
   type Erc8183Job as AltanaErc8183Job,
@@ -18,7 +22,7 @@ import {
   type ExecuteResult,
   type Call
 } from "@altananetwork/sdk";
-import { createPublicClient, decodeEventLog, http, type Address, type Hex } from "viem";
+import { createPublicClient, decodeEventLog, http, type Abi, type Address, type Hex } from "viem";
 import { CommerceError } from "./errors.js";
 import { assertPublicPayloadSafe, normalizeAddress, parseAtomic, parseEnabledDeploymentPin } from "./validation.js";
 import type { EnabledErc8183DeploymentPin } from "./types.js";
@@ -32,6 +36,35 @@ export type Erc8183AltanaAuthority =
 
 export interface Erc8183ReceiptReader {
   getTransactionReceipt(input: { readonly hash: Hex }): Promise<Erc8183RpcReceipt | null>;
+}
+
+/** Read-only seam for the standards-lock deployment gate. */
+export interface Erc8183DeploymentReader {
+  getBytecode(input: { readonly address: Address }): Promise<Hex | undefined>;
+  getStorageAt(input: { readonly address: Address; readonly slot: Hex }): Promise<Hex | undefined>;
+  readContract(input: { readonly address: Address; readonly abi: Abi; readonly functionName: string; readonly args?: readonly unknown[] }): Promise<unknown>;
+  getChainId?: () => Promise<number>;
+}
+
+/** Runtime observations pinned alongside the four ERC-8183 deployment addresses. */
+export interface Erc8183DeploymentVerification {
+  readonly commerceProxy: Address;
+  readonly routerProxy: Address;
+  readonly policy: Address;
+  readonly paymentToken: Address;
+  readonly commerceImplementation: Address;
+  readonly routerImplementation: Address;
+  readonly paymentTokenImplementation: Address;
+  readonly commerceProxyRuntimeSha256: string;
+  readonly routerProxyRuntimeSha256: string;
+  readonly policyRuntimeSha256: string;
+  readonly paymentTokenRuntimeSha256: string;
+  readonly commerceImplementationRuntimeSha256: string;
+  readonly routerImplementationRuntimeSha256: string;
+  readonly paymentTokenImplementationRuntimeSha256: string;
+  readonly paymentTokenSymbol?: string;
+  readonly paymentTokenName?: string;
+  readonly implementationSlot?: Hex;
 }
 
 export interface Erc8183AltanaSdk {
@@ -50,6 +83,8 @@ export interface Erc8183AltanaAdapterOptions {
   readonly network?: NetworkConfig;
   /** Injected only for deterministic tests or a platform-owned read client. */
   readonly receiptReader?: Erc8183ReceiptReader;
+  readonly deploymentReader?: Erc8183DeploymentReader;
+  readonly deploymentVerification?: Erc8183DeploymentVerification;
   readonly sdk?: Partial<Erc8183AltanaSdk>;
 }
 
@@ -159,8 +194,8 @@ const SDK_DEFAULTS: Erc8183AltanaSdk = {
 
 const REVIEWED_APEX_COMMERCE_ABI_SHA256 = "4d8ac8b406dff522f1b9066eb3e00e2c8e491d4d09df2564ede124220b623ede";
 
-/** Read-only event fragment used to recover a created job after a restart. */
-const JOB_CREATED_EVENT_ABI = [{
+/** Read-only event fragments from the pinned APEX v1 contracts. */
+export const ERC8183_COMMERCE_EVENTS_ABI = [{
   type: "event",
   name: "JobCreated",
   anonymous: false,
@@ -172,16 +207,128 @@ const JOB_CREATED_EVENT_ABI = [{
     { indexed: false, name: "expiredAt", type: "uint256" },
     { indexed: false, name: "hook", type: "address" }
   ]
+}, {
+  type: "event",
+  name: "JobFunded",
+  anonymous: false,
+  inputs: [
+    { indexed: true, name: "jobId", type: "uint256" },
+    { indexed: true, name: "client", type: "address" },
+    { indexed: true, name: "provider", type: "address" },
+    { indexed: false, name: "amount", type: "uint256" }
+  ]
+}, {
+  type: "event",
+  name: "JobSubmitted",
+  anonymous: false,
+  inputs: [
+    { indexed: true, name: "jobId", type: "uint256" },
+    { indexed: true, name: "provider", type: "address" },
+    { indexed: false, name: "deliverable", type: "bytes32" }
+  ]
+}, {
+  type: "event",
+  name: "JobCompleted",
+  anonymous: false,
+  inputs: [
+    { indexed: true, name: "jobId", type: "uint256" },
+    { indexed: true, name: "evaluator", type: "address" },
+    { indexed: false, name: "reason", type: "bytes32" }
+  ]
+}, {
+  type: "event",
+  name: "JobExpired",
+  anonymous: false,
+  inputs: [{ indexed: true, name: "jobId", type: "uint256" }]
+}, {
+  type: "event",
+  name: "Refunded",
+  anonymous: false,
+  inputs: [
+    { indexed: true, name: "jobId", type: "uint256" },
+    { indexed: true, name: "client", type: "address" },
+    { indexed: false, name: "amount", type: "uint256" }
+  ]
 }] as const;
+
+export const ERC8183_ROUTER_EVENTS_ABI = [{
+  type: "event",
+  name: "JobRegistered",
+  anonymous: false,
+  inputs: [
+    { indexed: true, name: "jobId", type: "uint256" },
+    { indexed: true, name: "policy", type: "address" },
+    { indexed: true, name: "client", type: "address" }
+  ]
+}, {
+  type: "event",
+  name: "JobSettled",
+  anonymous: false,
+  inputs: [
+    { indexed: true, name: "jobId", type: "uint256" },
+    { indexed: true, name: "policy", type: "address" },
+    { indexed: true, name: "verdict", type: "uint8" },
+    { indexed: false, name: "reason", type: "bytes32" }
+  ]
+}, {
+  type: "event",
+  name: "JobFinalised",
+  anonymous: false,
+  inputs: [
+    { indexed: true, name: "jobId", type: "uint256" },
+    { indexed: true, name: "status", type: "uint8" }
+  ]
+}] as const;
+
+export const ERC8183_POLICY_EVENTS_ABI = [{
+  type: "event",
+  name: "Disputed",
+  anonymous: false,
+  inputs: [
+    { indexed: true, name: "jobId", type: "uint256" },
+    { indexed: true, name: "client", type: "address" }
+  ]
+}] as const;
+
+const ERC8183_COMMERCE_LINK_ABI = [{ type: "function", name: "paymentToken", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] }] as const;
+const ERC8183_ROUTER_LINK_ABI = [
+  { type: "function", name: "commerce", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] },
+  { type: "function", name: "policyWhitelist", stateMutability: "view", inputs: [{ name: "policy", type: "address" }], outputs: [{ name: "", type: "bool" }] }
+] as const;
+const ERC8183_POLICY_LINK_ABI = [
+  { type: "function", name: "commerce", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] },
+  { type: "function", name: "router", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] }
+] as const;
+const ERC20_METADATA_ABI = [
+  { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint8" }] },
+  { type: "function", name: "symbol", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "string" }] },
+  { type: "function", name: "name", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "string" }] }
+] as const;
+
+const EIP1967_IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc" as Hex;
+
+/** Backward-compatible alias used by restart recovery helpers. */
+const JOB_CREATED_EVENT_ABI = ERC8183_COMMERCE_EVENTS_ABI;
+
+function errorField(value: unknown, field: "transactionHash" | "callsId" | "relayCallsId"): Hex | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const candidate = (value as Record<string, unknown>)[field];
+  if (typeof candidate !== "string" || !/^0x[0-9a-f]{64}$/iu.test(candidate)) return undefined;
+  return candidate.toLowerCase() as Hex;
+}
 
 function sdkCallError(action: string, cause: unknown): CommerceError {
   const message = cause instanceof Error ? cause.message.toLowerCase() : "";
   const providerFailure = /network|rpc|relay|wallet|sign|provider|address|chain|status|job/.test(message);
+  const transactionHash = errorField(cause, "transactionHash");
+  const relayCallsId = errorField(cause, "relayCallsId") ?? errorField(cause, "callsId");
   return new CommerceError({
     code: providerFailure ? "CHAIN_PROVIDER_INVALID" : "TRANSACTION_UNKNOWN",
     message: providerFailure ? `Altana SDK ${action} could not be completed by the configured provider.` : `Altana SDK ${action} returned an unknown outcome; reconcile before retrying.`,
     retriable: false,
     nextAction: "reconcile_transaction",
+    ...(transactionHash === undefined ? {} : { transactionHash }),
+    ...(relayCallsId === undefined ? {} : { relayCallsId }),
     cause
   });
 }
@@ -241,7 +388,7 @@ function sdkExecution(value: ExecuteResult): { readonly callsId: Hex; readonly s
 function assertConfirmedHash(execution: ReturnType<typeof sdkExecution>, action: string): Hex {
   if (execution.status === "FAILED") {
     if (execution.transactionHash !== null) throw new CommerceError({ code: "TRANSACTION_UNKNOWN", message: `Altana SDK ${action} failed after returning a transaction hash; reconcile before retrying.`, nextAction: "reconcile_transaction", transactionHash: execution.transactionHash, relayCallsId: execution.callsId });
-    throw new CommerceError({ code: "TRANSACTION_REVERTED", message: `Altana SDK ${action} was rejected before confirmation.`, nextAction: "inspect_transaction" });
+    throw new CommerceError({ code: "TRANSACTION_REVERTED", message: `Altana SDK ${action} was rejected before confirmation.`, nextAction: "inspect_transaction", relayCallsId: execution.callsId });
   }
   if (execution.status === "PENDING") throw new CommerceError({ code: "TRANSACTION_UNKNOWN", message: `Altana SDK ${action} is pending; do not resend until the persisted calls ID or transaction is reconciled.`, nextAction: "reconcile_transaction", relayCallsId: execution.callsId, ...(execution.transactionHash === null ? {} : { transactionHash: execution.transactionHash }) });
   if (execution.transactionHash === null) throw new CommerceError({ code: "TRANSACTION_UNKNOWN", message: `Altana SDK ${action} confirmed without a transaction hash; reconcile the calls ID before changing local state.`, nextAction: "reconcile_transaction", relayCallsId: execution.callsId });
@@ -265,23 +412,132 @@ function assertReceipt(receipt: Erc8183RpcReceipt, transactionHash: Hex, action:
   return parsed;
 }
 
-function recoverCreatedJobId(receipt: Erc8183RpcReceipt, commerceContract: Address): string | null {
-  for (const log of receipt.logs ?? []) {
-    if (log.address.toLowerCase() !== commerceContract.toLowerCase()) continue;
+type DecodedReceiptEvent = {
+  readonly eventName: string;
+  readonly args: Readonly<Record<string, unknown>>;
+  readonly logIndex: number;
+};
+
+function eventFromReceipt(receipt: Erc8183RpcReceipt, abi: Abi, eventName: string, expectedAddress: Address): DecodedReceiptEvent | null {
+  for (const [position, log] of (receipt.logs ?? []).entries()) {
+    if (log.address.toLowerCase() !== expectedAddress.toLowerCase()) continue;
+    if (log.transactionHash !== undefined && log.transactionHash.toLowerCase() !== receipt.transactionHash.toLowerCase()) continue;
+    if (log.blockHash !== undefined && log.blockHash.toLowerCase() !== receipt.blockHash.toLowerCase()) continue;
+    if (log.blockNumber !== undefined && log.blockNumber !== receipt.blockNumber) continue;
     try {
-      const decoded = decodeEventLog({ abi: JOB_CREATED_EVENT_ABI, data: log.data, topics: log.topics, strict: false } as never) as unknown as { readonly eventName?: string; readonly args?: unknown };
-      if (decoded.eventName !== "JobCreated" || typeof decoded.args !== "object" || decoded.args === null || Array.isArray(decoded.args)) continue;
-      const value = (decoded.args as Record<string, unknown>).jobId;
-      if (typeof value !== "bigint" && typeof value !== "number" && typeof value !== "string") continue;
-      const jobId = BigInt(value);
-      if (jobId < 0n) continue;
-      return jobId.toString(10);
+      const decoded = decodeEventLog({ abi, data: log.data, topics: log.topics, strict: false } as never) as unknown as { readonly eventName?: string; readonly args?: unknown };
+      if (decoded.eventName !== eventName || typeof decoded.args !== "object" || decoded.args === null || Array.isArray(decoded.args)) continue;
+      return { eventName, args: decoded.args as Readonly<Record<string, unknown>>, logIndex: log.logIndex ?? position };
     } catch {
-      // Ignore unrelated or malformed logs; the receipt is rejected below if
-      // no canonical JobCreated event can recover the protocol identity.
+      // Receipts include unrelated ERC-20 and hook logs. Keep looking for the
+      // operation-specific event on the pinned contract.
     }
   }
   return null;
+}
+
+function requireReceiptEvent(receipt: Erc8183RpcReceipt, abi: Abi, eventName: string, expectedAddress: Address, action: string): DecodedReceiptEvent {
+  const event = eventFromReceipt(receipt, abi, eventName, expectedAddress);
+  if (event === null) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: `The successful ${action} receipt is missing ${eventName} on the pinned contract.`, transactionHash: receipt.transactionHash, nextAction: "reconcile_transaction" });
+  return event;
+}
+
+function eventBigInt(args: Readonly<Record<string, unknown>>, name: string, action: string, transactionHash: Hex): bigint {
+  const value = args[name];
+  try {
+    if (typeof value === "bigint" || typeof value === "number" || typeof value === "string") return BigInt(value);
+  } catch {
+    // Fall through to the stable boundary error.
+  }
+  throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: `The ${action} receipt has an invalid ${name} event argument.`, transactionHash, nextAction: "reconcile_transaction" });
+}
+
+function eventAddress(args: Readonly<Record<string, unknown>>, name: string, action: string, transactionHash: Hex): Address {
+  const value = args[name];
+  if (typeof value !== "string") throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: `The ${action} receipt has an invalid ${name} event argument.`, transactionHash, nextAction: "reconcile_transaction" });
+  try { return asAddress(value, `event ${name}`); } catch (cause) { throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: `The ${action} receipt has an invalid ${name} event argument.`, transactionHash, nextAction: "reconcile_transaction", cause }); }
+}
+
+function eventHash(args: Readonly<Record<string, unknown>>, name: string, action: string, transactionHash: Hex): Hex {
+  const value = args[name];
+  if (typeof value !== "string" || !/^0x[0-9a-f]{64}$/iu.test(value)) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: `The ${action} receipt has an invalid ${name} event argument.`, transactionHash, nextAction: "reconcile_transaction" });
+  return value.toLowerCase() as Hex;
+}
+
+function assertEventBigInt(actual: bigint, expected: bigint, label: string, transactionHash: Hex): void {
+  if (actual !== expected) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: `The confirmed event ${label} does not match the requested value.`, transactionHash, nextAction: "reconcile_transaction" });
+}
+
+function assertEventAddress(actual: Address, expected: Address, label: string, transactionHash: Hex): void {
+  if (actual.toLowerCase() !== expected.toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: `The confirmed event ${label} does not match the requested actor or contract.`, transactionHash, nextAction: "reconcile_transaction" });
+}
+
+function assertActor(actual: Address | null, expected: Address, role: string, transactionHash?: Hex): void {
+  if (actual === null || actual.toLowerCase() !== expected.toLowerCase()) throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: `The authenticated ${role} does not match the persisted protocol actor.`, ...(transactionHash === undefined ? {} : { transactionHash }), nextAction: transactionHash === undefined ? "authenticate_actor" : "manual_review" });
+}
+
+function assertSha256(value: string, label: string): string {
+  if (!/^[0-9a-f]{64}$/iu.test(value)) throw new CommerceError({ code: "COMMERCE_DISABLED", message: `The standards lock has an invalid ${label} runtime hash.`, nextAction: "verify_standards_lock" });
+  return value.toLowerCase();
+}
+
+function runtimeSha256(bytecode: Hex, label: string): string {
+  if (!/^0x[0-9a-f]*$/iu.test(bytecode)) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: `The RPC returned invalid ${label} bytecode.`, nextAction: "verify_standards_lock" });
+  return createHash("sha256").update(bytecode.slice(2), "hex").digest("hex");
+}
+
+function assertRuntimeHash(actual: Hex | undefined, expected: string, label: string): void {
+  if (actual === undefined || runtimeSha256(actual, label) !== assertSha256(expected, label)) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: `The pinned ${label} runtime bytecode does not match the standards lock.`, nextAction: "verify_standards_lock" });
+}
+
+function assertImplementationSlot(value: Hex | undefined, expected: Address, label: string): void {
+  if (value === undefined || !/^0x[0-9a-f]{64}$/iu.test(value) || `0x${value.slice(-40)}`.toLowerCase() !== expected.toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: `The pinned ${label} proxy does not link to the standards-locked implementation.`, nextAction: "verify_standards_lock" });
+}
+
+function requireOperationJobId(jobId: string | null, transactionHash: Hex): string {
+  if (jobId === null || !/^(0|[1-9][0-9]*)$/u.test(jobId)) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted ERC-8183 operation has no valid protocol job ID.", transactionHash, nextAction: "manual_review" });
+  return jobId;
+}
+
+function recoverCreatedJobId(receipt: Erc8183RpcReceipt, commerceContract: Address): string | null {
+  const event = eventFromReceipt(receipt, JOB_CREATED_EVENT_ABI, "JobCreated", commerceContract);
+  if (event === null) return null;
+  try { return eventBigInt(event.args, "jobId", "hire", receipt.transactionHash).toString(10); } catch { return null; }
+}
+
+const STATUS_ORDER: Readonly<Record<Erc8183OnchainStatus, number>> = {
+  OPEN: 0,
+  FUNDED: 1,
+  SUBMITTED: 2,
+  COMPLETED: 3,
+  REJECTED: 4,
+  EXPIRED: 5
+};
+
+function isAtOrAfterStatus(actual: Erc8183OnchainStatus, expected: Erc8183OnchainStatus): boolean {
+  return STATUS_ORDER[actual] >= STATUS_ORDER[expected];
+}
+
+function withExecutionContext(cause: unknown, execution: { readonly callsId: Hex; readonly transactionHash: Hex | null }, action: string): CommerceError {
+  if (cause instanceof CommerceError) {
+    return new CommerceError({
+      code: cause.code,
+      message: cause.message,
+      retriable: cause.retriable,
+      nextAction: cause.nextAction,
+      ...((cause.transactionHash ?? execution.transactionHash) === undefined ? {} : { transactionHash: cause.transactionHash ?? execution.transactionHash as Hex }),
+      relayCallsId: cause.relayCallsId ?? execution.callsId,
+      cause: cause.causeValue
+    });
+  }
+  return new CommerceError({
+    code: "ONCHAIN_MISMATCH",
+    message: `The confirmed ${action} outcome could not be verified; reconcile before retrying.`,
+    nextAction: "reconcile_transaction",
+    ...(execution.transactionHash === null ? {} : { transactionHash: execution.transactionHash }),
+    relayCallsId: execution.callsId,
+    cause
+  });
 }
 
 function authorityAddress(authority: Erc8183AltanaAuthority): Address {
@@ -336,6 +592,8 @@ export class Erc8183AltanaAdapter {
   public readonly paymentToken: Address;
   private readonly sdk: Erc8183AltanaSdk;
   private readonly receiptReader: Erc8183ReceiptReader;
+  private readonly deploymentReader: Erc8183DeploymentReader;
+  private readonly deploymentVerification: Erc8183DeploymentVerification | undefined;
 
   public constructor(options: Erc8183AltanaAdapterOptions) {
     this.pin = assertSdkDeploymentMatchesPin(options.pin);
@@ -346,15 +604,19 @@ export class Erc8183AltanaAdapter {
     this.policyContract = addresses.policy;
     this.paymentToken = addresses.paymentToken;
     const client = createClient({ chains: [this.network], defaultChainId: this.network.chainId });
+    const publicClient = createPublicClient({ chain: this.network.chain, transport: http(this.network.publicRpcUrl) });
     const defaultExecute: Erc8183SdkExecute = async (authority, calls, opts) => "session" in authority
       ? client.execute({ session: authority.session, calls, chainId: opts.network.chainId, ...(opts.noWait === undefined ? {} : { noWait: opts.noWait }), ...(opts.feeToken === undefined ? {} : { feeToken: opts.feeToken }) })
       : client.execute({ wallet: authority.wallet, signer: authority.signer, calls, chainId: opts.network.chainId, ...(opts.noWait === undefined ? {} : { noWait: opts.noWait }), ...(opts.feeToken === undefined ? {} : { feeToken: opts.feeToken }) });
     this.sdk = { ...SDK_DEFAULTS, execute: defaultExecute, ...(options.sdk ?? {}) };
     this.receiptReader = options.receiptReader ?? createReceiptReader(this.network);
+    this.deploymentReader = options.deploymentReader ?? (publicClient as unknown as Erc8183DeploymentReader);
+    this.deploymentVerification = options.deploymentVerification;
   }
 
   public async verifyNetwork(): Promise<Erc8183NetworkEvidence> {
     if (this.network.chainId !== 97) throw new CommerceError({ code: "INVALID_CHAIN", message: "Only BSC testnet is enabled for the T4 paid-hire canary." });
+    await this.verifyPinnedDeployment();
     return {
       chainId: 97,
       commerceContract: this.pin.commerceContract as Address,
@@ -363,6 +625,61 @@ export class Erc8183AltanaAdapter {
       paymentToken: this.paymentToken,
       sdkAddressesMatch: true
     };
+  }
+
+  private async verifyPinnedDeployment(): Promise<void> {
+    const expected = this.deploymentVerification;
+    if (expected === undefined) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "ERC-8183 writes require standards-locked runtime bytecode and proxy-linkage observations.", nextAction: "verify_standards_lock" });
+    const addresses = erc8183Addresses(this.pin.chainId);
+    for (const [actual, locked, label] of [
+      [this.pin.commerceContract, expected.commerceProxy, "commerce proxy"],
+      [this.routerContract, expected.routerProxy, "router proxy"],
+      [this.policyContract, expected.policy, "policy"],
+      [this.paymentToken, expected.paymentToken, "payment token"]
+    ] as const) {
+      if (actual.toLowerCase() !== locked.toLowerCase()) throw new CommerceError({ code: "INVALID_CONTRACT", message: `The standards-locked ${label} address does not match the configured deployment.`, nextAction: "verify_standards_lock" });
+    }
+    if (expected.commerceProxy.toLowerCase() !== addresses.commerce.toLowerCase() || expected.routerProxy.toLowerCase() !== addresses.router.toLowerCase() || expected.policy.toLowerCase() !== addresses.policy.toLowerCase() || expected.paymentToken.toLowerCase() !== addresses.paymentToken.toLowerCase()) throw new CommerceError({ code: "INVALID_CONTRACT", message: "The standards-locked ERC-8183 addresses do not match @altananetwork/sdk@0.9.0.", nextAction: "verify_standards_lock" });
+    if (this.deploymentReader.getChainId !== undefined && await this.deploymentReader.getChainId() !== this.pin.chainId) throw new CommerceError({ code: "INVALID_CHAIN", message: "The connected RPC is not the standards-locked BSC testnet network.", nextAction: "verify_standards_lock" });
+    assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.commerceProxy }), expected.commerceProxyRuntimeSha256, "commerce proxy");
+    assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.routerProxy }), expected.routerProxyRuntimeSha256, "router proxy");
+    assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.policy }), expected.policyRuntimeSha256, "policy");
+    assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.paymentToken }), expected.paymentTokenRuntimeSha256, "payment token");
+    const slot = expected.implementationSlot ?? EIP1967_IMPLEMENTATION_SLOT;
+    assertImplementationSlot(await this.deploymentReader.getStorageAt({ address: expected.commerceProxy, slot }), expected.commerceImplementation, "commerce");
+    assertImplementationSlot(await this.deploymentReader.getStorageAt({ address: expected.routerProxy, slot }), expected.routerImplementation, "router");
+    assertImplementationSlot(await this.deploymentReader.getStorageAt({ address: expected.paymentToken, slot }), expected.paymentTokenImplementation, "payment token");
+    assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.commerceImplementation }), expected.commerceImplementationRuntimeSha256, "commerce implementation");
+    assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.routerImplementation }), expected.routerImplementationRuntimeSha256, "router implementation");
+    assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.paymentTokenImplementation }), expected.paymentTokenImplementationRuntimeSha256, "payment token implementation");
+    const paymentToken = asAddress(await this.deploymentReader.readContract({ address: expected.commerceProxy, abi: ERC8183_COMMERCE_LINK_ABI as unknown as Abi, functionName: "paymentToken" }), "commerce payment token");
+    if (paymentToken.toLowerCase() !== expected.paymentToken.toLowerCase()) throw new CommerceError({ code: "INVALID_TOKEN", message: "The commerce proxy paymentToken does not match the standards-locked token.", nextAction: "verify_standards_lock" });
+    const decimalsValue = await this.deploymentReader.readContract({ address: expected.paymentToken, abi: ERC20_METADATA_ABI as unknown as Abi, functionName: "decimals" });
+    let decimals: bigint;
+    try { decimals = BigInt(decimalsValue as bigint | number | string); } catch (cause) { throw new CommerceError({ code: "INVALID_TOKEN", message: "The standards-locked payment token returned an invalid decimals value.", nextAction: "verify_standards_lock", cause }); }
+    if (decimals !== BigInt(this.pin.paymentDecimals)) throw new CommerceError({ code: "INVALID_TOKEN", message: "The payment-token decimals do not match the standards lock.", nextAction: "verify_standards_lock" });
+    if (expected.paymentTokenSymbol !== undefined) {
+      const symbol = await this.deploymentReader.readContract({ address: expected.paymentToken, abi: ERC20_METADATA_ABI as unknown as Abi, functionName: "symbol" });
+      if (symbol !== expected.paymentTokenSymbol) throw new CommerceError({ code: "INVALID_TOKEN", message: "The payment-token symbol does not match the standards lock.", nextAction: "verify_standards_lock" });
+    }
+    if (expected.paymentTokenName !== undefined) {
+      const name = await this.deploymentReader.readContract({ address: expected.paymentToken, abi: ERC20_METADATA_ABI as unknown as Abi, functionName: "name" });
+      if (name !== expected.paymentTokenName) throw new CommerceError({ code: "INVALID_TOKEN", message: "The payment-token name does not match the standards lock.", nextAction: "verify_standards_lock" });
+    }
+    const routerCommerce = asAddress(await this.deploymentReader.readContract({ address: expected.routerProxy, abi: ERC8183_ROUTER_LINK_ABI as unknown as Abi, functionName: "commerce" }), "router commerce");
+    if (routerCommerce.toLowerCase() !== expected.commerceProxy.toLowerCase()) throw new CommerceError({ code: "INVALID_CONTRACT", message: "The router is not linked to the standards-locked commerce proxy.", nextAction: "verify_standards_lock" });
+    const whitelisted = await this.deploymentReader.readContract({ address: expected.routerProxy, abi: ERC8183_ROUTER_LINK_ABI as unknown as Abi, functionName: "policyWhitelist", args: [expected.policy] });
+    if (whitelisted !== true) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The standards-locked policy is not whitelisted by the router.", nextAction: "verify_standards_lock" });
+    const policyCommerce = asAddress(await this.deploymentReader.readContract({ address: expected.policy, abi: ERC8183_POLICY_LINK_ABI as unknown as Abi, functionName: "commerce" }), "policy commerce");
+    const policyRouter = asAddress(await this.deploymentReader.readContract({ address: expected.policy, abi: ERC8183_POLICY_LINK_ABI as unknown as Abi, functionName: "router" }), "policy router");
+    if (policyCommerce.toLowerCase() !== expected.commerceProxy.toLowerCase() || policyRouter.toLowerCase() !== expected.routerProxy.toLowerCase()) throw new CommerceError({ code: "INVALID_CONTRACT", message: "The standards-locked policy is not linked to the commerce/router pair.", nextAction: "verify_standards_lock" });
+  }
+
+  private async ensureNetworkVerified(): Promise<void> {
+    try { await this.verifyNetwork(); } catch (cause) {
+      if (cause instanceof CommerceError) throw cause;
+      throw new CommerceError({ code: "CHAIN_PROVIDER_INVALID", message: "The standards-lock deployment could not be verified by the configured RPC.", nextAction: "verify_standards_lock", cause });
+    }
   }
 
   public async readJob(jobId: string | bigint): Promise<Erc8183OnchainJob> {
@@ -382,18 +699,30 @@ export class Erc8183AltanaAdapter {
     if (budget > 10_000_000_000_000_000n) throw new CommerceError({ code: "INVALID_AMOUNT", message: "Job budget exceeds the reviewed MVP cap of 0.01 U.", nextAction: "verify_standards_lock" });
     assertPublicPayloadSafe(input.task, "hire.task");
     if (utf8ByteLength(input.task) > 4096) throw new CommerceError({ code: "INVALID_JOB", message: "The ERC-8183 task description exceeds the protocol limit." });
+    await this.ensureNetworkVerified();
     const options = { network: this.network, ...(input.executeOptions ?? {}) };
     let raw: Awaited<ReturnType<typeof hireErc8183Agent>>;
     try { raw = await invokeHire(this.sdk.hire, authority, { provider, task: input.task, budget, ...(input.deadlineSeconds === undefined ? {} : { deadlineSeconds: input.deadlineSeconds }) }, options); } catch (cause) { if (cause instanceof CommerceError) throw cause; throw sdkCallError("hire", cause); }
     const execution = sdkExecution(raw);
-    const jobId = raw.jobId.toString(10);
-    const expiredAtUnix = asUnix(raw.expiredAt, "job expiry");
+    let jobId: string;
+    let expiredAtUnix: number;
+    try {
+      jobId = raw.jobId.toString(10);
+      expiredAtUnix = asUnix(raw.expiredAt, "job expiry");
+    } catch (cause) {
+      throw withExecutionContext(cause, execution, "hire");
+    }
     if (execution.status !== "CONFIRMED") return { ...execution, jobId, budgetAtomic: budget.toString(10), expiredAtUnix, job: null, receipt: null };
     const transactionHash = assertConfirmedHash(execution, "hire");
-    const receipt = assertReceipt(await this.requireReceipt(transactionHash, "hire"), transactionHash, "hire");
-    const job = await this.readJob(jobId);
-    this.assertHiredJob(job, authorityAddress(authority), provider, budget, expiredAtUnix);
-    return { ...execution, transactionHash, jobId, budgetAtomic: budget.toString(10), expiredAtUnix, job, receipt };
+    try {
+      const receipt = assertReceipt(await this.requireReceipt(transactionHash, "hire"), transactionHash, "hire");
+      this.assertHireReceipt(receipt, jobId, authorityAddress(authority), provider, budget, expiredAtUnix);
+      const job = await this.readJob(jobId);
+      this.assertHiredJob(job, authorityAddress(authority), provider, budget, expiredAtUnix);
+      return { ...execution, transactionHash, jobId, budgetAtomic: budget.toString(10), expiredAtUnix, job, receipt };
+    } catch (cause) {
+      throw withExecutionContext(cause, execution, "hire");
+    }
   }
 
   public async submit(input: Erc8183SubmitInput): Promise<Erc8183SubmitResult> {
@@ -402,64 +731,153 @@ export class Erc8183AltanaAdapter {
     if (input.task !== undefined && input.result !== undefined) assertProviderResultMatchesTask(input.task, input.result);
     if (input.deliverableUrl !== undefined && input.result?.deliverableUrl !== undefined && input.result.deliverableUrl !== null && input.deliverableUrl !== input.result.deliverableUrl) throw new CommerceError({ code: "INVALID_JOB", message: "The submitted deliverable URL does not match the provider result." });
     const deliverableUrl = input.deliverableUrl ?? input.result?.deliverableUrl ?? "";
-    const requestedChainDeliverable = (input.chainDeliverable ?? input.result?.chainDeliverable ?? null) as Hex | null;
+    const manifestChainDeliverable = input.manifest === undefined ? null : erc8183ManifestHash(input.manifest);
+    const suppliedChainDeliverable = (input.chainDeliverable ?? input.result?.chainDeliverable ?? null) as Hex | null;
+    if (input.manifest !== undefined && input.manifest.job_id !== Number(jobId)) throw new CommerceError({ code: "INVALID_JOB", message: "The ERC-8183 manifest job_id does not match the target job." });
+    if (manifestChainDeliverable !== null && suppliedChainDeliverable !== null && manifestChainDeliverable.toLowerCase() !== suppliedChainDeliverable.toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The manifest Keccak digest does not match the supplied chain deliverable." });
+    const requestedChainDeliverable = manifestChainDeliverable ?? suppliedChainDeliverable;
+    if (requestedChainDeliverable === null || !/^0x[0-9a-f]{64}$/iu.test(requestedChainDeliverable)) throw new CommerceError({ code: "INVALID_JOB", message: "Submission requires a 32-byte Keccak chain deliverable; the local SHA-256 result digest is not sufficient." });
     const sdkParams: SubmitDeliverableParams = input.manifest !== undefined
       ? { jobId: BigInt(jobId), manifest: input.manifest, deliverableUrl }
-      : { jobId: BigInt(jobId), deliverable: requestedChainDeliverable ?? "0x", ...(input.optParams === undefined ? {} : { optParams: input.optParams }) };
+      : { jobId: BigInt(jobId), deliverable: requestedChainDeliverable, ...(input.optParams === undefined ? {} : { optParams: input.optParams }) };
     if ("deliverable" in sdkParams && !/^0x[0-9a-f]{64}$/iu.test(sdkParams.deliverable)) throw new CommerceError({ code: "INVALID_JOB", message: "An APEX deliverable must be a 32-byte Keccak hash." });
+    const beforeSubmit = await this.readJob(jobId);
+    assertActor(authorityAddress(input.authority), beforeSubmit.provider, "provider");
+    await this.ensureNetworkVerified();
     const options = { network: this.network, ...(input.executeOptions ?? {}) };
     let raw: Awaited<ReturnType<typeof submitErc8183Deliverable>>;
     try { raw = await invokeSubmit(this.sdk.submit, input.authority, sdkParams, options); } catch (cause) { if (cause instanceof CommerceError) throw cause; throw sdkCallError("submit", cause); }
     const execution = sdkExecution(raw);
-    const chainDeliverable = asHash(raw.deliverable, "chain deliverable");
-    if (requestedChainDeliverable !== null && requestedChainDeliverable.toLowerCase() !== chainDeliverable.toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The SDK returned a chain deliverable different from the requested provider result.", nextAction: "reconcile_transaction" });
+    let chainDeliverable: Hex;
+    try {
+      chainDeliverable = asHash(raw.deliverable, "chain deliverable");
+    } catch (cause) {
+      throw withExecutionContext(cause, execution, "submit");
+    }
+    if (requestedChainDeliverable.toLowerCase() !== chainDeliverable.toLowerCase()) throw withExecutionContext(new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The SDK returned a chain deliverable different from the requested provider result.", nextAction: "reconcile_transaction" }), execution, "submit");
+    if (input.manifest !== undefined && raw.manifestText === undefined) throw withExecutionContext(new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The SDK did not return the canonical manifest bytes required for the deliverable URL.", nextAction: "reconcile_transaction" }), execution, "submit");
+    if (raw.manifestText !== undefined && !verifyErc8183ManifestText(raw.manifestText, chainDeliverable)) throw withExecutionContext(new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The SDK manifest bytes do not hash to the submitted on-chain deliverable.", nextAction: "reconcile_transaction" }), execution, "submit");
+    if (input.manifest !== undefined && raw.manifestText !== undefined && raw.manifestText !== encodeErc8183Manifest(input.manifest)) throw withExecutionContext(new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The SDK returned manifest bytes that are not the canonical manifest requested by the provider.", nextAction: "reconcile_transaction" }), execution, "submit");
     if (execution.status !== "CONFIRMED") return { ...execution, jobId, resultDigest: input.resultDigest.toLowerCase(), chainDeliverable, job: null, receipt: null, ...(raw.manifestText === undefined ? {} : { manifestText: raw.manifestText }) };
     const transactionHash = assertConfirmedHash(execution, "submit");
-    const receipt = assertReceipt(await this.requireReceipt(transactionHash, "submit"), transactionHash, "submit");
-    const job = await this.readJob(jobId);
-    if (job.status !== "SUBMITTED" || job.chainDeliverable.toLowerCase() !== chainDeliverable.toLowerCase() || job.provider.toLowerCase() !== authorityAddress(input.authority).toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed submit did not produce the requested provider, deliverable, and SUBMITTED state.", transactionHash, nextAction: "reconcile_transaction" });
-    return { ...execution, transactionHash, jobId, resultDigest: input.resultDigest.toLowerCase(), chainDeliverable, job, receipt, ...(raw.manifestText === undefined ? {} : { manifestText: raw.manifestText }) };
+    try {
+      const receipt = assertReceipt(await this.requireReceipt(transactionHash, "submit"), transactionHash, "submit");
+      this.assertSubmitReceipt(receipt, jobId, authorityAddress(input.authority), chainDeliverable);
+      const job = await this.readJob(jobId);
+      if (!isAtOrAfterStatus(job.status, "SUBMITTED") || job.chainDeliverable.toLowerCase() !== chainDeliverable.toLowerCase() || job.provider.toLowerCase() !== authorityAddress(input.authority).toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed submit did not produce the requested provider, deliverable, and valid post-submit state.", transactionHash, nextAction: "reconcile_transaction" });
+      return { ...execution, transactionHash, jobId, resultDigest: input.resultDigest.toLowerCase(), chainDeliverable, job, receipt, ...(raw.manifestText === undefined ? {} : { manifestText: raw.manifestText }) };
+    } catch (cause) {
+      throw withExecutionContext(cause, execution, "submit");
+    }
   }
 
   public async settle(authority: Erc8183AltanaAuthority, input: { readonly jobId: string; readonly action?: "approve" | "dispute"; readonly executeOptions?: { readonly noWait?: boolean; readonly feeToken?: Address } }): Promise<Erc8183SettleResult> {
     const jobId = assertDecimalJobId(input.jobId);
     const action = input.action ?? "approve";
+    const beforeSettle = await this.readJob(jobId);
+    assertActor(authorityAddress(authority), beforeSettle.client, "client");
+    await this.ensureNetworkVerified();
     const options = { network: this.network, ...(input.executeOptions ?? {}) };
     let raw: Awaited<ReturnType<typeof settleErc8183Job>>;
     try { raw = await invokeSettle(this.sdk.settle, authority, { jobId: BigInt(jobId), action }, options); } catch (cause) { if (cause instanceof CommerceError) throw cause; throw sdkCallError("settle", cause); }
     const execution = sdkExecution(raw);
     if (execution.status !== "CONFIRMED") return { ...execution, jobId, action, job: null, receipt: null };
     const transactionHash = assertConfirmedHash(execution, "settle");
-    const receipt = assertReceipt(await this.requireReceipt(transactionHash, "settle"), transactionHash, "settle");
-    const job = await this.readJob(jobId);
-    if (action === "approve" && job.status !== "COMPLETED") throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed approval did not produce COMPLETED protocol state.", transactionHash, nextAction: "reconcile_transaction" });
-    return { ...execution, transactionHash, jobId, action, job, receipt };
+    try {
+      const receipt = assertReceipt(await this.requireReceipt(transactionHash, "settle"), transactionHash, "settle");
+      const job = await this.readJob(jobId);
+      this.assertSettleReceipt(receipt, jobId, action, authorityAddress(authority), job);
+      if (action === "approve" && job.status !== "COMPLETED") throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed approval did not produce COMPLETED protocol state.", transactionHash, nextAction: "reconcile_transaction" });
+      if (action === "dispute" && !isAtOrAfterStatus(job.status, "SUBMITTED")) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed dispute did not leave the job in a valid post-submit state.", transactionHash, nextAction: "reconcile_transaction" });
+      return { ...execution, transactionHash, jobId, action, job, receipt };
+    } catch (cause) {
+      throw withExecutionContext(cause, execution, "settle");
+    }
   }
 
   public async claimRefund(authority: Erc8183AltanaAuthority, input: { readonly jobId: string; readonly executeOptions?: { readonly noWait?: boolean; readonly feeToken?: Address } }): Promise<Erc8183ClaimRefundResult> {
     const jobId = assertDecimalJobId(input.jobId);
+    const beforeRefund = await this.readJob(jobId);
+    assertActor(authorityAddress(authority), beforeRefund.client, "client");
+    await this.ensureNetworkVerified();
     const options = { network: this.network, ...(input.executeOptions ?? {}) };
     let raw: Awaited<ReturnType<Erc8183SdkExecute>>;
     try { raw = await invokeExecute(this.sdk.execute, authority, buildClaimRefundCall(this.pin.chainId, BigInt(jobId)), options); } catch (cause) { if (cause instanceof CommerceError) throw cause; throw sdkCallError("claim refund", cause); }
     const execution = sdkExecution(raw);
     if (execution.status !== "CONFIRMED") return { ...execution, jobId, job: null, receipt: null };
     const transactionHash = assertConfirmedHash(execution, "claim refund");
-    const receipt = assertReceipt(await this.requireReceipt(transactionHash, "claim refund"), transactionHash, "claim refund");
-    const job = await this.readJob(jobId);
-    if (job.status !== "EXPIRED") throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed refund did not produce EXPIRED protocol state.", transactionHash, nextAction: "reconcile_transaction" });
-    return { ...execution, transactionHash, jobId, job, receipt };
+    try {
+      const receipt = assertReceipt(await this.requireReceipt(transactionHash, "claim refund"), transactionHash, "claim refund");
+      const job = await this.readJob(jobId);
+      this.assertRefundReceipt(receipt, jobId, authorityAddress(authority), job);
+      if (job.status !== "EXPIRED") throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed refund did not produce EXPIRED protocol state.", transactionHash, nextAction: "reconcile_transaction" });
+      return { ...execution, transactionHash, jobId, job, receipt };
+    } catch (cause) {
+      throw withExecutionContext(cause, execution, "claim refund");
+    }
   }
 
   /** Verify a previously persisted transaction without submitting anything. */
-  public async verifyReceiptForOperation(input: { readonly transactionHash: Hex; readonly kind: Erc8183OperationKind; readonly jobId: string | null; readonly expectation?: Erc8183OperationExpectation | null }): Promise<{ readonly receipt: Erc8183RpcReceipt; readonly job: Erc8183OnchainJob | null }> {
+  public async verifyReceiptForOperation(input: {
+    readonly transactionHash: Hex;
+    readonly kind: Erc8183OperationKind;
+    readonly jobId: string | null;
+    readonly signerAddress?: string | null;
+    readonly action?: "approve" | "dispute";
+    readonly expectation?: Erc8183OperationExpectation | null;
+  }): Promise<{ readonly receipt: Erc8183RpcReceipt; readonly job: Erc8183OnchainJob | null }> {
     const receipt = assertReceipt(await this.requireReceipt(input.transactionHash, "reconciliation"), input.transactionHash, "reconciliation");
+    const signer = input.signerAddress === undefined || input.signerAddress === null ? null : normalizeAddress(input.signerAddress, "operation signer") as Address;
     const recoveredJobId = input.jobId ?? (input.kind === "create" ? recoverCreatedJobId(receipt, this.pin.commerceContract as Address) : null);
     if (input.kind === "create" && recoveredJobId === null) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed hire receipt has no recoverable JobCreated identity.", transactionHash: input.transactionHash, nextAction: "manual_review" });
     const job = recoveredJobId === null ? null : await this.readJob(recoveredJobId);
+    if (input.kind === "create") {
+      const id = recoveredJobId as string;
+      const created = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobCreated", this.pin.commerceContract as Address, "hire");
+      const funded = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobFunded", this.pin.commerceContract as Address, "hire");
+      this.assertHireEvents(created, funded, id, signer, input.expectation, input.transactionHash);
+      if (job !== null) this.assertHireState(job, input.expectation, input.transactionHash);
+    } else if (input.kind === "submit") {
+      const id = requireOperationJobId(input.jobId, input.transactionHash);
+      const event = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobSubmitted", this.pin.commerceContract as Address, "submit");
+      this.assertSubmitEvent(event, id, signer, input.expectation?.digest, input.transactionHash);
+      if (job === null) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled submit has no readable protocol job.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+      if (!isAtOrAfterStatus(job.status, "SUBMITTED")) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled submit job has not reached SUBMITTED or a later state.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+      if (input.expectation?.digest !== undefined && job.chainDeliverable.toLowerCase() !== input.expectation.digest.toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled job deliverable does not match the committed Keccak digest.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+    } else if (input.kind === "settle") {
+      const id = requireOperationJobId(input.jobId, input.transactionHash);
+      if (job === null) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled settlement has no readable protocol job.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+      assertActor(signer, job.client, "client", input.transactionHash);
+      const action = input.action ?? "approve";
+      if (action === "approve") {
+        const settled = requireReceiptEvent(receipt, ERC8183_ROUTER_EVENTS_ABI, "JobSettled", this.routerContract, "settle");
+        const finalised = requireReceiptEvent(receipt, ERC8183_ROUTER_EVENTS_ABI, "JobFinalised", this.routerContract, "settle");
+        const completed = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobCompleted", this.pin.commerceContract as Address, "settle");
+        assertEventBigInt(eventBigInt(settled.args, "jobId", "settle", input.transactionHash), BigInt(id), "settled job ID", input.transactionHash);
+        assertEventAddress(eventAddress(settled.args, "policy", "settle", input.transactionHash), this.policyContract, "settlement policy", input.transactionHash);
+        if (eventBigInt(settled.args, "verdict", "settle", input.transactionHash) !== 1n) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The settlement receipt did not contain an approval verdict.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+        assertEventBigInt(eventBigInt(finalised.args, "jobId", "settle", input.transactionHash), BigInt(id), "finalised job ID", input.transactionHash);
+        if (eventBigInt(finalised.args, "status", "settle", input.transactionHash) !== 3n) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The settlement receipt did not finalise the job as completed.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+        assertEventBigInt(eventBigInt(completed.args, "jobId", "settle", input.transactionHash), BigInt(id), "completed job ID", input.transactionHash);
+        assertEventAddress(eventAddress(completed.args, "evaluator", "settle", input.transactionHash), job.evaluator, "completion evaluator", input.transactionHash);
+        if (job.status !== "COMPLETED") throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled approval job is not COMPLETED.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+      } else {
+        const disputed = requireReceiptEvent(receipt, ERC8183_POLICY_EVENTS_ABI, "Disputed", this.policyContract, "dispute");
+        assertEventBigInt(eventBigInt(disputed.args, "jobId", "dispute", input.transactionHash), BigInt(id), "dispute job ID", input.transactionHash);
+        assertEventAddress(eventAddress(disputed.args, "client", "dispute", input.transactionHash), signer ?? job.client, "dispute client", input.transactionHash);
+        if (!isAtOrAfterStatus(job.status, "SUBMITTED")) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled dispute job is not in a valid post-submit state.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+      }
+    } else if (input.kind === "claim_refund") {
+      const id = requireOperationJobId(input.jobId, input.transactionHash);
+      if (job === null) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled refund has no readable protocol job.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+      assertActor(signer, job.client, "client", input.transactionHash);
+      this.assertRefundReceipt(receipt, id, signer ?? job.client, job);
+    } else {
+      throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: `Receipt verification is not implemented for ${input.kind}; manual review is required.`, transactionHash: input.transactionHash, nextAction: "manual_review" });
+    }
     if (job !== null && input.expectation !== undefined && input.expectation !== null) {
-      if (input.expectation.providerAddress !== undefined && job.provider.toLowerCase() !== input.expectation.providerAddress.toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "Reconciled provider does not match the operation expectation.", transactionHash: input.transactionHash });
-      if (input.expectation.amountAtomic !== undefined && job.budgetAtomic !== input.expectation.amountAtomic) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "Reconciled budget does not match the operation expectation.", transactionHash: input.transactionHash });
-      if (input.expectation.expectedState !== undefined && job.status !== input.expectation.expectedState) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "Reconciled job state does not match the operation expectation.", transactionHash: input.transactionHash });
+      if (input.expectation.providerAddress !== undefined && job.provider.toLowerCase() !== input.expectation.providerAddress.toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "Reconciled provider does not match the operation expectation.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+      if (input.expectation.amountAtomic !== undefined && job.budgetAtomic !== input.expectation.amountAtomic) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "Reconciled budget does not match the operation expectation.", transactionHash: input.transactionHash, nextAction: "manual_review" });
     }
     return { receipt, job };
   }
@@ -470,8 +888,75 @@ export class Erc8183AltanaAdapter {
     return receipt;
   }
 
+  private assertHireReceipt(receipt: Erc8183RpcReceipt, jobId: string, client: Address, provider: Address, budget: bigint, expiredAtUnix: number): void {
+    const created = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobCreated", this.pin.commerceContract as Address, "hire");
+    const funded = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobFunded", this.pin.commerceContract as Address, "hire");
+    this.assertHireEvents(created, funded, jobId, client, { providerAddress: provider, amountAtomic: budget.toString(10) }, receipt.transactionHash);
+    const createdExpiry = eventBigInt(created.args, "expiredAt", "hire", receipt.transactionHash);
+    assertEventBigInt(createdExpiry, BigInt(expiredAtUnix), "job expiry", receipt.transactionHash);
+  }
+
+  private assertHireEvents(created: DecodedReceiptEvent, funded: DecodedReceiptEvent, jobId: string, client: Address | null, expectation: Erc8183OperationExpectation | null | undefined, transactionHash: Hex): void {
+    assertEventBigInt(eventBigInt(created.args, "jobId", "hire", transactionHash), BigInt(jobId), "created job ID", transactionHash);
+    assertEventBigInt(eventBigInt(funded.args, "jobId", "hire", transactionHash), BigInt(jobId), "funded job ID", transactionHash);
+    if (client !== null) assertEventAddress(eventAddress(created.args, "client", "hire", transactionHash), client, "created client", transactionHash);
+    const createdProvider = eventAddress(created.args, "provider", "hire", transactionHash);
+    const fundedProvider = eventAddress(funded.args, "provider", "hire", transactionHash);
+    assertEventAddress(fundedProvider, createdProvider, "funded provider", transactionHash);
+    if (expectation?.providerAddress !== undefined) assertEventAddress(createdProvider, expectation.providerAddress, "provider", transactionHash);
+    assertEventAddress(eventAddress(created.args, "evaluator", "hire", transactionHash), this.routerContract, "evaluator", transactionHash);
+    assertEventAddress(eventAddress(created.args, "hook", "hire", transactionHash), this.routerContract, "hook", transactionHash);
+    if (expectation?.amountAtomic !== undefined) assertEventBigInt(eventBigInt(funded.args, "amount", "hire", transactionHash), BigInt(expectation.amountAtomic), "funding amount", transactionHash);
+    if (client !== null) assertEventAddress(eventAddress(funded.args, "client", "hire", transactionHash), client, "funded client", transactionHash);
+  }
+
+  private assertHireState(job: Erc8183OnchainJob, expectation: Erc8183OperationExpectation | null | undefined, transactionHash: Hex): void {
+    if (!isAtOrAfterStatus(job.status, "FUNDED")) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled hire job has not reached FUNDED or a later valid state.", transactionHash, nextAction: "manual_review" });
+    if (expectation?.providerAddress !== undefined) assertEventAddress(job.provider, expectation.providerAddress, "job provider", transactionHash);
+    if (expectation?.amountAtomic !== undefined && job.budgetAtomic !== expectation.amountAtomic) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reconciled hire budget does not match the operation expectation.", transactionHash, nextAction: "manual_review" });
+  }
+
+  private assertSubmitReceipt(receipt: Erc8183RpcReceipt, jobId: string, provider: Address, digest: Hex): void {
+    const event = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobSubmitted", this.pin.commerceContract as Address, "submit");
+    this.assertSubmitEvent(event, jobId, provider, digest, receipt.transactionHash);
+  }
+
+  private assertSubmitEvent(event: DecodedReceiptEvent, jobId: string, provider: Address | null, digest: Hex | undefined, transactionHash: Hex): void {
+    assertEventBigInt(eventBigInt(event.args, "jobId", "submit", transactionHash), BigInt(jobId), "submitted job ID", transactionHash);
+    if (provider !== null) assertEventAddress(eventAddress(event.args, "provider", "submit", transactionHash), provider, "provider", transactionHash);
+    if (digest !== undefined && eventHash(event.args, "deliverable", "submit", transactionHash).toLowerCase() !== digest.toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The submitted deliverable event does not match the committed Keccak digest.", transactionHash, nextAction: "reconcile_transaction" });
+  }
+
+  private assertSettleReceipt(receipt: Erc8183RpcReceipt, jobId: string, action: "approve" | "dispute", client: Address, job: Erc8183OnchainJob): void {
+    if (action === "approve") {
+      const settled = requireReceiptEvent(receipt, ERC8183_ROUTER_EVENTS_ABI, "JobSettled", this.routerContract, "settle");
+      const finalised = requireReceiptEvent(receipt, ERC8183_ROUTER_EVENTS_ABI, "JobFinalised", this.routerContract, "settle");
+      const completed = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobCompleted", this.pin.commerceContract as Address, "settle");
+      assertEventBigInt(eventBigInt(settled.args, "jobId", "settle", receipt.transactionHash), BigInt(jobId), "settled job ID", receipt.transactionHash);
+      assertEventAddress(eventAddress(settled.args, "policy", "settle", receipt.transactionHash), this.policyContract, "settlement policy", receipt.transactionHash);
+      if (eventBigInt(settled.args, "verdict", "settle", receipt.transactionHash) !== 1n) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The settlement receipt did not contain an approval verdict.", transactionHash: receipt.transactionHash, nextAction: "reconcile_transaction" });
+      assertEventBigInt(eventBigInt(finalised.args, "jobId", "settle", receipt.transactionHash), BigInt(jobId), "finalised job ID", receipt.transactionHash);
+      if (eventBigInt(finalised.args, "status", "settle", receipt.transactionHash) !== 3n) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The settlement receipt did not finalise the job as completed.", transactionHash: receipt.transactionHash, nextAction: "reconcile_transaction" });
+      assertEventBigInt(eventBigInt(completed.args, "jobId", "settle", receipt.transactionHash), BigInt(jobId), "completed job ID", receipt.transactionHash);
+      assertEventAddress(eventAddress(completed.args, "evaluator", "settle", receipt.transactionHash), job.evaluator, "completion evaluator", receipt.transactionHash);
+    } else {
+      const disputed = requireReceiptEvent(receipt, ERC8183_POLICY_EVENTS_ABI, "Disputed", this.policyContract, "dispute");
+      assertEventBigInt(eventBigInt(disputed.args, "jobId", "dispute", receipt.transactionHash), BigInt(jobId), "dispute job ID", receipt.transactionHash);
+      assertEventAddress(eventAddress(disputed.args, "client", "dispute", receipt.transactionHash), client, "dispute client", receipt.transactionHash);
+    }
+  }
+
+  private assertRefundReceipt(receipt: Erc8183RpcReceipt, jobId: string, client: Address, job: Erc8183OnchainJob): void {
+    const refunded = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "Refunded", this.pin.commerceContract as Address, "claim refund");
+    const expired = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobExpired", this.pin.commerceContract as Address, "claim refund");
+    assertEventBigInt(eventBigInt(refunded.args, "jobId", "claim refund", receipt.transactionHash), BigInt(jobId), "refund job ID", receipt.transactionHash);
+    assertEventAddress(eventAddress(refunded.args, "client", "claim refund", receipt.transactionHash), client, "refund client", receipt.transactionHash);
+    assertEventBigInt(eventBigInt(refunded.args, "amount", "claim refund", receipt.transactionHash), BigInt(job.budgetAtomic), "refund amount", receipt.transactionHash);
+    assertEventBigInt(eventBigInt(expired.args, "jobId", "claim refund", receipt.transactionHash), BigInt(jobId), "expired job ID", receipt.transactionHash);
+  }
+
   private assertHiredJob(job: Erc8183OnchainJob, client: Address, provider: Address, budget: bigint, expiredAtUnix: number): void {
-    if (job.status !== "FUNDED" || job.client.toLowerCase() !== client.toLowerCase() || job.provider.toLowerCase() !== provider.toLowerCase() || job.evaluator.toLowerCase() !== this.routerContract.toLowerCase() || job.hook.toLowerCase() !== this.routerContract.toLowerCase() || job.budgetAtomic !== budget.toString(10) || job.expiredAtUnix !== expiredAtUnix) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed hire did not match the requested client, provider, evaluator, hook, budget, expiry, and FUNDED state.", nextAction: "reconcile_transaction" });
+    if (!isAtOrAfterStatus(job.status, "FUNDED") || job.client.toLowerCase() !== client.toLowerCase() || job.provider.toLowerCase() !== provider.toLowerCase() || job.evaluator.toLowerCase() !== this.routerContract.toLowerCase() || job.hook.toLowerCase() !== this.routerContract.toLowerCase() || job.budgetAtomic !== budget.toString(10) || job.expiredAtUnix !== expiredAtUnix) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed hire did not match the requested client, provider, evaluator, hook, budget, expiry, and valid funded-or-later state.", nextAction: "reconcile_transaction" });
   }
 }
 
