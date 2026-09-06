@@ -228,6 +228,8 @@ function parseSubmissionEvent(
     result.jobKey.commerceContract.toLowerCase() !== jobKey.commerceContract.toLowerCase() ||
     result.jobKey.jobId !== jobKey.jobId ||
     result.resultDigest.toLowerCase() !== payload.resultDigest.toLowerCase() ||
+    result.chainDeliverable === null ||
+    result.chainDeliverable.toLowerCase() !== payload.chainDeliverable.toLowerCase() ||
     (job.providerBinding !== null && canonicalSha256Hex(result.providerBinding) !== canonicalSha256Hex(job.providerBinding))
   )) {
     throw new CommerceError({

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { encodeErc8183Manifest, erc8183ManifestHash } from "@altananetwork/sdk";
+import { createHealthFactorResult, createHealthFactorTask } from "../src/index.js";
 import {
   Erc8183CommerceReadService,
   createErc8183JobEvent,
@@ -47,6 +48,23 @@ const MANIFEST = {
 };
 const MANIFEST_TEXT = encodeErc8183Manifest(MANIFEST);
 const CHAIN_KECCAK = erc8183ManifestHash(MANIFEST);
+const OTHER_CHAIN_KECCAK = `0x${"f".repeat(64)}` as `0x${string}`;
+const PROVIDER_BINDING = {
+  identity: { namespace: "eip155", chainId: 97, identityRegistry: "0x1111111111111111111111111111111111111111", agentId: "42" },
+  agentVersionId: "00000000-0000-4000-8000-000000000042",
+  agentVersion: 1
+} as const;
+
+function providerResult(chainDeliverable: `0x${string}`): ReturnType<typeof createHealthFactorResult> {
+  const task = createHealthFactorTask({
+    jobKey: JOB_KEY,
+    providerBinding: PROVIDER_BINDING,
+    account: CLIENT,
+    protocol: "venus",
+    requestedAtUnix: 2_000_000
+  });
+  return createHealthFactorResult({ task, observedAtUnix: 2_000_001, healthFactor: 1.72, chainDeliverable });
+}
 
 function job() {
   return erc8183JobRecordSchema.parse({
@@ -202,6 +220,21 @@ describe("ERC-8183 typed commerce read model", () => {
     const provisional = createErc8183JobEvent({ ...submissionEvent(), eventKey: "provisional-submit", confirmationState: "provisional" });
     await expect(new Erc8183CommerceReadService(
       new MemoryReadRepository(job(), provisional),
+      new MemoryOperationRepository(operation())
+    ).get(JOB_KEY)).rejects.toMatchObject({ code: "ONCHAIN_MISMATCH" });
+  });
+
+  it("fails closed when nested provider result Keccak differs from the event payload", async () => {
+    const event = submissionEvent();
+    const mismatched = createErc8183JobEvent({
+      ...event,
+      payload: {
+        ...(event.payload as Record<string, unknown>),
+        result: providerResult(OTHER_CHAIN_KECCAK)
+      }
+    });
+    await expect(new Erc8183CommerceReadService(
+      new MemoryReadRepository(job(), mismatched),
       new MemoryOperationRepository(operation())
     ).get(JOB_KEY)).rejects.toMatchObject({ code: "ONCHAIN_MISMATCH" });
   });
