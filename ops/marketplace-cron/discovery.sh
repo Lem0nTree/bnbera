@@ -18,6 +18,5 @@ cd "${repo_root}"
 exec /usr/bin/flock -n "${runtime_root}/locks/discovery.lock" \
   /usr/bin/timeout --kill-after=20s 240s \
   env ERC8004_INGESTION_ENABLED=true ERC8004SCAN_DISCOVERY_ENABLED=true \
-    MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED=false \
     "${node_bin}" scripts/run-with-repo-env.mjs -- "${pnpm_bin}" ops:erc8004-marketplace \
     >> "${runtime_root}/logs/discovery.log" 2>&1

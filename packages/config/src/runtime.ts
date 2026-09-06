@@ -123,11 +123,16 @@ export function validateSemanticEmbeddingLock(
     typeof embedding.verificationStatus !== "string") {
     throw new Error("EMBEDDING_LOCK_INCOMPLETE");
   }
-  if (embedding.verificationStatus !== "verified-live-read-only-canary") {
+  if (embedding.verificationStatus !== "verified-live-read-only-canary" && embedding.verificationStatus !== "verified-live-release") {
     throw new Error("EMBEDDING_LOCK_UNVERIFIED");
   }
   const releaseEnabled = embedding.releaseEnabled === true;
-  if (releaseEnabled) return { mode: "release", releaseEnabled, verificationStatus: embedding.verificationStatus };
+  if (releaseEnabled) {
+    // A read-only provider canary proves transport/configuration only. It is
+    // not release evidence and must not be promoted by flipping one boolean.
+    if (embedding.verificationStatus !== "verified-live-release") throw new Error("EMBEDDING_RELEASE_EVIDENCE_REQUIRED");
+    return { mode: "release", releaseEnabled, verificationStatus: embedding.verificationStatus };
+  }
   const canaryAllowed = runtime.marketplaceSemanticCanaryEnabled === true &&
     (runtime.nodeEnv === "test" || runtime.environment === "development");
   if (!canaryAllowed) throw new Error("EMBEDDING_RELEASE_DISABLED");

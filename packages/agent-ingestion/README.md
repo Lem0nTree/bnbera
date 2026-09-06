@@ -130,3 +130,28 @@ retrieval disabled until the provider/model/version/dimension is accepted in
 the standards lock and the pgvector migration and live read-only evidence are
 available. Disable `MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED` to fall back to
 structured/full-text retrieval without deleting vectors or checkpoints.
+
+The current lock records a verified live read-only canary, but keeps
+`semanticEmbedding.releaseEnabled` false. The scheduled marketplace wrappers
+therefore inherit the explicit semantic flags from the runtime environment;
+they do not overwrite them. A development-only canary requires both
+`MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED=true` and
+`MARKETPLACE_SEMANTIC_CANARY_ENABLED=true`. Preview/production rejects that
+configuration until the lock is updated with separately reviewed release
+evidence. A canary never changes the lock or claims release readiness.
+
+Existing current marketplace versions can be reclassified with the bounded,
+idempotent v3 command. It is disabled unless explicitly enabled and only
+records public evidence from the persisted registration, capability, and
+validated service-card observations:
+
+```bash
+ERC8004_INGESTION_ENABLED=true ERC8004_CATEGORY_BACKFILL_ENABLED=true \
+  ERC8004_CATEGORY_BACKFILL_MAX_CANDIDATES=20 \
+  pnpm ops:erc8004-category-backfill
+```
+
+Use `ERC8004_CATEGORY_BACKFILL_AFTER_VERSION` with the returned cursor to
+continue a later bounded batch. Replaying a batch is safe: v3 predictions
+are keyed by the evidence digest, older classifier rows remain append-only,
+and evidence-backed secondary categories remain in the prediction evidence.

@@ -96,6 +96,8 @@ describe("runtime configuration", () => {
     expect(() => validateSemanticEmbeddingLock(lock, runtime)).toThrow("EMBEDDING_RELEASE_DISABLED");
     const canaryRuntime = loadRuntimeConfig({ ...base, MARKETPLACE_SEMANTIC_CANARY_ENABLED: "true" });
     expect(validateSemanticEmbeddingLock(lock, canaryRuntime)).toMatchObject({ mode: "development-canary", releaseEnabled: false });
+    expect(() => validateSemanticEmbeddingLock({ semanticEmbedding: { ...lock.semanticEmbedding, releaseEnabled: true } }, canaryRuntime)).toThrow("EMBEDDING_RELEASE_EVIDENCE_REQUIRED");
+    expect(validateSemanticEmbeddingLock({ semanticEmbedding: { ...lock.semanticEmbedding, verificationStatus: "verified-live-release", releaseEnabled: true } }, runtime)).toMatchObject({ mode: "release", releaseEnabled: true });
     expect(() => validateSemanticEmbeddingLock({ semanticEmbedding: { ...lock.semanticEmbedding, model: "other/model" } }, canaryRuntime)).toThrow("EMBEDDING_LOCK_MISMATCH");
   });
 

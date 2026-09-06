@@ -31,6 +31,37 @@ node scripts/run-with-repo-env.mjs -- pnpm ops:erc8004-marketplace
 
 This command writes retained observations and eligible listings. It is not a read-only diagnostic. It currently processes at most 20 candidates per invocation. T1 must make repeated work resumable/fair and T2 must finish semantic integration. The standards lock currently disables semantic release; use the existing explicit development canary only for its authorized development tests, not production acceptance.
 
+The cron wrappers inherit `MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED` from the
+runtime environment. They do not force semantic work off. The ingestion and
+web entry points validate `config/standards.lock.json` before enabling it. The
+current lock is canary-only (`releaseEnabled=false`), so a local development
+canary must opt into both gates:
+
+```bash
+ERC8004_INGESTION_ENABLED=true ERC8004SCAN_DISCOVERY_ENABLED=true \
+MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED=true MARKETPLACE_SEMANTIC_CANARY_ENABLED=true \
+node scripts/run-with-repo-env.mjs -- pnpm ops:erc8004-marketplace
+```
+
+Do not set those canary flags in preview/production. Until separately
+reviewed release evidence changes the standards lock, those environments
+must keep semantic retrieval disabled and use deterministic fallback ranking.
+
+For existing current versions, run the bounded v3 category reclassification
+command in explicit development/maintenance windows:
+
+```bash
+ERC8004_INGESTION_ENABLED=true ERC8004_CATEGORY_BACKFILL_ENABLED=true \
+ERC8004_CATEGORY_BACKFILL_MAX_CANDIDATES=20 \
+node scripts/run-with-repo-env.mjs -- pnpm ops:erc8004-category-backfill
+```
+
+The command uses the persisted public registration/capability/service-card
+evidence, records all evidence-backed applicable categories, and is safe to
+replay. Continue from the emitted `nextAfterAgentVersionId` with
+`ERC8004_CATEGORY_BACKFILL_AFTER_VERSION`; never reset or delete the retained
+history.
+
 ## Target cron behavior — implemented by T1
 
 | Job | Cadence | Behavior |
