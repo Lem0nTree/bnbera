@@ -68,6 +68,27 @@ type JobRow = {
 
 type JobIdRow = { readonly id: string };
 
+type EventRow = {
+  readonly chain_id: number;
+  readonly commerce_contract: string;
+  readonly erc8183_job_id: string;
+  readonly event_id: string;
+  readonly event_key: string;
+  readonly event_type: string;
+  readonly previous_state: Erc8183JobState | null;
+  readonly next_state: Erc8183JobState | null;
+  readonly actor_address: string | null;
+  readonly transaction_hash: string | null;
+  readonly block_number: number | string | null;
+  readonly block_hash: string | null;
+  readonly log_index: number | null;
+  readonly confirmation_state: "provisional" | "canonical" | "orphaned";
+  readonly payload_digest: string;
+  readonly payload: unknown;
+  readonly correlation_id: string;
+  readonly observed_at: Date | string;
+};
+
 const jobSelect = `
   SELECT id, commerce_job_id, chain_id, commerce_contract, erc8183_job_id,
     spec_revision, abi_hash, evaluator_profile, confirmation_threshold,
@@ -160,6 +181,32 @@ function rowToJob(row: JobRow): Erc8183JobRecord {
   });
 }
 
+function rowToEvent(row: EventRow): Erc8183JobEvent {
+  const observedAtUnix = asUnix(row.observed_at, "event observed") ?? 0;
+  return erc8183JobEventSchema.parse({
+    eventId: row.event_id,
+    eventKey: row.event_key,
+    jobKey: {
+      chainId: row.chain_id,
+      commerceContract: row.commerce_contract,
+      jobId: row.erc8183_job_id
+    },
+    eventType: row.event_type,
+    previousState: row.previous_state,
+    nextState: row.next_state,
+    actorAddress: row.actor_address,
+    transactionHash: row.transaction_hash,
+    blockNumber: row.block_number === null ? null : String(row.block_number),
+    blockHash: row.block_hash,
+    logIndex: row.log_index,
+    confirmationState: row.confirmation_state,
+    payloadDigest: row.payload_digest,
+    payload: row.payload,
+    correlationId: row.correlation_id,
+    observedAtUnix
+  });
+}
+
 function jsonPayload(value: unknown): string {
   try { return JSON.stringify(value ?? {}) ?? "{}"; } catch (cause) { throw new CommerceError({ code: "INVALID_JOB", message: "The commerce event payload is not serializable.", cause }); }
 }
@@ -230,6 +277,48 @@ export class PostgresErc8183JobRepository {
   public async get(jobKey: { readonly chainId: 56 | 97; readonly commerceContract: string; readonly jobId: string }): Promise<Erc8183JobRecord | null> {
     const result = await this.pool.query<JobRow>(`${jobSelect} WHERE chain_id = $1 AND commerce_contract = $2 AND erc8183_job_id = $3`, [jobKey.chainId, normalizeAddress(jobKey.commerceContract, "commerce contract"), jobKey.jobId]);
     return result.rows[0] === undefined ? null : rowToJob(result.rows[0]);
+  }
+
+  /**
+   * Return only the canonical, receipt-backed submission event for a job.
+   * Submission events are written after the Altana SDK receipt and protocol
+   * state have been verified, so this query is safe for the reload/status API.
+   */
+  public async getConfirmedSubmissionEvent(jobKey: { readonly chainId: 56 | 97; readonly commerceContract: string; readonly jobId: string }): Promise<Erc8183JobEvent | null> {
+    const result = await this.pool.query<EventRow>(`
+      SELECT
+        j.chain_id,
+        j.commerce_contract,
+        j.erc8183_job_id,
+        e.id AS event_id,
+        e.event_key,
+        e.event_type,
+        e.previous_state,
+        e.next_state,
+        e.actor_address,
+        e.transaction_hash,
+        e.block_number,
+        e.block_hash,
+        e.log_index,
+        e.confirmation_state,
+        e.payload_digest,
+        e.payload,
+        e.correlation_id,
+        e.observed_at
+      FROM erc8183_job_events e
+      JOIN erc8183_jobs j ON j.id = e.erc8183_job_id
+      WHERE j.chain_id = $1
+        AND j.commerce_contract = $2
+        AND j.erc8183_job_id = $3
+        AND e.event_type = 'job_submitted'
+        AND e.confirmation_state = 'canonical'
+        AND e.transaction_hash IS NOT NULL
+        AND e.block_number IS NOT NULL
+        AND e.block_hash IS NOT NULL
+      ORDER BY e.observed_at DESC, e.id DESC
+      LIMIT 1
+    `, [jobKey.chainId, normalizeAddress(jobKey.commerceContract, "commerce contract"), jobKey.jobId]);
+    return result.rows[0] === undefined ? null : rowToEvent(result.rows[0]);
   }
 
   public async create(input: PersistentErc8183JobCreateInput): Promise<{ readonly job: Erc8183JobRecord; readonly replayed: boolean }> {

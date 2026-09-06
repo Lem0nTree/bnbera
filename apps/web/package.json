@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@bnbera/agent-commerce": "workspace:*",
     "@bnbera/agent-ingestion": "workspace:*",
     "@bnbera/config": "workspace:*",
     "@bnbera/domain": "workspace:*",

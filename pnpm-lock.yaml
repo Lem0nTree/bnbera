@@ -41,6 +41,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@bnbera/agent-commerce':
+        specifier: workspace:*
+        version: link:../../packages/agent-commerce
       '@bnbera/agent-ingestion':
         specifier: workspace:*
         version: link:../../packages/agent-ingestion

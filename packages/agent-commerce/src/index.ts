@@ -4,6 +4,7 @@ export * from "./chain.js";
 export * from "./lifecycle.js";
 export * from "./operations.js";
 export * from "./provider.js";
+export * from "./api.js";
 export * from "./postgres-jobs.js";
 export * from "./service.js";
 export * from "./repository.js";
