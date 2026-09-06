@@ -2,7 +2,11 @@ import { agentCategorySchema, canonicalSha256Hex, type AgentCategory } from "@bn
 import { ingestionError } from "./errors.js";
 import { assertSafePublicValue } from "./normalize.js";
 
-export const categoryClassifierVersion = "deterministic-rules-v1" as const;
+// v3 adds evidence-backed multi-category applicability to the persisted
+// prediction shape; the scalar primary category remains compatible.
+export const categoryClassifierVersion = "deterministic-rules-v3" as const;
+/** Minimum structured score for a category to be exposed as applicable. */
+export const applicableCategoryStructuredScoreThreshold = 25 as const;
 export const categoryReviewStates = ["auto", "needs_review"] as const;
 export type CategoryReviewState = (typeof categoryReviewStates)[number];
 
@@ -12,6 +16,8 @@ export type CategoryClassificationInput = {
   readonly protocols?: readonly unknown[];
   readonly supportedProtocols?: readonly unknown[];
   readonly skills?: readonly unknown[];
+  /** Normalized public labels from a validated A2A card; advertised only. */
+  readonly advertisedSkills?: readonly unknown[];
   readonly domains?: readonly unknown[];
   readonly capabilities?: unknown;
   /** Optional A2A Agent Card fields discovered by a safe read-only probe. */
@@ -31,6 +37,7 @@ export type CategoryEvidence = {
 };
 
 export type CategoryClassification = {
+  /** Highest-scoring primary label; evidence.candidates retains other matches. */
   readonly category: AgentCategory;
   /** 0..100 score from structured protocol/capability fields. */
   readonly structuredScore: number;
@@ -54,30 +61,48 @@ const categoryRules: readonly CategoryRule[] = [
   {
     category: "rebalancing",
     terms: ["rebalance", "rebalancing", "portfolio allocation", "asset allocation", "index portfolio", "portfolio weights"],
-    weights: { capability: 28, protocol: 22, skill: 18, domain: 18, name: 8, description: 6 }
+    weights: { capability: 28, protocol: 22, skill: 18, advertisedSkill: 26, domain: 18, name: 8, description: 6 }
   },
   {
     category: "grid-trading",
-    terms: ["grid trading", "grid-trader", "grid strategy", "range trading", "market making", "market-making", "maker"],
-    weights: { capability: 28, protocol: 22, skill: 18, domain: 18, name: 8, description: 6 }
+    terms: ["grid", "grid trading", "grid-trader", "grid strategy", "range trading", "market making", "market-making", "maker"],
+    weights: { capability: 28, protocol: 22, skill: 18, advertisedSkill: 26, domain: 18, name: 8, description: 6 }
   },
   {
     category: "yield-optimisation",
     terms: ["yield", "yield optimizer", "yield optimiser", "apy", "apr", "vault", "staking", "liquidity mining", "farming", "lending"],
-    weights: { capability: 26, protocol: 20, skill: 18, domain: 18, name: 10, description: 8 }
+    weights: { capability: 26, protocol: 20, skill: 18, advertisedSkill: 26, domain: 18, name: 10, description: 8 }
   },
   {
     category: "health-factor",
     terms: ["health factor", "liquidation", "liquidator", "collateral", "borrow", "debt ratio", "risk monitor", "solvency"],
-    weights: { capability: 28, protocol: 18, skill: 18, domain: 18, name: 10, description: 8 }
+    weights: { capability: 28, protocol: 18, skill: 18, advertisedSkill: 26, domain: 18, name: 10, description: 8 }
   }
 ];
+
+// These labels are useful hints but are too generic to promote a category on
+// their own. Compound/category-specific labels such as `grid-trading` and
+// `yield` remain eligible advertised evidence.
+const weakAdvertisedTerms = new Set(["maker", "vault"]);
+
+function hasOnlyWeakAdvertisedEvidence(evidence: CategoryEvidence): boolean {
+  return evidence.structuredMatches.length > 0 && evidence.structuredMatches.every((match) => {
+    const [field, term] = match.split(":", 2);
+    return field === "advertisedSkill" && term !== undefined && weakAdvertisedTerms.has(term);
+  });
+}
 
 const publicText = (value: unknown, max = 2_000): string => {
   if (typeof value !== "string") return "";
   const text = value.trim().slice(0, max);
   return /[\u0000-\u001f\u007f]/u.test(text) ? "" : text;
 };
+
+function publicRecord(value: unknown): Readonly<Record<string, unknown>> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : null;
+}
 
 function textList(value: unknown, limit = 128): readonly string[] {
   if (!Array.isArray(value)) return [];
@@ -86,7 +111,14 @@ function textList(value: unknown, limit = 128): readonly string[] {
       if (typeof item === "string") return [publicText(item, 256)];
       if (typeof item !== "object" || item === null || Array.isArray(item)) return [];
       const record = item as Record<string, unknown>;
-      return [record.id, record.name, record.title, record.description, ...(Array.isArray(record.tags) ? record.tags : [])]
+      return [
+        record.id,
+        record.name,
+        record.title,
+        record.description,
+        ...(Array.isArray(record.tags) ? record.tags : []),
+        ...(Array.isArray(record.keywords) ? record.keywords : [])
+      ]
         .map((entry) => publicText(entry, 256));
     })
     .filter((item) => item.length > 0)
@@ -125,8 +157,11 @@ function capabilityTexts(value: unknown): readonly string[] {
 }
 
 function containsTerm(text: string, term: string): boolean {
-  const normalized = text.toLocaleLowerCase("en-US");
-  const needle = term.toLocaleLowerCase("en-US");
+  // Public card labels commonly use `grid-trading`/`grid_trading`, while the
+  // classifier rules use human-readable phrases. Treat separators uniformly
+  // without broadening a rule to an ambiguous single token.
+  const normalized = text.toLocaleLowerCase("en-US").replace(/[-_]+/gu, " ").replace(/\s+/gu, " ").trim();
+  const needle = term.toLocaleLowerCase("en-US").replace(/[-_]+/gu, " ").replace(/\s+/gu, " ").trim();
   if (needle.includes(" ") || needle.includes("-")) return normalized.includes(needle);
   const escaped = needle.replace(/[.*+?^${}()|[\[\]\\]/gu, "\\$&");
   return new RegExp(`(?:^|[^a-z])${escaped}(?:$|[^a-z])`, "iu").test(normalized);
@@ -144,7 +179,7 @@ function scoreRule(rule: CategoryRule, fields: Readonly<Record<string, string>>)
     matchedTerms.add(term);
     for (const field of fieldMatches) {
       semanticScore += rule.weights[field] ?? 0;
-      if (field === "capability" || field === "protocol" || field === "skill" || field === "domain") {
+      if (field === "capability" || field === "protocol" || field === "skill" || field === "advertisedSkill" || field === "domain") {
         structuredMatches.add(`${field}:${term}`);
         structuredScore += rule.weights[field] ?? 0;
       } else {
@@ -167,6 +202,7 @@ function scoreRule(rule: CategoryRule, fields: Readonly<Record<string, string>>)
 function normalizeInput(input: CategoryClassificationInput): Readonly<Record<string, string>> {
   if (input.metadata !== undefined) assertSafePublicValue(input.metadata, "category.metadata");
   if (input.capabilities !== undefined) assertSafePublicValue(input.capabilities, "category.capabilities");
+  if (input.advertisedSkills !== undefined) assertSafePublicValue(input.advertisedSkills, "category.advertisedSkills");
   if (input.agentCard !== undefined) assertSafePublicValue(input.agentCard, "category.agentCard");
   if (input.mcpCapabilities !== undefined) assertSafePublicValue(input.mcpCapabilities, "category.mcpCapabilities");
   const metadata = input.metadata ?? {};
@@ -178,7 +214,6 @@ function normalizeInput(input: CategoryClassificationInput): Readonly<Record<str
   const metadataRecord = metadata as Record<string, unknown>;
   const capabilities = [
     ...capabilityTexts(input.capabilities),
-    ...capabilityTexts(input.agentCard),
     ...capabilityTexts(input.mcpCapabilities)
   ].join(" ");
   const protocols = [
@@ -190,15 +225,20 @@ function normalizeInput(input: CategoryClassificationInput): Readonly<Record<str
   const skills = [
     ...textList(input.skills, 128),
     ...textList(metadataRecord.skills, 128),
-    ...textList(metadataRecord.oasf && typeof metadataRecord.oasf === "object" ? (metadataRecord.oasf as Record<string, unknown>).skills : undefined, 128),
-    ...textList(input.agentCard && typeof input.agentCard === "object" ? (input.agentCard as Record<string, unknown>).skills : undefined, 128)
+    ...textList(metadataRecord.oasf && typeof metadataRecord.oasf === "object" ? (metadataRecord.oasf as Record<string, unknown>).skills : undefined, 128)
+  ].join(" ");
+  const advertisedSkill = [
+    ...textList(input.advertisedSkills, 128),
+    ...(Array.isArray(input.agentCard)
+      ? input.agentCard.flatMap((card) => textList(publicRecord(card)?.skills, 128))
+      : textList(publicRecord(input.agentCard)?.skills, 128))
   ].join(" ");
   const domains = [
     ...textList(input.domains, 128),
     ...textList(metadataRecord.domains, 128),
     ...textList(metadataRecord.oasf && typeof metadataRecord.oasf === "object" ? (metadataRecord.oasf as Record<string, unknown>).domains : undefined, 128)
   ].join(" ");
-  return {
+  const fields: Readonly<Record<string, string>> = {
     name: publicText(input.name, 160),
     description: publicText(input.description, 2_000),
     protocol: protocols,
@@ -207,6 +247,7 @@ function normalizeInput(input: CategoryClassificationInput): Readonly<Record<str
     capability: capabilities,
     metadata: metadataText
   };
+  return advertisedSkill.length === 0 ? fields : { ...fields, advertisedSkill };
 }
 
 function confidenceFor(best: CategoryEvidence, second: CategoryEvidence | undefined, structuredPresent: boolean): number {
@@ -227,9 +268,14 @@ export function classifyAgent(input: CategoryClassificationInput): CategoryClass
   const best = ranked[0];
   const second = ranked[1];
   if (best === undefined) throw ingestionError("CATEGORY_CLASSIFICATION_FAILED", "No category rules are configured.", "configure_classifier");
-  const structuredPresent = (fields.capability ?? "").length > 0 || (fields.protocol ?? "").length > 0 || (fields.skill ?? "").length > 0 || (fields.domain ?? "").length > 0;
+  const structuredPresent = (fields.capability ?? "").length > 0 || (fields.protocol ?? "").length > 0 || (fields.skill ?? "").length > 0 || (fields.advertisedSkill ?? "").length > 0 || (fields.domain ?? "").length > 0;
   const confidence = confidenceFor(best, second, structuredPresent);
-  const promote = best.structuredScore >= 25 && best.matchedTerms.length > 0 && confidence >= 0.55 && best.structuredScore > (second?.structuredScore ?? 0) + 4;
+  const applicableCategories = ranked
+    .filter((candidate) => candidate.structuredScore >= applicableCategoryStructuredScoreThreshold)
+    .filter((candidate) => !hasOnlyWeakAdvertisedEvidence(candidate))
+    .map((candidate) => candidate.category)
+    .slice(0, 4);
+  const promote = !hasOnlyWeakAdvertisedEvidence(best) && best.structuredScore >= applicableCategoryStructuredScoreThreshold && best.matchedTerms.length > 0 && confidence >= 0.55 && best.structuredScore > (second?.structuredScore ?? 0) + 4;
   const category: AgentCategory = promote ? best.category : "uncategorized";
   agentCategorySchema.parse(category);
   const evidenceDigest = canonicalSha256Hex({ fields, evidence });
@@ -238,6 +284,7 @@ export function classifyAgent(input: CategoryClassificationInput): CategoryClass
     structuredMatches: best.structuredMatches,
     semanticMatches: best.semanticMatches,
     candidates: evidence.map((item) => ({ category: item.category, structuredScore: item.structuredScore, semanticScore: item.semanticScore })),
+    ...(applicableCategories.length === 0 ? {} : { applicableCategories }),
     digest: evidenceDigest
   };
   assertSafePublicValue(acceptedEvidence, "category.evidence");

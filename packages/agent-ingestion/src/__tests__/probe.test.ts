@@ -114,6 +114,71 @@ describe("bounded advertised-service probes", () => {
       .rejects.toMatchObject({ code: "SERVICE_A2A_AGENT_CARD_INVALID" });
   });
 
+  it("retains bounded public A2A skill keywords as advertised metadata", async () => {
+    const card = {
+      name: "Grid agent",
+      description: "A public test agent.",
+      version: "1.0.0",
+      supportedInterfaces: [{
+        url: "https://agent.example/a2a",
+        protocolBinding: "JSONRPC",
+        protocolVersion: "0.3"
+      }],
+      capabilities: { streaming: false },
+      skills: [{
+        id: "strategy",
+        name: "Strategy",
+        description: "Publishes an advertised strategy label.",
+        tags: ["grid"],
+        keywords: ["grid-trading", "grid-trading"]
+      }]
+    };
+    const transport = new HttpServiceProbeTransport({
+      fetch: async () => new Response(JSON.stringify(card), { status: 200, headers: { "content-type": "application/a2a+json" } }),
+      lookup: async () => [{ address: "93.184.216.34", family: 4 }]
+    });
+    await expect(transport.probe({ kind: "a2a", url: "https://agent.example/.well-known/agent-card.json", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
+      .resolves.toMatchObject({
+        contractStatus: "healthy",
+        safeCapabilityProbe: {
+          capabilityEvidence: "advertised-only",
+          skills: [{ tags: ["grid"], keywords: ["grid-trading"] }]
+        }
+      });
+
+    const unsafe = new HttpServiceProbeTransport({
+      fetch: async () => new Response(JSON.stringify({
+        ...card,
+        skills: [{ ...card.skills[0], keywords: [{ secret: "must-not-be-consumed" }] }]
+      }), { status: 200, headers: { "content-type": "application/a2a+json" } }),
+      lookup: async () => [{ address: "93.184.216.34", family: 4 }]
+    });
+    await expect(unsafe.probe({ kind: "a2a", url: "https://agent.example/.well-known/agent-card.json", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
+      .rejects.toMatchObject({ code: "SERVICE_A2A_AGENT_CARD_INVALID" });
+
+    const missingTags = new HttpServiceProbeTransport({
+      fetch: async () => new Response(JSON.stringify({
+        ...card,
+        skills: [{ ...card.skills[0], tags: undefined }]
+      }), { status: 200, headers: { "content-type": "application/a2a+json" } }),
+      lookup: async () => [{ address: "93.184.216.34", family: 4 }]
+    });
+    await expect(missingTags.probe({ kind: "a2a", url: "https://agent.example/.well-known/agent-card.json", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
+      .rejects.toMatchObject({ code: "SERVICE_A2A_AGENT_CARD_INVALID" });
+
+    for (const invalidTag of ["grid\u0000trading", "grid\ntrading"]) {
+      const controls = new HttpServiceProbeTransport({
+        fetch: async () => new Response(JSON.stringify({
+          ...card,
+          skills: [{ ...card.skills[0], tags: [invalidTag] }]
+        }), { status: 200, headers: { "content-type": "application/a2a+json" } }),
+        lookup: async () => [{ address: "93.184.216.34", family: 4 }]
+      });
+      await expect(controls.probe({ kind: "a2a", url: "https://agent.example/.well-known/agent-card.json", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
+        .rejects.toMatchObject({ code: "SERVICE_A2A_AGENT_CARD_INVALID" });
+    }
+  });
+
   it("requires structured adapter capability evidence instead of marker-only JSON", async () => {
     const invalid = new HttpServiceProbeTransport({
       fetch: async () => new Response(JSON.stringify({ protocol: "vendor", capabilities: { status: true } }), { status: 200, headers: { "content-type": "application/json" } }),

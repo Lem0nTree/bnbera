@@ -36,7 +36,7 @@ function candidate(agentVersionId: string, text: string): EmbeddingBackfillCandi
     protocols: ["A2A"],
     actions: ["quote"],
     services: [{ kind: "a2a", url: "https://agent.example/a2a", protocolVersion: "0.3" }],
-    classifierVersion: "deterministic-rules-v1"
+    classifierVersion: "deterministic-rules-v3"
   };
 }
 

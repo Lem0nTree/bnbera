@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  InMemoryMarketplaceSource,
+  MarketplaceReadService,
+  developmentFixtureListings,
+  type MarketplaceListingInput
+} from "@bnbera/marketplace";
 import { normalizePersistedMarketplaceMetrics } from "./marketplace-server";
 import {
+  mapMarketplaceSearchResponse,
   parseMarketplaceSearchParams,
   readMarketplace,
   readMarketplaceAgent
@@ -80,6 +87,52 @@ describe("marketplace web adapter", () => {
     expect(response.agents.every((agent) => agent.protocols.includes("venus"))).toBe(true);
     expect(response.agents.every((agent) => agent.dataProvenance.mode === "fixture")).toBe(true);
     expect(response.agents.every((agent) => agent.activation.enabled === false)).toBe(true);
+  });
+
+  it("projects advertised labels and routes one listing through primary and secondary categories", async () => {
+    const original = developmentFixtureListings[0]!;
+    const a2a = original.services.find((candidate) => candidate.kind === "a2a") ?? original.services[0]!;
+    const listing: MarketplaceListingInput = {
+      ...original,
+      slug: "fixture-web-grid-yield",
+      category: "grid-trading",
+      applicableCategories: ["yield-optimisation"],
+      serviceEvidence: [{
+        kind: "a2a",
+        advertisedUrl: a2a.url,
+        cardUrl: a2a.url,
+        invocationUrls: [a2a.url],
+        advertisedSkills: [{
+          id: "grid-yield",
+          name: "Grid yield",
+          description: "Public strategy descriptor",
+          tags: ["grid-trading"],
+          keywords: ["yield"]
+        }],
+        testedSkills: [],
+        testStatus: "transport_only",
+        testedAt: null
+      }]
+    };
+    const readModel = new MarketplaceReadService(new InMemoryMarketplaceSource([listing]));
+    const searchInput = parseMarketplaceSearchParams(new URLSearchParams("q=grid-trading&limit=12"));
+    const core = await readModel.search({ query: searchInput.query, limit: searchInput.limit });
+    const projected = mapMarketplaceSearchResponse(searchInput, core, "fixture");
+    const secondaryInput = parseMarketplaceSearchParams(new URLSearchParams("category=yield-optimisation&limit=12"));
+    const secondaryCore = await readModel.search({ category: secondaryInput.category, limit: secondaryInput.limit });
+    const secondary = mapMarketplaceSearchResponse(secondaryInput, secondaryCore, "fixture");
+
+    expect(projected.agents).toHaveLength(1);
+    expect(projected.agents[0]).toMatchObject({
+      slug: "fixture-web-grid-yield",
+      category: "grid-trading",
+      applicableCategories: ["yield-optimisation"],
+      serviceEvidence: [{
+        advertisedSkills: [{ tags: ["grid-trading"], keywords: ["yield"] }],
+        testedSkills: []
+      }]
+    });
+    expect(secondary.agents.map((agent) => agent.slug)).toEqual(["fixture-web-grid-yield"]);
   });
 
   it("exposes deterministic loading and empty state previews", async () => {

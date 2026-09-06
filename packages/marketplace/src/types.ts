@@ -229,7 +229,11 @@ export type MarketplaceMetrics = z.infer<typeof marketplaceMetricsSchema>;
 const marketplaceSkillEvidenceSchema = z.object({
   id: z.string().trim().min(1).max(160),
   name: z.string().trim().min(1).max(160),
-  description: z.string().trim().min(1).max(2_000)
+  description: z.string().trim().min(1).max(2_000),
+  /** Public A2A labels; these are advertised and not invocation evidence. */
+  tags: z.array(z.string().trim().min(1).max(128)).max(32).optional(),
+  /** Public card extensions normalized alongside standard tags. */
+  keywords: z.array(z.string().trim().min(1).max(128)).max(32).optional()
 });
 
 export const marketplaceServiceEvidenceSchema = z.object({
@@ -411,6 +415,8 @@ export const marketplaceListingMetadataSchema = z.object({
   name: z.string().trim().min(1).max(160),
   description: z.string().trim().min(1).max(2_000),
   category: agentCategorySchema,
+  /** Additional reviewed category matches; the scalar category remains primary. */
+  applicableCategories: z.array(agentCategorySchema).max(4).optional(),
   supportedProtocols: z.array(protocolNameSchema).max(64),
   pricing: marketplacePricingSchema,
   dataFreshness: marketplaceFreshnessSchema,
@@ -441,6 +447,7 @@ export const marketplaceListingInputSchema = z.object({
   name: marketplaceListingMetadataSchema.shape.name,
   description: marketplaceListingMetadataSchema.shape.description,
   category: agentCategorySchema,
+  applicableCategories: marketplaceListingMetadataSchema.shape.applicableCategories,
   services: z.array(advertisedServiceSchema).max(128),
   capabilities: capabilityManifestSchema,
   supportedProtocols: z.array(protocolNameSchema).max(64),

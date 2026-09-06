@@ -79,6 +79,79 @@ describe("MarketplaceReadService", () => {
     expect(price.excluded[0]?.reasons[0]?.code).toBe("PRICE_EXCEEDS_MAXIMUM");
   });
 
+  it("searches normalized advertised A2A skill labels without treating them as tested skills", async () => {
+    const original = developmentFixtureListings[0]!;
+    const a2a = original.services.find((candidate) => candidate.kind === "a2a") ?? original.services[0]!;
+    const listing: MarketplaceListingInput = {
+      ...original,
+      slug: "fixture-advertised-grid-label",
+      serviceEvidence: [{
+        kind: "a2a",
+        advertisedUrl: a2a.url,
+        cardUrl: a2a.url,
+        invocationUrls: [a2a.url],
+        advertisedSkills: [{
+          id: "strategy",
+          name: "Strategy",
+          description: "Public strategy descriptor",
+          tags: ["grid-trading"],
+          keywords: ["range"]
+        }],
+        testedSkills: [],
+        testStatus: "transport_only",
+        testedAt: null
+      }]
+    };
+    const response = await service(new InMemoryMarketplaceSource([listing])).search({ query: "grid-trading" });
+    expect(response.results.map((agent) => agent.slug)).toEqual(["fixture-advertised-grid-label"]);
+    expect(response.results[0]?.serviceEvidence?.[0]?.advertisedSkills[0]).toMatchObject({
+      tags: ["grid-trading"],
+      keywords: ["range"]
+    });
+    expect(response.results[0]?.serviceEvidence?.[0]?.testedSkills).toEqual([]);
+  });
+
+  it("routes an evidence-backed secondary category without making it tested capability", async () => {
+    const original = developmentFixtureListings[0]!;
+    const a2a = original.services.find((candidate) => candidate.kind === "a2a") ?? original.services[0]!;
+    const listing: MarketplaceListingInput = {
+      ...original,
+      slug: "fixture-grid-yield",
+      category: "grid-trading",
+      applicableCategories: ["yield-optimisation"],
+      serviceEvidence: [{
+        kind: "a2a",
+        advertisedUrl: a2a.url,
+        cardUrl: a2a.url,
+        invocationUrls: [a2a.url],
+        advertisedSkills: [{
+          id: "grid-yield",
+          name: "Grid yield",
+          description: "Public strategy descriptor",
+          tags: ["grid-trading"],
+          keywords: ["yield"]
+        }],
+        testedSkills: [],
+        testStatus: "transport_only",
+        testedAt: null
+      }]
+    };
+    const readModel = service(new InMemoryMarketplaceSource([listing]));
+
+    const primary = await readModel.search({ category: "grid-trading" });
+    const secondary = await readModel.search({ category: "yield-optimisation" });
+    const text = await readModel.search({ query: "yield" });
+
+    expect(primary.results.map((agent) => agent.slug)).toEqual(["fixture-grid-yield"]);
+    expect(secondary.results.map((agent) => agent.slug)).toEqual(["fixture-grid-yield"]);
+    expect(text.results.map((agent) => agent.slug)).toEqual(["fixture-grid-yield"]);
+    expect(secondary.results[0]).toMatchObject({
+      category: "grid-trading",
+      applicableCategories: ["yield-optimisation"],
+      serviceEvidence: [{ testedSkills: [] }]
+    });
+  });
+
   it("uses stable score tie-breaking after equal score components", async () => {
     const tieB = { ...developmentFixtureListings[0]!, name: "Same Agent", slug: "tie-b" };
     const tieA = { ...developmentFixtureListings[1]!, name: "Same Agent", slug: "tie-a" };
@@ -381,7 +454,19 @@ describe("MarketplaceReadService", () => {
       validationStatus: "healthy",
       statusCode: 200,
       latencyMs: 42,
-      safeCapabilityProbe: { fixture: true },
+      safeCapabilityProbe: {
+        protocol: "a2a",
+        contract: "agent-card",
+        valid: true,
+        invocationUrls: [advertised.url],
+        skills: [{
+          id: "strategy",
+          name: "Strategy",
+          description: "Public strategy descriptor",
+          tags: ["grid-trading"],
+          keywords: ["range"]
+        }]
+      },
       errorCode: null,
       observedAt
     });
@@ -456,6 +541,19 @@ describe("MarketplaceReadService", () => {
     });
     expect(snapshot.records[0]?.serviceEvidence).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "mcp", advertisedUrl: alternateService.url, invocationUrls: [], testedSkills: [] })
+    ]));
+    expect(snapshot.records[0]?.serviceEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: "a2a",
+        advertisedSkills: [{
+          id: "strategy",
+          name: "Strategy",
+          description: "Public strategy descriptor",
+          tags: ["grid-trading"],
+          keywords: ["range"]
+        }],
+        testedSkills: []
+      })
     ]));
 
     const response = await service(source).search();

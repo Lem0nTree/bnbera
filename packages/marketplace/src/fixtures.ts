@@ -168,6 +168,7 @@ export function metadataFromFixture(listing: MarketplaceListingInput): Marketpla
     name: listing.name,
     description: listing.description,
     category: listing.category,
+    ...(listing.applicableCategories === undefined ? {} : { applicableCategories: listing.applicableCategories }),
     supportedProtocols: listing.supportedProtocols,
     pricing: listing.pricing,
     dataFreshness: listing.dataFreshness,
