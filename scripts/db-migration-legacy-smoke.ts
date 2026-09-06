@@ -143,7 +143,13 @@ async function makeLegacyShape(connectionString: string): Promise<void> {
         DROP COLUMN IF EXISTS "observed_block_hash" CASCADE,
         DROP COLUMN IF EXISTS "read_consistency" CASCADE;
 
-      -- 0002 through 0006 are deliberately rewound below. Remove the tables
+      ALTER TABLE "erc8183_jobs"
+        DROP COLUMN IF EXISTS "provider_binding" CASCADE,
+        DROP COLUMN IF EXISTS "buyer_approval_address" CASCADE,
+        DROP COLUMN IF EXISTS "buyer_approval_result_digest" CASCADE,
+        DROP COLUMN IF EXISTS "buyer_approved_at" CASCADE;
+
+      -- 0002 through 0007 are deliberately rewound below. Remove the tables
       -- introduced by the replayed migrations so their CREATE statements do
       -- not collide with the original disposable shape.
       DROP TABLE IF EXISTS "marketplace_ingestion_retries" CASCADE;
@@ -151,12 +157,13 @@ async function makeLegacyShape(connectionString: string): Promise<void> {
       DROP TABLE IF EXISTS "scan_discovery_checkpoints" CASCADE;
       DROP TABLE IF EXISTS "erc8004_reputation_events" CASCADE;
       DROP TABLE IF EXISTS "erc8004_reputation_checkpoints" CASCADE;
+      DROP TABLE IF EXISTS "erc8183_operations" CASCADE;
       DELETE FROM drizzle.__drizzle_migrations
        WHERE id IN (
          SELECT id
            FROM drizzle.__drizzle_migrations
           ORDER BY id DESC
-          LIMIT 5
+          LIMIT 6
        );
     `);
   } catch {
@@ -205,7 +212,7 @@ async function verifyLegacyRepair(connectionString: string): Promise<void> {
     const journal = await pool.query<{ readonly count: string }>(`
       SELECT count(*)::text AS count FROM drizzle.__drizzle_migrations
     `);
-    assertCondition(journal.rows[0]?.count === "7", "MIGRATION_JOURNAL_INCOMPLETE");
+    assertCondition(journal.rows[0]?.count === "8", "MIGRATION_JOURNAL_INCOMPLETE");
   } catch (error) {
     if (error instanceof MigrationSmokeError) throw error;
     throw new MigrationSmokeError("LEGACY_REPAIR_VERIFICATION_FAILED");

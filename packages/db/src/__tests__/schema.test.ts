@@ -200,7 +200,8 @@ describe("combined Wave 1 database schema", () => {
       "0003_scan_discovery_checkpoint.sql",
       "0004_swift_silverclaw.sql",
       "0005_outgoing_ezekiel.sql",
-      "0006_reputation_replacement_log.sql"
+      "0006_reputation_replacement_log.sql",
+      "0007_calm_riptide.sql"
     ]);
     expect(wave1Files).toEqual(["0001_wave1_combined.sql"]);
 
