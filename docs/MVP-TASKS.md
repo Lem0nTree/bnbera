@@ -1,6 +1,6 @@
 # MVP tasks and gates
 
-Active backlog for [MVP-MASTER-PLAN.md](MVP-MASTER-PLAN.md). Current GitHub `main` baseline: `1c98ff4`; reconciled 2026-09-06. Two implementation agents maximum; coordinator reviews each handoff before dispatching its dependent replacement.
+Active backlog for [MVP-MASTER-PLAN.md](MVP-MASTER-PLAN.md). Current GitHub `main` baseline: `8636ad6`; reconciled 2026-09-06. Two implementation agents maximum; coordinator reviews each handoff before dispatching its dependent replacement.
 
 ## Current delivery status
 
@@ -11,7 +11,7 @@ This table distinguishes code merged to GitHub `main`, retained-runtime evidence
 | T1 | Implemented; retained acceptance passed | Independent locked discovery and health cron, durable cursor/retry state, bounded work and freshness expiry are merged. | Reinstall from the final deployed checkout and keep operational evidence with T3. |
 | T2 | Core implemented; reputation remains | Real enrichment, multi-category evidence, persistent vectors, deterministic fallback and marketplace read models are merged. Retained processing produced a small truthful set of qualified listings; most discovered registrations did not pass service/capability/health gates. | Add provenance-safe ERC-8004 reputation ingestion/display, continue bounded supply growth, and keep production semantic mode disabled until its standards lock is released. |
 | T3 | In progress | Retained database pipeline, restart-safe cron behavior and local API path have been exercised. | Deploy a stable public HTTPS preview and verify browser -> API -> PostgreSQL plus restart, stale-health and fallback behavior at the deployed SHA. Create `MVP-STATUS.md`. |
-| T4 | Implemented on unmerged task branch; not accepted | ERC-8183 persistence, chain operations, receipt checks and safeguards exist on `task/t4-paid-hire`. | Rebase/review against current `main`, pin and wrap the supported Altana ERC-8183 API, expose the application API and complete one authorized real testnet cycle with distinct actors. |
+| T4 | Implemented on unmerged task branch; not accepted | ERC-8183 persistence, direct APEX chain operations, receipt checks and safeguards exist on `task/t4-paid-hire`. | Refresh/review against current `main`, replace duplicate transaction writes with calls to the already-pinned Altana ERC-8183 SDK, expose the application API and complete one authorized real testnet cycle with distinct actors. |
 | T5 | Open | Existing detail page has a read-only/disabled activation surface. | Complete the browser hire/result/approval/settlement journey, confirmed-job projection and verified-purchase review. |
 | T6 | Open | Altana boundaries and pinned candidate package exist; no live authority proof. | Implement browser-controlled grant/status/revoke and prove allowed, revoked, expired and over-cap behavior. |
 | T7 | Open | No-code Creator is planned; no end-to-end Creator exists. | Use the pinned BNB Agent Studio CLI/runtime integration for one audited template, then register, publish and hire the created agent. |
@@ -26,6 +26,77 @@ This table distinguishes code merged to GitHub `main`, retained-runtime evidence
 4. Complete the bounded T8 integration and T9 submission evidence.
 
 Competition acceptance and partner-track distinctions are summarized in [HACKATHON-REQUIREMENTS.md](HACKATHON-REQUIREMENTS.md).
+
+## Remaining integration checklist
+
+Use these unchecked items as the bounded handoff for the next implementation agent. Checked items are already merged or supported by retained evidence; every task still follows its detailed gate below.
+
+### T1 remaining
+
+- [x] Merge independent locked discovery and health jobs with durable cursor/retry state.
+- [x] Verify bounded retained operation, restart safety and honest freshness expiry.
+- [ ] Reinstall the two jobs from the immutable public-preview checkout and attach their current operational evidence to T3.
+
+### T2 remaining
+
+- [x] Merge enrichment, evidence-based multi-category classification, vector persistence, semantic canary/fallback and marketplace projections.
+- [ ] Ingest non-revoked ERC-8004 Reputation Registry feedback with complete provenance.
+- [ ] Display raw feedback, recognized reviewer/validator evidence and T5 verified-purchase reviews as separate views.
+- [ ] Continue bounded discovery to improve qualified four-category depth without weakening capability, service or health gates.
+- [ ] Release-enable semantic retrieval only after the shared standards lock has production evidence; deterministic fallback remains valid meanwhile.
+
+### T3 remaining
+
+- [ ] Deploy an immutable production build behind stable HTTPS without exposing PostgreSQL.
+- [ ] Verify browser -> API -> PostgreSQL for browse, filters, categories, compare and detail at the deployed SHA.
+- [ ] Verify pipeline/web restart, stale-health expiry/recovery and semantic-provider fallback.
+- [ ] Create `docs/MVP-STATUS.md` with deployed SHA, cron evidence, real identity tuples, category counts and honest gaps.
+
+### T4 remaining
+
+- [ ] Refresh `task/t4-paid-hire` onto current `main` in an isolated checkout and preserve migration history.
+- [ ] Keep BNBEra's job repository, idempotency, reconciliation, receipt verification and marketplace identity binding.
+- [ ] Use the pinned Altana SDK's existing ERC-8183 buyer/seller functions for APEX transaction construction and submission; do not build an adapter that reimplements Altana-to-APEX behavior and do not keep two active transaction writers.
+- [ ] Automatically verify that SDK chain-97 addresses equal the reviewed standards-lock addresses before enabling the canary.
+- [ ] Add the minimal job API and one useful provider task/result contract required by T5.
+- [ ] Prepare distinct buyer/provider testnet actors, required gas and capped testnet U funding without exposing keys.
+- [ ] Complete one authorized `<= 0.01 U` cycle and the duplicate/unknown-outcome recovery check; keep release disabled until it passes.
+
+### T5 remaining
+
+- [ ] Implement task -> quote -> explicit fund -> progress -> result -> buyer approval -> confirmed settlement with reload recovery.
+- [ ] Project only confirmed completed jobs, result/receipt links and one authenticated verified-purchase review per completed job.
+- [ ] Connect T2 reputation views without combining their trust levels.
+- [ ] Capture the first real Agent Advantage comparison and record any unavailable category honestly.
+
+### T6 remaining
+
+- [ ] Verify the exact Altana wallet/session exports, runtime addresses and browser/passkey environment.
+- [ ] Implement user-controlled call allowlist, spend cap and expiry grant plus public authority status.
+- [ ] Prove one allowed action, revoke it in-product, then prove revoked, expired and over-cap actions fail.
+- [ ] Give T7 a tested grant/status/revoke and Agent Studio handoff interface; store secret references only.
+
+### T7 remaining
+
+- [ ] Verify the pinned Agent Studio runtime integrity and supported deploy/register interface.
+- [ ] Implement one validated audited template and persisted, idempotent deployment progress.
+- [ ] Connect T6 authority -> Agent Studio deploy/runtime -> intended ERC-8004 owner/agentWallet.
+- [ ] Reuse G1 to verify, enrich, categorize, vectorize and publish the created agent.
+- [ ] Reuse G2 to hire it and prove revocation rejects the next delegated write.
+
+### T8 remaining
+
+- [ ] Pin the Greenfield SDK, provider and network.
+- [ ] Publish one approved public profile and one completed-job bundle.
+- [ ] Verify seal, readback and matching hash; persist status/locator and show links.
+- [ ] Prove interrupted retry does not create a duplicate object and storage failure does not break browsing or hiring.
+
+### T9 remaining
+
+- [ ] Verify current migrations, build, deployed SHA, cron and public browser journey.
+- [ ] Walk through four-category discovery, one paid cycle/review, one Creator grant/revoke flow and two Greenfield links.
+- [ ] Complete three real Agent Advantage comparisons, including one trading, stock/equities or security task.
+- [ ] Finish the submission script, evidence references, honest blockers and rollback commands.
 
 ## G1 — Marketplace pipeline
 
@@ -79,7 +150,8 @@ Status: implementation exists on `task/t4-paid-hire`, but it is unmerged and has
 
 Owner: COMMERCE. After G1; read-only contract feasibility can begin during T3. Paths: commerce package, persistent job repository, API/chain adapters; standards lock owned by coordinator.
 
-- Resolve official deployment/ABI/token/policy pins, including the existing conflicting policy addresses. Wrap the supported Altana ERC-8183 SDK/API behind BNBEra's existing commerce interface while retaining PostgreSQL lifecycle state and independent receipt/event verification. If the pinned package does not expose the documented API, update the exact package/version/integrity through coordinator review. Do not build or deploy another rail for the MVP.
+- Resolve official deployment/ABI/token/policy pins. The pinned `@altananetwork/sdk@0.9.0` already exports ERC-8183 hire, read, submit, settle, refund and deliverable-verification functions and its chain-97 addresses match the reviewed T4 candidates. Use those SDK functions to operate the existing APEX deployment; BNBEra must not recreate the Altana-to-APEX integration.
+- Keep only a thin application boundary around the SDK. Its purpose is to persist the marketplace job and idempotency key, bind it to the full ERC-8004 identity/version, reconcile receipts after timeout/reload, verify results and expose safe APIs for T5. It is not a second escrow or transaction implementation. Direct contract reads may independently verify SDK outcomes; duplicate direct transaction-writing paths stay disabled or are removed.
 - Wire quote, explicit buyer funding, provider work, deliverable submission, buyer approval and settlement into the existing lifecycle with PostgreSQL job/transaction persistence.
 - Validate actor/network/token/recipient/amount and confirmed receipts. Handle protocol-supported rejection/expiry/refund and unknown outcomes; prevent duplicate charge or auto-approval.
 - Return an input/output contract and a small real task fixture to T5. Use a service that produces a useful result; a funding acknowledgement is insufficient.
