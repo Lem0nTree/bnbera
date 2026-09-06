@@ -214,3 +214,188 @@ deployed-browser evidence remains pending the public URL.
 Rollback is application-only: stop the preview process and/or remove only the
 two installed BNBEra cron lines, then restore the prior application artifact.
 Do not reset, delete, or roll back retained PostgreSQL history.
+
+## T2 retained reputation rollout addendum
+
+Updated: `2026-09-06T14:54:28Z`
+
+This addendum records the forward rollout from the merged reputation code at
+`7a79b3b4d1b943d2380491d7778f2dff12cc30ab` in the isolated checkout
+`/home/ubuntu/bnbera-t2-reputation-rollout`, branch
+`task/t2-reputation-rollout`. It does not change eligibility, semantic release,
+cron topology, or any later gate.
+
+### Backup and migration evidence
+
+- Retained PostgreSQL container: `bnbera_erc8004_pgvector`, healthy, loopback
+  `127.0.0.1:55432`, retained volume `bnbera_erc8004_pgdata`; database/role
+  observed as `bnbera_erc8004` / `bnbera_local`. Credentials were not printed
+  or recorded.
+- Pre-migration retained journal: five rows (through `0004`); no reputation
+  event or checkpoint rows existed.
+- Backup: `/home/ubuntu/bnbera-backups/bnbera_erc8004_retained_20260906T143826Z.dump`;
+  4,221,289 bytes; SHA-256
+  `c42aacfc43c6a8ff09b48a36a7dc191b3484c1786e3cce6efec60186f04a6ffe`;
+  `pg_restore --list` returned 336 entries.
+- Disposable migration smoke on the separate healthy `bnbera-t3-disposable-pg`
+  passed: `freshInstall=true`, `restartNoOp=true`,
+  `adr0003LegacyRepair=true`, `disposableDatabase=true`.
+- `pnpm db:migrate` applied only the forward `0005_outgoing_ezekiel.sql` and
+  `0006_reputation_replacement_log.sql` changes to retained data. Final
+  journal: seven rows, IDs `1`–`7`, all seven checked-in migration hashes
+  match. `erc8004_reputation_events`,
+  `erc8004_reputation_checkpoints`, and the replacement unique index are
+  present; event/checkpoint counts remain `0` / `0`.
+
+### Retained read snapshot
+
+The final read-only readiness snapshot used one-off safety overrides
+`ERC8004_INGESTION_ENABLED=false`,
+`ERC8004SCAN_DISCOVERY_ENABLED=false`, and
+`MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED=false`; this did not modify the
+retained environment or cron. `marketplace-readiness.ts --database-only`
+reported `status=degraded`, `dataState=degraded`, `appliedCount=7`,
+`expectedCount=7`, `hashesMatch=true`, and pgvector `0.8.6`.
+
+| Projection | Count |
+| --- | ---: |
+| ERC-8004 identities / agents | 2,120 / 2,120 |
+| Exact identity reads | 1,594 |
+| Published / verified / live agents | 25 / 25 / 25 |
+| Agent versions | 39 |
+| Capabilities / category predictions | 25 / 75 |
+| Discovery sources | 3,054 |
+| Service observations / healthy | 701 / 37 |
+| Services / healthy | 39 / 39 |
+| Service probes / healthy | 14,216 / 13,216 |
+| Listing embeddings (1536-dimensional lock) | 29 |
+| Reputation events / checkpoints | 0 / 0 |
+
+Published category supply at the snapshot was rebalancing `2`, grid-trading
+`3`, yield-optimisation `2`, health-factor `2`, and uncategorized `16`.
+
+### Reputation sync result and blocker
+
+The bounded command used the standards-locked BSC testnet identity/reputation
+registries, chain `97`, finalized RPC tag, max block range `10,000`, max events
+`10,000`, and an explicitly derived 5,000-block development read window. It
+was run with `ERC8004_INGESTION_ENABLED=true` and
+`ERC8004_REPUTATION_SYNC_ENABLED=true`; no private key or write-capable RPC
+method was used. The configured provider returned JSON-RPC `-32005 limit
+exceeded` from `eth_getLogs` even for a one-block query (with and without the
+reviewed event-topic filter), and `-32000 missing trie node` for finalized
+`eth_getCode`. The sync therefore returned sanitized `CHAIN_PROVIDER_ERROR`
+and did not commit a checkpoint or event. A retry returned the same error;
+reputation counts stayed `0 / 0` before and after (`retry_sync_exit=1`).
+Latest/finalized block preflight reads succeeded at the same block/hash before
+the provider log failure, so this is an RPC log/archive limitation rather than
+a standards-lock or migration failure. No fallback provider was invented.
+
+### Read/restart checks
+
+- `pnpm db:check` passed.
+- Targeted ERC-8004 reputation/RPC tests passed `5/5`; DB schema/legacy
+  migration tests passed `14/14`; isolated SHA production build passed.
+- A local web process on port `3110` passed the API verifier: HTTP `200`,
+  contract `bnbera.marketplace-read/v0.1`, degraded live read, deterministic
+  retrieval, `12/25` returned/total, zero fixture records. Detail read for
+  `b8x-health-factor-agent` returned the full tuple
+  `eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:2097`.
+- After stopping and restarting only that local process, the API projection,
+  ordered identity list, and explicit raw/recognized/verified reputation-view
+  statuses were unchanged. Readiness database+web remained HTTP/API pass with
+  7/7 migration hashes matching. The local process was stopped after checks.
+
+At the original configured provider, T2 reputation ingestion remains blocked
+on bounded `eth_getLogs`/finalized-state behavior. Raw, recognized-reviewer,
+and verified-purchase views remain provenance-separated and explicitly
+unknown/unavailable; no rating or review count was fabricated. The follow-up
+recovery addendum below records a successful process-only endpoint override.
+
+### RPC retry audit from the retained main environment
+
+Updated: `2026-09-06T15:08:00Z`
+
+The current main environment was inspected by variable name only. The HTTP
+candidate names present were `BSC_TESTNET_RPC_URL`; the configured transport
+name `BSC_TESTNET_WSS_URL` is not consumable by the read-only HTTP JSON-RPC
+client. `BSC_TESTNET_RPC_URL_SECONDARY` and `BSC_TESTNET_RPC_URL_2` were unset.
+No endpoint value, credential, or private key was printed.
+
+| Candidate | Chain ID | Head | Finalized | Latest `eth_getCode` | Finalized `eth_getCode` | One-block `eth_getLogs` |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| `BSC_TESTNET_RPC_URL` | `97` | `129467600` | `129467592` | pass; bytecode present (130 bytes) | `CHAIN_PROVIDER_ERROR` | `CHAIN_PROVIDER_ERROR` |
+| `BSC_TESTNET_RPC_URL_SECONDARY` | — | — | — | unset | unset | unset |
+| `BSC_TESTNET_RPC_URL_2` | — | — | — | unset | unset | unset |
+
+The log probe addressed the standards-locked chain-97 Reputation Registry for
+exactly the finalized block. Both the reviewed topic-filtered range query and
+the block-hash form also returned the same sanitized provider error. The
+candidate therefore proves head/finalized block reads and a head bytecode read,
+but cannot provide the finalized state and bounded log reads required by the
+locked `rpc-finalized-tag` sync policy.
+
+Two bounded sync attempts used the finalized policy, start block
+`129462600`, max range `10,000`, and max events `10,000`. Both exited `1` with
+only `{"errorCode":"CHAIN_PROVIDER_ERROR"}`. A read-only retained-DB query
+after the first and retry attempts reported `erc8004_reputation_events=0`,
+`erc8004_reputation_checkpoints=0`, and `erc8004_identities=2120`; no partial
+transaction was committed. The current command's exact unblock requirement is
+an HTTPS/HTTP endpoint in `BSC_TESTNET_RPC_URL` that serves chain `97`, the
+locked registry bytecode at `finalized`, and bounded one-block `eth_getLogs`.
+Secondary variable names are not currently consumed by this reputation-sync
+script, so merely adding one does not silently change provider selection.
+
+The read-only API projection was checked on port `3111` before and after
+stopping/restarting only the local web process. Both checks returned HTTP `200`
+with degraded live mode, `25` published records, and the representative full
+tuple `eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:2097`. Its raw
+permissionless reputation view remained `unknown`; recognized-reviewer and
+verified-purchase views remained `unavailable` with their explicit reasons.
+This confirms the RPC failure did not alter marketplace identity/listing data
+or collapse the three reputation provenance views.
+
+## T2 reputation RPC recovery and retained sync
+
+Updated: `2026-09-06T15:12:08Z`
+
+The coordinator supplied an official BSC testnet HTTPS endpoint as a
+process-only `BSC_TESTNET_RPC_URL` override. The repository `.env` was not
+modified, and the endpoint value was not emitted or persisted. The existing
+`scripts/erc8004-reputation-sync.ts` already consumes this supported variable,
+so no source fallback or additional configuration was necessary.
+
+Sanitized preflight for the override passed chain ID `97`, head block
+`129468538`, finalized block `129468537`, finalized Reputation Registry
+`eth_getCode` with bytecode present (130 bytes), and one-block
+`eth_getLogs` against the locked registry (`0` logs). The standards lock's
+`rpc-finalized-tag` policy remained in force; no write-capable RPC method or
+private key was used.
+
+The first bounded sync used start block `129463537`, max range `10,000`, and
+max events `10,000`. It completed with `scannedThroughBlock=129468571`,
+`insertedEventCount=0`, `promotedEventCount=0`, and a checkpoint at block
+`129468571` (`cursorVersion=1`). The immediate idempotent replay scanned only
+newly finalized blocks `129468572` through `129468601`, again inserted and
+promoted `0` events, and advanced the same checkpoint stream to
+`cursorVersion=2`. No duplicate events were created.
+
+The retained read-only DB check after both runs reported `events=0`,
+`canonical_events=0`, `checkpoints=1`, `last_scanned_block=129468601`,
+`cursor_version=2`, and `identities=2120`. Migration journal/hash verification
+remained `7/7`; retained history and the pre-existing backup were preserved.
+
+The API projection after the successful sync and a local web-process restart
+remained HTTP `200`, degraded/live, with `25` published listings and the full
+representative tuple
+`eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:2097`. Because the
+bounded finalized window contained no feedback, raw permissionless reputation
+remained `unknown`; recognized-reviewer and verified-purchase views remained
+`unavailable` with explicit reasons. To enable retained cron operation, replace
+the failing repository value under the already-supported `BSC_TESTNET_RPC_URL`
+name only after the authorized environment owner approves that configuration
+change; do not add a second provider silently.
+
+Focused verification after the recovery passed: agent-ingestion `111/111`
+tests, database schema/legacy tests `17/17`, and `pnpm db:check` (`Everything's
+fine`).
