@@ -109,4 +109,22 @@ describe("ERC-8183 operation persistence", () => {
     expect((await repository.attachJobId({ operationId: operation.operationId, jobId: "7" })).jobId).toBe("7");
     expect((await repository.attachJobId({ operationId: operation.operationId, jobId: "7" })).jobId).toBe("7");
   });
+
+  it("binds an idempotency key to protocol identity and authenticated execution wallet", async () => {
+    const repository = new PostgresErc8183OperationRepository(new FakeOperationPool());
+    const input = {
+      idempotencyKey: "identity-bound-operation-1",
+      requestDigest: "d".repeat(64),
+      chainId: 97 as const,
+      commerceContract: "0x1111111111111111111111111111111111111111",
+      jobId: "7",
+      kind: "submit" as const,
+      signerRole: "provider" as const,
+      nowUnix: 2_000_000,
+      context: { signerAddress: "0x4444444444444444444444444444444444444444", sdkAction: "submit" as const, parameters: { chainDeliverable: HASH } }
+    };
+    await repository.reserve(input);
+    await expect(repository.reserve({ ...input, context: { ...input.context, signerAddress: "0x5555555555555555555555555555555555555555" } })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    await expect(repository.reserve({ ...input, jobId: "8" })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+  });
 });
