@@ -47,6 +47,14 @@ Do not set those canary flags in preview/production. Until separately
 reviewed release evidence changes the standards lock, those environments
 must keep semantic retrieval disabled and use deterministic fallback ranking.
 
+The optional 8004scan semantic candidate fan-out is disabled by default with
+`ERC8004SCAN_SEMANTIC_DISCOVERY_ENABLED=false`. It is not required for
+vectorization: ordinary scan candidates still run through enrichment,
+category classification, publication and (when the semantic canary/release
+gate is enabled) embedding generation. Keep the fan-out disabled for the MVP
+cron so four slow provider searches cannot consume the bounded composition
+budget; enable it only for an explicitly bounded development run.
+
 For existing current versions, run the bounded v3 category reclassification
 command in explicit development/maintenance windows:
 
