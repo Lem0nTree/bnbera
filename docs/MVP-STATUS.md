@@ -1,23 +1,23 @@
 # BNBEra MVP status
 
-Updated: `2026-09-06T13:00:06Z`
+Updated: `2026-09-06T14:54:23Z`
 
 This record captures the T3/G1 acceptance evidence at checkout
-`/home/ubuntu/bnbera-t3-public-preview`, branch `task/t3-public-preview`,
-HEAD `d9069c17b5d9d0b3e0294a950c2d40f709b2abca`. It is retained-host/local
+`/home/ubuntu/bnbera-t3-public-https`, branch `task/t3-public-https`, HEAD
+`7a79b3b4d1b943d2380491d7778f2dff12cc30ab`. It is retained-host/local
 evidence, not a claim that a public HTTPS preview or any later gate is live.
 
 ## Gate result
 
 | Scope | Result | Evidence |
 | --- | --- | --- |
-| Production build | Pass | `pnpm build` completed after the normal workspace package build; Next.js reported all web/API routes compiled. `pnpm db:check` passed. |
-| Retained PostgreSQL/read model | Pass (read-only) | Existing `bnbera_erc8004` database answered a read-only query; no migration, ingestion, health job, or other writer was run from this checkout. |
-| API and server-rendered marketplace | Pass locally | API contract, filters, all four category routes, detail, compare, degraded labels, unavailable metrics, and full identity values were checked over HTTP against the production build. |
-| Web restart persistence | Pass locally | The built web process was restarted with the same SHA; the DB-backed listing count and detail remained available after the same-origin configuration was aligned. |
-| Cron/restart/freshness | Retained host evidence | Existing host cron has run for more than seven hours with bounded discovery/health records. Stale expiry/recovery is covered by the current source test; a retained-DB stop-health mutation was not performed. |
-| Semantic fallback | Pass | Preview with semantic retrieval disabled returns `retrievalMode=deterministic`; forcing semantic retrieval with the candidate lock fails closed with `MARKETPLACE_CONFIGURATION_INVALID`. Hybrid/fallback unit tests pass. |
-| Public HTTPS preview | Blocked | No stable HTTPS URL, DNS/certificate, or approved private API connection is present. The host exposes only a private address and loopback PostgreSQL. |
+| Production build | Pass | `pnpm build` completed all 14 workspace builds; Next.js compiled all web/API routes. `pnpm db:check` passed. |
+| Retained PostgreSQL/read model | Pass (read-only) | `marketplace-readiness.ts --database-only` read the existing `bnbera_erc8004` database; seven migrations match their expected hashes. No migration or writer ran from this checkout. |
+| API and server-rendered marketplace | Pass locally | The immutable production process served the API verifier, all four category filters, detail, compare, degraded labels, unavailable metrics, and full identity tuples over HTTP. |
+| Web restart persistence | Pass locally | Restarting the same built SHA on port `3103` preserved the DB-backed 25-listing projection and detail identity. |
+| Cron/restart/freshness | Retained host evidence | Existing host cron has bounded health/discovery records through `2026-09-06T14:43Z`; latest health record reports 25 agents, 25 services, 25 healthy, 0 unhealthy. Stale expiry/recovery remains source-test evidence; no retained-DB stop-health mutation was performed. |
+| Semantic fallback | Pass | With retrieval disabled, the local API reports `retrievalMode=deterministic`; explicit development canary mode reports hybrid retrieval; production-style enablement without canary returns HTTP 503 `MARKETPLACE_CONFIGURATION_INVALID`. Hybrid/fallback unit tests pass. |
+| Public HTTPS preview | Blocked | IMDSv2 confirms an EC2 public IPv4/public hostname, but no proxy/tunnel/deployment config or listener on 80/443 exists; self-probes to public-IP ports 80/443/3103 fail. No stable HTTPS origin, certificate, DNS route, or approved private API connection is configured. |
 
 The public G1 gate remains open only for the missing authorized HTTPS topology
 and deployed-browser walkthrough. The local/retained marketplace acceptance is
@@ -30,7 +30,7 @@ Runtime: Node `v22.22.1`, pnpm `10.15.1`, Next.js `16.0.1`.
 ```text
 pnpm install --frozen-lockfile                         pass
 pnpm db:check                                          pass
-pnpm build                                             pass
+pnpm build                                             pass (14 workspace builds)
 pnpm --filter @bnbera/web test                         8/8 pass
 pnpm --filter @bnbera/config test                     7/7 pass
 pnpm --filter @bnbera/marketplace test                34/34 pass
@@ -38,29 +38,28 @@ pnpm typecheck                                         pass (14 workspace projec
 pnpm lint                                               pass (14 workspace projects)
 ```
 
-The first direct `@bnbera/web build` attempt failed because workspace `dist/`
-exports had not been generated in the fresh checkout. The ordinary recursive
-`pnpm build` generated those outputs and then completed the web production
-build; this is a clean-checkout bootstrap prerequisite, not a source failure.
+The recursive build generated workspace `dist/` outputs before the Next.js
+production build; this is the expected clean-checkout bootstrap sequence.
 
 ## Retained database snapshot
 
 The configured database is `bnbera_erc8004` on `127.0.0.1:55432`; the URL and
-credentials were never printed or committed. The migration journal is in the
-`drizzle` schema with five applied rows; `db:check` passed and no migration was
-run for this acceptance.
+credentials were never printed or committed. The readiness check found seven
+applied migration rows matching all seven expected files and hashes; no
+migration was run for this acceptance.
 
 Read-only counts observed while the host jobs continued to refresh health:
 
 | Projection | Count |
 | --- | ---: |
-| ERC-8004 identities | 1,621 |
-| Agents | 1,621 |
+| ERC-8004 identities | 2,080 |
+| Agents | 2,080 |
 | Published listings | 25 |
 | Agent versions | 39 |
 | 1536-dimensional vectors | 29 |
-| Service probe rows | 10,880 |
-| Probe rows in the latest two-minute window | 78 (at the snapshot query) |
+| Service observations | 698 |
+| Service probes | 13,925 |
+| Healthy service probes | 12,929 |
 
 All observed identities are chain `97` and use the standards-lock registry
 `0x8004a818bfb912233c491871b3d84c89a494bd9e`. Published category supply at the
@@ -68,22 +67,22 @@ snapshot was:
 
 | Category | Published agent IDs |
 | --- | --- |
-| Rebalancing | `1825`, `2095` |
-| Grid trading | `1826`, `2096`, `2159` |
-| Yield optimisation | `1827`, `2098` |
-| Health factor | `1828`, `2097` |
-| Uncategorized | `1691`, `1838`, `1866`, `1923`, `1924`, `1925`, `1926`, `1935`, `1936`, `1937`, `2055`, `2056`, `2057`, `2058`, `2059`, `2102` |
+| Rebalancing | 2 (`1825`, `2095`) |
+| Grid trading | 3 (`1826`, `2159`, `2096`) |
+| Yield optimisation | 2 (`2098`, `1827`) |
+| Health factor | 2 (`2097`, `1828`) |
+| Uncategorized | 16 (not counted as category coverage) |
 
 Thus each listed tuple is exactly
 `eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:<agentId>`.
 Representative full tuples used in the API/detail checks were:
 
 ```text
-eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:1825  (discovered, rebalancing)
-eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:1826  (discovered, grid-trading)
-eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:1827  (discovered, yield-optimisation)
-eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:1828  (discovered, health-factor)
-eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:2097  (manual import with 8004scan source, health-factor)
+eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:1825  (rebalancing)
+eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:1826  (grid-trading)
+eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:1827  (yield-optimisation)
+eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:1828  (health-factor)
+eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:2097  (manual-import health-factor detail)
 ```
 
 The vector rows all use the locked tuple
@@ -101,14 +100,14 @@ The currently installed host entries are:
 */5 * * * * ... /home/ubuntu/bnbera-w0-w1/ops/marketplace-cron/discovery.sh
 ```
 
-They run from the retained `main` checkout, not this unmerged branch. The
-health log spans `2026-09-06T05:52:01Z` through `2026-09-06T12:50:17Z` and
-contains 411 completed JSON records; its latest records report `25` agents,
-`25` services, `25` healthy, `0` unhealthy. The discovery log spans
-`2026-09-06T05:52:24Z` through `2026-09-06T12:50:02Z` and contains 100 bounded
-JSON records. Its latest records report `20` candidates, `20` completed,
-`0` failed, `budgetExpired=false`, and finalized registry reads; candidates
-that fail capability/service gates remain withheld.
+They run from the retained `main` checkout, not this unmerged branch. At
+`2026-09-06T14:43Z`, the health log contained 532 completed JSON records; its
+latest record reports `25` agents, `25` services, `25` healthy, `0` unhealthy.
+The discovery log contained 126 bounded records; its latest record reports
+`20` candidates, `20` completed, `0` failed, `budgetExpired=false`, and
+finalized registry reads. Top-level discovery status is `degraded` because
+the candidates that fail capability/service gates remain withheld; this is not
+a fabricated success.
 
 The existing discovery crontab explicitly enables a development semantic
 canary. That is retained-host development evidence only. Before preview or
@@ -116,10 +115,13 @@ production installation, use the accepted immutable checkout, load its runtime
 environment, and set `MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED=false` unless the
 standards lock has separately acquired release evidence.
 
-The host name resolves only to private `172.31.18.215`; the tested web process
-was local `*:3103`, while PostgreSQL listens on loopback (`127.0.0.1:55432`).
-No public hostname/certificate or approved remote API/private-network bridge is
-configured. PostgreSQL must remain private.
+The host is EC2 with private interface `172.31.18.215`; IMDSv2 returned
+`200` for public IPv4 and public hostname metadata. The tested web process was
+local `*:3103`, while PostgreSQL listens on loopback (`127.0.0.1:55432`). No
+reverse proxy, tunnel, HTTPS listener, certificate, DNS route, repository
+deployment target, or approved remote API/private-network bridge is configured.
+Self-probes to the instance public-IP ports `80`, `443`, and `3103` failed.
+PostgreSQL must remain private.
 
 ## API/SSR acceptance
 
@@ -128,9 +130,11 @@ by reference and these non-secret safety overrides:
 
 ```text
 PORT=3103
-APP_URL=http://localhost:3103
-MARKETPLACE_API_URL=http://localhost:3103/api
+APP_URL=http://127.0.0.1:3103
+MARKETPLACE_API_URL=http://127.0.0.1:3103/api
 MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED=false
+ERC8004_INGESTION_ENABLED=false
+ERC8004SCAN_DISCOVERY_ENABLED=false
 ```
 
 The same-origin URL/port alignment is required for server-rendered pages; a
@@ -144,11 +148,11 @@ GET /api/marketplace?category=rebalancing             200, 2 records
 GET /api/marketplace?category=grid-trading             200, 3 records
 GET /api/marketplace?category=yield-optimisation       200, 2 records
 GET /api/marketplace?category=health-factor            200, 2 records
-GET /api/marketplace/proofera-lp-risk-evidence-agent   200, real identity/health/metrics
+GET /api/marketplace/b8x-health-factor-agent           200, real identity 2097/health/metrics
 GET /marketplace                                      200, live rendered listing HTML
 GET /marketplace/{all four categories}                200, live rendered listing HTML
 GET /agents/b8x-health-factor-agent                   200, real identity 2097/detail HTML
-GET /compare?agents={three published slugs}           200, selected slugs rendered
+GET /compare                                          200, rendered compare page
 ```
 
 The checked-in verifier passed:
@@ -159,17 +163,16 @@ BNBERA_MARKETPLACE_API_URL=http://127.0.0.1:3103/api/marketplace \
 # ok=true, readStatus=degraded, dataMode=degraded, itemCount=12, total=25
 ```
 
-The final verifier after the controlled web-process restart observed `25`
-published records; one immediately post-restart poll observed `24` while the
-retained host cron refreshed the read model. This is why the status is labeled
-as a live retained projection rather than a fixed fixture.
+The verifier after the controlled web-process restart again observed `25`
+published records and detail identity
+`eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:2097`. This is a live
+retained projection, not a fixture.
 
 The HTTP/SSR probe found no application/HTML error signal and confirmed the
 locked identity, service URL, endpoint health timestamp, observed uptime and
-explicit `unavailable` reviews/completed-jobs/result fields. No Chromium or
-browser automation was run in this host acceptance because the lightweight
-HTTP/SSR checks were sufficient and no approved browser runner was available;
-deployed-browser evidence remains pending the public URL.
+explicit `unavailable` reviews/completed-jobs/result fields. No deployed-browser
+check was run because no stable HTTPS URL exists; browser evidence remains
+pending the owner-supplied route.
 
 ## Restart, freshness, and fallback evidence
 
@@ -183,33 +186,33 @@ deployed-browser evidence remains pending the public URL.
   was intentionally not run because the host cron owns the retained writer and
   the acceptance must not mutate that database.
 - With semantic retrieval disabled, the live API reports
-  `retrievalMode=deterministic` and remains useful. With the candidate lock's
-  `releaseEnabled=false`, forcing semantic retrieval returns a structured
-  `MARKETPLACE_CONFIGURATION_INVALID` error rather than serving an unsafe
-  preview. Marketplace hybrid tests cover no-compatible-embedding and mixed
-  model-version fallback paths.
+  `retrievalMode=deterministic` and remains useful. Explicit development
+  canary mode returned hybrid retrieval; with the candidate lock's
+  `releaseEnabled=false` and canary disabled, semantic enablement returned
+  HTTP 503 with `MARKETPLACE_CONFIGURATION_INVALID` rather than serving an
+  unsafe preview. Marketplace hybrid tests cover no-compatible-embedding and
+  mixed model-version fallback paths.
 
-## Honest gaps and owner requests
+## Honest gaps and owner request
 
-- **Public HTTPS/deployed browser (owner: coordinator/release + authorized
-  host owner):** provide a stable HTTPS origin and certificate, and either run
-  the web/API beside the private DB or provide an approved private connection.
-  Do not expose PostgreSQL. Then build/start this SHA, reinstall cron from the
-  immutable accepted checkout, and rerun the API/browser checks.
-- **Cron branch alignment (owner: coordinator/ops):** the running entries still
-  point at `/home/ubuntu/bnbera-w0-w1`; they must be reinstalled from the final
-  accepted public-preview checkout before claiming deployed T1/T3 operation.
-- **Semantic release (owner: standards/coordinator):** the lock remains
-  candidate/canary-only; deterministic fallback is the only preview-safe mode.
-- **Supply depth:** published category counts are truthful but small; the
-  1,580--1,616 withheld indexed identities in the observed API responses lack
-  complete valid metadata/capability/service/health evidence. Uncategorized
-  listings are not counted as category coverage.
-- **Reviews/jobs/current data:** external reviews, verified-purchase reviews,
-  completed BNBEra jobs/results and current financial observations remain
-  unavailable. Activation remains disabled; no synthetic metrics were added.
-- **Later gates:** ERC-8183 paid hire, Altana/Creator, and Greenfield remain
-  disabled and unaccepted.
+- **Single owner input required:** authorize/provide one stable HTTPS origin
+  with an approved routing path to this host's web process (domain,
+  certificate, and ingress authority as one topology input). PostgreSQL must
+  remain private. Once that route exists, build/start this SHA, reinstall only
+  the BNBEra cron entries from this immutable checkout with semantic release
+  disabled, and rerun the deployed browser/API checks. No other T3
+  credential, domain, or infrastructure request is made here.
+
+The standards lock remains candidate/canary-only, so deterministic fallback is
+the only preview-safe semantic mode. The installed cron still points at
+`/home/ubuntu/bnbera-w0-w1` and explicitly enables a development canary; this
+is retained-host evidence and is not a release claim. Published category
+counts are truthful but small; 2,075 indexed identities were withheld for
+incomplete marketplace metadata/capability/service/health evidence, and
+uncategorized listings are not category coverage. External reviews,
+verified-purchase reviews, completed BNBEra jobs/results, and current
+financial observations remain unavailable; activation is disabled. ERC-8183
+paid hire, Altana/Creator, and Greenfield remain disabled and unaccepted.
 
 Rollback is application-only: stop the preview process and/or remove only the
 two installed BNBEra cron lines, then restore the prior application artifact.
