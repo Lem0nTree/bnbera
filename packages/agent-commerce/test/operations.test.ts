@@ -108,6 +108,18 @@ describe("ERC-8183 operation persistence", () => {
     });
     expect((await repository.attachJobId({ operationId: operation.operationId, jobId: "7" })).jobId).toBe("7");
     expect((await repository.attachJobId({ operationId: operation.operationId, jobId: "7" })).jobId).toBe("7");
+    // The original hire request has no job ID; after confirmation the
+    // persisted operation does. Repeating that same hire must replay rather
+    // than conflict with the newly attached protocol identity.
+    expect((await repository.reserve({
+      idempotencyKey: "hire-create-operation-1",
+      requestDigest: "c".repeat(64),
+      chainId: 97,
+      commerceContract: "0x1111111111111111111111111111111111111111",
+      kind: "create",
+      signerRole: "client",
+      nowUnix: 2_000_001
+    })).replayed).toBe(true);
   });
 
   it("binds an idempotency key to protocol identity and authenticated execution wallet", async () => {

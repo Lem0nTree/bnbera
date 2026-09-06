@@ -288,8 +288,14 @@ function parseOperationRow(row: OperationRow): Erc8183OperationRecord {
   };
 }
 
-function sameNullableJobId(left: string | null, right: string | null): boolean {
-  return left === right;
+function sameOperationJobId(existing: Erc8183OperationRecord, incoming: string | null): boolean {
+  // A hire is reserved before the chain assigns its protocol job ID. Once a
+  // confirmed receipt attaches that ID, the same idempotency key must still
+  // replay when the caller repeats the original create request (which has a
+  // null job ID). Every non-create operation, and every two non-null IDs,
+  // remains strictly bound to the persisted identity.
+  if (existing.kind === "create" && existing.jobId !== null && incoming === null) return true;
+  return existing.jobId === incoming;
 }
 
 /**
@@ -304,7 +310,7 @@ function assertReplayIdentity(existing: Erc8183OperationRecord, input: ReserveEr
     existing.requestDigest !== requestDigest ||
     existing.chainId !== input.chainId ||
     existing.commerceContract.toLowerCase() !== commerceContract.toLowerCase() ||
-    !sameNullableJobId(existing.jobId, jobId) ||
+    !sameOperationJobId(existing, jobId) ||
     existing.kind !== input.kind ||
     existing.signerRole !== input.signerRole
   ) throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The idempotency key is bound to a different chain, contract, job, actor role, operation or material commerce input." });
