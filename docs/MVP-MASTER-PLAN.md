@@ -1,7 +1,7 @@
 # BNBEra MVP master plan
 
-Status: active scope, following the user's simplified MVP direction. Updated: 2026-09-05.
-Implementation baseline: `31d112fdcb3e6b99032f479a9274472e910cf445`, `codex/erc8004-pipeline`.
+Status: active scope, following the user's simplified MVP direction. Updated: 2026-09-06.
+Implementation baseline: `9af240b7840211ccfccf987d0eda10b2ad43cf3f`, GitHub `main`.
 This plan supersedes the archived plans. It defines the intended MVP; unchecked gates below are not implementation claims. The source-of-truth interpretation of the competition rubric is [HACKATHON-REQUIREMENTS.md](HACKATHON-REQUIREMENTS.md).
 
 ## Product and delivery order
@@ -68,11 +68,15 @@ Permissionless feedback is Sybil-prone. The UI may show its raw count and distri
 
 ## G2 — Hire, escrow, result, settlement
 
-Implement **one ERC-8183 rail** using reviewed official deployment/ABI/token/policy pins. Resolve the existing testnet policy-address conflict before writes. Reuse the existing commerce lifecycle, add PostgreSQL persistence and verified chain adapters. Do not add x402/B402 to this MVP.
+Implement **one ERC-8183 rail** using the pinned `@altananetwork/sdk@0.9.0` against the reviewed APEX deployment. The policy-address conflict is resolved at the source level: the APEX `scripts/addresses.ts` file at the standards-lock commit and the installed SDK agree on chain-97 Commerce `0xa206c0517b6371c6638cd9e4a42cc9f02a33b0de`, Router `0xd7d36d66d2f1b608a0f943f722d27e3744f66f25`, OptimisticPolicy `0xd6a4217588f6b1f5657a92a3e94e6422ad771cea` and payment token `0xc70B8741B8B07A6d61E54fd4B20f22Fa648E5565`. Source agreement permits read-only verification, not writes: release remains disabled until bytecode, proxy/linkage, policy allowlisting, token metadata and the authorized canary are verified. Do not add x402/B402 to this MVP.
+
+Use the Altana SDK directly in application code. `hireErc8183Agent` performs the atomic buyer batch; `submitErc8183Deliverable` canonicalizes and submits the provider result; `settleErc8183Job` approves or disputes; `buildClaimRefundCall` handles the expiry refund; and `getErc8183Job` supplies the chain read model. The Altana MCP exposes the same capabilities to AI chat hosts and is not an application dependency or a second integration path. Do not maintain a duplicate direct transaction writer.
+
+BNBEra's thin commerce boundary still owns application safety and durability. Persist the canonical job, full ERC-8004 identity/version, calls ID, transaction hashes, actor and expected parameters before/through each transition. Bind buyer operations to the authenticated requester, execution wallet and both persisted/on-chain client; bind submission to the provider. Persist the SDK manifest Keccak separately from any local SHA-256 evidence digest and verify the exact served manifest bytes against the on-chain deliverable. A successful generic receipt plus a current job status is insufficient: reconciliation must verify the operation-specific contract event/job and tolerate a valid later state. Unknown outcomes are reconciled before retry. Settlement is never automatic buyer approval; dispute does not require a prior approval. Refund is allowed only under the pinned protocol's expiry rules.
 
 ERC-8183 is selected because this milestone sells outcome-based work: escrowed budget, named client/provider/evaluator, explicit `Open -> Funded -> Submitted -> terminal` state, deliverable digest, rejection and expiry/refund. Those records map directly to completed-job evidence and an ERC-8004 verified review. The official Altana track also names ERC-8183 hiring as a bonus. x402 is an HTTP payment challenge/authorization mechanism optimized for paying to access a request or resource; by itself it does not provide the job, result acceptance, dispute or refund lifecycle required here. Keep it out of G2, then add at most one bounded paid capability after the core hire and Altana session flow if time permits; this targets the separate x402/B402 partner bonus without replacing ERC-8183.
 
-User flow: select agent -> enter task -> review quote/budget -> explicitly fund escrow -> agent performs work -> result/deliverable appears -> buyer verifies and approves -> settlement confirmed. Persist job ID, buyer/provider, full agent identity/version, quote, status, transaction hashes, output digest and result URL. Use IPFS only if the selected Studio/ERC-8183 deliverable path needs it; Greenfield comes later.
+User flow: select agent -> enter task -> review quote/budget -> explicitly fund escrow -> agent performs work -> result/deliverable appears -> buyer verifies its exact canonical bytes and approves or disputes -> settlement confirmed. Persist job ID, buyer/provider, full agent identity/version, quote, status, calls ID, transaction hashes, local evidence digest, on-chain deliverable Keccak and result URL. Use IPFS only if the selected Studio/ERC-8183 deliverable path needs it; Greenfield comes later.
 
 Handle cancel/expiry/refund or rejection according to the pinned deployment, and reconcile unknown outcomes before retrying. A quote, HTTP 200, funding acknowledgement or settlement without useful work is not successful task completion. The backend never auto-approves for the buyer. Reviews attach to confirmed completed jobs and preserve reviewer/job provenance.
 

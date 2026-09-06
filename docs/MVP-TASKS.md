@@ -1,6 +1,6 @@
 # MVP tasks and gates
 
-Active backlog for [MVP-MASTER-PLAN.md](MVP-MASTER-PLAN.md). Current GitHub `main` baseline: `8636ad6`; reconciled 2026-09-06. Two implementation agents maximum; coordinator reviews each handoff before dispatching its dependent replacement.
+Active backlog for [MVP-MASTER-PLAN.md](MVP-MASTER-PLAN.md). Current GitHub `main` baseline: `9af240b`; reconciled 2026-09-06. Two implementation agents maximum; coordinator reviews each handoff before dispatching its dependent replacement.
 
 ## Current delivery status
 
@@ -11,7 +11,7 @@ This table distinguishes code merged to GitHub `main`, retained-runtime evidence
 | T1 | Implemented; retained acceptance passed | Independent locked discovery and health cron, durable cursor/retry state, bounded work and freshness expiry are merged. | Reinstall from the final deployed checkout and keep operational evidence with T3. |
 | T2 | Core implemented; reputation remains | Real enrichment, multi-category evidence, persistent vectors, deterministic fallback and marketplace read models are merged. Retained processing produced a small truthful set of qualified listings; most discovered registrations did not pass service/capability/health gates. | Add provenance-safe ERC-8004 reputation ingestion/display, continue bounded supply growth, and keep production semantic mode disabled until its standards lock is released. |
 | T3 | In progress | Retained database pipeline, restart-safe cron behavior and local API path have been exercised. | Deploy a stable public HTTPS preview and verify browser -> API -> PostgreSQL plus restart, stale-health and fallback behavior at the deployed SHA. Create `MVP-STATUS.md`. |
-| T4 | Implemented on unmerged task branch; not accepted | ERC-8183 persistence, direct APEX chain operations, receipt checks and safeguards exist on `task/t4-paid-hire`. | Refresh/review against current `main`, replace duplicate transaction writes with calls to the already-pinned Altana ERC-8183 SDK, expose the application API and complete one authorized real testnet cycle with distinct actors. |
+| T4 | In progress on PR #18; not accepted | `task/t4-core-integration` adds the pinned Altana SDK boundary, operations and PostgreSQL repository, but review found migration-smoke, actor/digest, canonical persistence and receipt-event verification gaps. | Land the reviewed fixes, expose the application API and complete one authorized real testnet cycle with distinct actors. |
 | T5 | Open | Existing detail page has a read-only/disabled activation surface. | Complete the browser hire/result/approval/settlement journey, confirmed-job projection and verified-purchase review. |
 | T6 | Open | Altana boundaries and pinned candidate package exist; no live authority proof. | Implement browser-controlled grant/status/revoke and prove allowed, revoked, expired and over-cap behavior. |
 | T7 | Open | No-code Creator is planned; no end-to-end Creator exists. | Use the pinned BNB Agent Studio CLI/runtime integration for one audited template, then register, publish and hire the created agent. |
@@ -54,10 +54,17 @@ Use these unchecked items as the bounded handoff for the next implementation age
 
 ### T4 remaining
 
-- [ ] Refresh `task/t4-paid-hire` onto current `main` in an isolated checkout and preserve migration history.
-- [ ] Keep BNBEra's job repository, idempotency, reconciliation, receipt verification and marketplace identity binding.
-- [ ] Use the pinned Altana SDK's existing ERC-8183 buyer/seller functions for APEX transaction construction and submission; do not build an adapter that reimplements Altana-to-APEX behavior and do not keep two active transaction writers.
-- [ ] Automatically verify that SDK chain-97 addresses equal the reviewed standards-lock addresses before enabling the canary.
+- [x] Refresh the T4 implementation onto the common `9af240b` base in isolated checkout `task/t4-core-integration` (PR #18); preserve migration history.
+- [x] Confirm from the installed `@altananetwork/sdk@0.9.0` and official documentation that application code should use the SDK directly; the Altana MCP is a thin AI-host wrapper and is not required by BNBEra runtime code.
+- [x] Resolve the source-level chain-97 address conflict against the standards-lock APEX commit: Commerce `0xa206c0517b6371c6638cd9e4a42cc9f02a33b0de`, Router `0xd7d36d66d2f1b608a0f943f722d27e3744f66f25`, OptimisticPolicy `0xd6a4217588f6b1f5657a92a3e94e6422ad771cea`, token `0xc70B8741B8B07A6d61E54fd4B20f22Fa648E5565`.
+- [ ] Repair PR #18's disposable legacy migration smoke failure (`42P07`) without editing migration history or the retained database.
+- [ ] Record all four chain-97 addresses in the standards lock and fail closed unless SDK addresses match and read-only bytecode/proxy-linkage/policy-allowlist/token checks pass. Keep release disabled until the canary.
+- [ ] Use only SDK `hireErc8183Agent`, `submitErc8183Deliverable`, `settleErc8183Job`, `buildClaimRefundCall` and `getErc8183Job` for the APEX flow; remove/disable duplicate direct transaction writers.
+- [ ] Persist one canonical marketplace job/result through hire, reload, submit, approval/dispute, settlement/refund and reconciliation, bound to the full agent identity/version.
+- [ ] Bind authenticated requester and execution wallet to persisted and on-chain client for buyer actions, and to provider for submission. Include actor, chain, contracts, job and material parameters in idempotency identity.
+- [ ] Persist the SDK canonical-manifest Keccak before submission separately from the local SHA-256 evidence digest; serve and verify the exact SDK `manifestText` bytes.
+- [ ] Verify operation-specific receipt events against contract/job/actor/digest as applicable, while accepting legitimate later state advancement. Preserve calls IDs and transaction hashes after post-check failures; reconcile pending/unknown outcomes before retry.
+- [ ] Keep approval explicit, allow dispute without prior approval, and use the SDK refund call only after protocol expiry.
 - [ ] Add the minimal job API and one useful provider task/result contract required by T5.
 - [ ] Prepare distinct buyer/provider testnet actors, required gas and capped testnet U funding without exposing keys.
 - [ ] Complete one authorized `<= 0.01 U` cycle and the duplicate/unknown-outcome recovery check; keep release disabled until it passes.
@@ -146,14 +153,16 @@ Done: G1 accepted for the actual demonstrated scope and public preview kept runn
 
 ### T4 — ERC-8183 escrow backend
 
-Status: implementation exists on `task/t4-paid-hire`, but it is unmerged and has not passed a real paid canary.
+Status: implementation is under review on `task/t4-core-integration` (PR #18), but it is unmerged and has not passed a real paid canary.
 
 Owner: COMMERCE. After G1; read-only contract feasibility can begin during T3. Paths: commerce package, persistent job repository, API/chain adapters; standards lock owned by coordinator.
 
-- Resolve official deployment/ABI/token/policy pins. The pinned `@altananetwork/sdk@0.9.0` already exports ERC-8183 hire, read, submit, settle, refund and deliverable-verification functions and its chain-97 addresses match the reviewed T4 candidates. Use those SDK functions to operate the existing APEX deployment; BNBEra must not recreate the Altana-to-APEX integration.
+- Resolve official deployment/ABI/token/policy pins. The APEX source at pinned commit `b40b18011407ba13516661d3784bcb727a0c7794` and the installed `@altananetwork/sdk@0.9.0` agree on chain-97 Commerce `0xa206c0517b6371c6638cd9e4a42cc9f02a33b0de`, Router `0xd7d36d66d2F1B608A0F943f722D27e3744f66F25`, OptimisticPolicy `0xd6a4217588F6B1F5657a92A3e94E6422aD771cEA` and token `0xc70B8741B8B07A6d61E54fd4B20f22Fa648E5565`. Record and runtime-verify all four before enabling a development canary; source agreement is not bytecode/linkage/token or paid-cycle evidence.
+- Use the SDK's `hireErc8183Agent`, `submitErc8183Deliverable`, `settleErc8183Job`, `buildClaimRefundCall` and `getErc8183Job`. The MCP package exposes these to chat hosts but official guidance says application code should use the SDK directly; do not add MCP to the runtime path.
 - Keep only a thin application boundary around the SDK. Its purpose is to persist the marketplace job and idempotency key, bind it to the full ERC-8004 identity/version, reconcile receipts after timeout/reload, verify results and expose safe APIs for T5. It is not a second escrow or transaction implementation. Direct contract reads may independently verify SDK outcomes; duplicate direct transaction-writing paths stay disabled or are removed.
-- Wire quote, explicit buyer funding, provider work, deliverable submission, buyer approval and settlement into the existing lifecycle with PostgreSQL job/transaction persistence.
-- Validate actor/network/token/recipient/amount and confirmed receipts. Handle protocol-supported rejection/expiry/refund and unknown outcomes; prevent duplicate charge or auto-approval.
+- Wire quote, explicit buyer funding, provider work, deliverable submission, buyer approval/dispute and settlement into one canonical PostgreSQL job/transaction lifecycle that recovers after restart.
+- Bind authenticated buyer/provider identities to both persisted and on-chain actors. Keep the local SHA-256 evidence digest separate from the SDK canonical-manifest Keccak; persist the expected Keccak before submit and verify the exact returned `manifestText` bytes.
+- Validate actor/network/token/recipient/amount and operation-specific contract events. A generic successful receipt plus current job state is not enough, and reconciliation must accept a job that legitimately advanced after the original operation. Preserve calls IDs/transaction hashes after post-check failures. Handle expiry/refund and unknown outcomes without duplicate charge or auto-approval; dispute must not require a prior approval.
 - Return an input/output contract and a small real task fixture to T5. Use a service that produces a useful result; a funding acknowledgement is insufficient.
 
 Done: real authorized testnet/sandbox paid cycle with receipt/result evidence plus duplicate/unknown-outcome recovery. No simulated escrow success.
