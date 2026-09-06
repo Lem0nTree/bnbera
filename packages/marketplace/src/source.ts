@@ -2,16 +2,21 @@ import {
   advertisedServiceSchema,
   capabilityManifestSchema,
   erc8004IdentityKey,
+  normalizeEvmAddress,
   type CapabilityManifest
 } from "@bnbera/domain";
 import type {
   CapabilityObservation,
   IngestionRepository,
+  ReputationFeedback,
   ServiceProbeRecord
 } from "@bnbera/agent-ingestion";
 import {
   marketplaceHealthSchema,
   marketplaceMetricsSchema,
+  marketplaceReputationFeedbackSchema,
+  marketplaceReputationSchema,
+  marketplaceReputationViewSchema,
   marketplaceServiceEvidenceSchema,
   parseMarketplaceListing,
   parseMarketplaceMetadata,
@@ -20,6 +25,8 @@ import {
   type MarketplaceMetrics,
   type MarketplaceListingInput,
   type MarketplaceListingMetadata,
+  type MarketplaceReputation,
+  type MarketplaceReputationView,
   type MarketplaceServiceEvidence,
   type MarketplaceSourceSnapshot
 } from "./types.js";
@@ -91,6 +98,8 @@ export type IngestionMarketplaceSourceOptions = {
    * while explicitly marking the projection degraded. */
   readonly status?: Extract<MarketplaceSourceSnapshot["status"], "healthy" | "degraded">;
   readonly warning?: string | null;
+  /** Publicly reviewed reviewer/validator identities. Empty means fail closed. */
+  readonly recognizedReviewerAddresses?: readonly string[];
 };
 
 /**
@@ -105,6 +114,20 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
     private readonly metadataSource: MarketplaceMetadataSource,
     private readonly options: IngestionMarketplaceSourceOptions = {}
   ) {}
+
+  private recognizedReviewerAddresses(): ReadonlySet<string> {
+    const values = this.options.recognizedReviewerAddresses ?? [];
+    const normalized = new Set<string>();
+    for (const value of values) {
+      try {
+        normalized.add(normalizeEvmAddress(value));
+      } catch {
+        // An invalid allowlist entry must never make an unrecognized client
+        // appear trusted; ignore it and leave the recognized view unavailable.
+      }
+    }
+    return normalized;
+  }
 
   public async read(): Promise<MarketplaceSourceSnapshot> {
     const [identities, metadata] = await Promise.all([
@@ -135,11 +158,14 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
         continue;
       }
 
-      const [sources, services, capabilities, probes] = await Promise.all([
+      const [sources, services, capabilities, probes, feedback] = await Promise.all([
         this.repository.listSources(identityKey),
         this.repository.listServices(identityKey),
         this.repository.listCapabilities(identityKey),
-        this.repository.listProbeResults(identityKey)
+        this.repository.listProbeResults(identityKey),
+        typeof this.repository.listReputationFeedback === "function"
+          ? this.repository.listReputationFeedback(identityRecord.identity, { includeRevoked: true })
+          : Promise.resolve([])
       ]);
       const capability = latestCapability(capabilities);
       if (capability === null) {
@@ -158,7 +184,8 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
         const probeProjection = projectionFromProbes(probes, now);
         const metrics = marketplaceMetricsSchema.parse({
           ...(presentation.metrics ?? unknownMetrics()),
-          uptime: probeProjection.uptime
+          uptime: probeProjection.uptime,
+          reputation: reputationProjection(feedback, this.recognizedReviewerAddresses())
         });
         const listing = parseMarketplaceListing({
           ...presentation,
@@ -353,6 +380,11 @@ function unknownMetrics(): MarketplaceMetrics {
       source: null
     },
     reviews: { status: "unavailable", count: null, averageScore: null, source: null, observedAt: null },
+    reputation: {
+      rawPermissionless: { status: "unknown", count: null, feedback: [], source: null, observedAt: null, reason: "No canonical ERC-8004 feedback has been observed." },
+      recognizedReviewers: { status: "unavailable", count: null, feedback: [], source: null, observedAt: null, reason: "No recognized reviewer or validator allowlist is configured." },
+      verifiedPurchases: { status: "unavailable", count: null, feedback: [], source: null, observedAt: null, reason: "BNBEra verified-purchase reviews are enabled by G2." }
+    },
     completedJobs: { status: "unavailable", completedCount: null, source: null, observedAt: null },
     lastResult: { status: "unavailable", summary: null, reference: null, source: null, observedAt: null },
     currentData: {
@@ -361,6 +393,77 @@ function unknownMetrics(): MarketplaceMetrics {
       observedAt: null,
       source: null,
       items: []
+    }
+  });
+}
+
+function publicReputationFeedback(value: ReputationFeedback): ReturnType<typeof marketplaceReputationFeedbackSchema.parse> {
+  return marketplaceReputationFeedbackSchema.parse({
+    reputationRegistry: value.reputationRegistry,
+    reviewerAddress: value.clientAddress,
+    feedbackIndex: value.feedbackIndex,
+    value: value.value,
+    valueDecimals: value.valueDecimals,
+    indexedTag1: value.indexedTag1,
+    tag1: value.tag1,
+    tag2: value.tag2,
+    endpoint: value.endpoint,
+    feedbackUri: value.feedbackUri,
+    feedbackHash: value.feedbackHash.length === 0 ? null : value.feedbackHash,
+    feedbackTransactionHash: value.feedbackTransactionHash,
+    feedbackLogIndex: value.feedbackLogIndex,
+    feedbackBlockNumber: value.feedbackBlockNumber,
+    feedbackBlockHash: value.feedbackBlockHash,
+    feedbackObservedAt: value.feedbackObservedAt.toISOString(),
+    revoked: value.revoked,
+    revocationTransactionHash: value.revocationTransactionHash,
+    revocationLogIndex: value.revocationLogIndex,
+    revocationBlockNumber: value.revocationBlockNumber,
+    revocationBlockHash: value.revocationBlockHash,
+    revocationObservedAt: value.revocationObservedAt?.toISOString() ?? null
+  });
+}
+
+function reputationObservedAt(feedback: readonly ReputationFeedback[]): string | null {
+  const dates = feedback.flatMap((item) => [item.feedbackObservedAt, item.revocationObservedAt].filter((date): date is Date => date !== null));
+  const latest = dates.sort((left, right) => right.getTime() - left.getTime())[0];
+  return latest?.toISOString() ?? null;
+}
+
+function reputationView(
+  feedback: readonly ReputationFeedback[],
+  reasonWhenEmpty: string
+): MarketplaceReputationView {
+  const active = feedback.filter((item) => !item.revoked);
+  const hasEvidence = feedback.length > 0;
+  return marketplaceReputationViewSchema.parse({
+    status: hasEvidence ? "available" : "unknown",
+    count: hasEvidence ? active.length : null,
+    feedback: feedback.slice(-64).map(publicReputationFeedback),
+    source: hasEvidence ? "erc8004-reputation-registry" : null,
+    observedAt: reputationObservedAt(feedback),
+    reason: hasEvidence ? null : reasonWhenEmpty
+  });
+}
+
+function reputationProjection(
+  feedback: readonly ReputationFeedback[],
+  recognizedReviewers: ReadonlySet<string>
+): MarketplaceReputation {
+  const raw = reputationView(feedback, "No canonical ERC-8004 feedback has been observed.");
+  const recognized = recognizedReviewers.size === 0
+    ? marketplaceReputationViewSchema.parse({ status: "unavailable", count: null, feedback: [], source: null, observedAt: null, reason: "No recognized reviewer or validator allowlist is configured." })
+    : reputationView(feedback.filter((item) => recognizedReviewers.has(item.clientAddress)), "No canonical feedback from a recognized reviewer or validator has been observed.");
+  return marketplaceReputationSchema.parse({
+    rawPermissionless: raw,
+    recognizedReviewers: recognized,
+    verifiedPurchases: {
+      status: "unavailable",
+      count: null,
+      feedback: [],
+      source: null,
+      observedAt: null,
+      reason: "BNBEra verified-purchase reviews are enabled by G2."
     }
   });
 }

@@ -455,6 +455,11 @@ function unknownMetrics() {
       source: null
     },
     reviews: { status: "unavailable", count: null, averageScore: null, source: null, observedAt: null },
+    reputation: {
+      rawPermissionless: { status: "unknown", count: null, feedback: [], source: null, observedAt: null, reason: "No canonical ERC-8004 feedback has been observed." },
+      recognizedReviewers: { status: "unavailable", count: null, feedback: [], source: null, observedAt: null, reason: "No recognized reviewer or validator allowlist is configured." },
+      verifiedPurchases: { status: "unavailable", count: null, feedback: [], source: null, observedAt: null, reason: "BNBEra verified-purchase reviews are enabled by G2." }
+    },
     completedJobs: { status: "unavailable", completedCount: null, source: null, observedAt: null },
     lastResult: { status: "unavailable", summary: null, reference: null, source: null, observedAt: null },
     currentData: {
@@ -534,6 +539,7 @@ export function normalizePersistedMarketplaceMetrics(enrichmentValue: unknown) {
   const defaults = unknownMetrics();
   const rows = enrichmentRows(enrichmentValue).filter(usableEnrichment);
   let reviews = defaults.reviews;
+  const reputation = defaults.reputation;
   let completedJobs = defaults.completedJobs;
   let lastResult = defaults.lastResult;
   let currentData = defaults.currentData;
@@ -606,6 +612,7 @@ export function normalizePersistedMarketplaceMetrics(enrichmentValue: unknown) {
   return marketplaceMetricsSchema.parse({
     ...defaults,
     reviews,
+    reputation,
     completedJobs,
     lastResult,
     currentData
@@ -797,8 +804,13 @@ async function createLiveReadService(): Promise<MarketplaceReadService> {
   const pool = getPool(runtime.databaseUrl, runtime.databaseSsl);
   const repository: IngestionRepository = new PostgresIngestionRepository(pool, { ssl: runtime.databaseSsl });
   const metadataSource = new PostgresMarketplaceMetadataSource(pool);
+  const recognizedReviewerAddresses = (process.env.ERC8004_RECOGNIZED_REVIEWER_ADDRESSES ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
   const source = new IngestionMarketplaceSource(repository, metadataSource, {
     sourceName: "postgres-ingestion-read-model",
+    recognizedReviewerAddresses,
     ...(runtime.erc8004IngestionEnabled
       ? {}
       : {

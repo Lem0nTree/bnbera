@@ -21,6 +21,7 @@
     "ops:erc8004-category-backfill": "tsx scripts/erc8004-category-backfill.ts",
     "ops:marketplace-health": "tsx scripts/marketplace-health-job.ts",
     "ops:erc8004-registry-sync": "tsx scripts/erc8004-registry-sync.ts",
+    "ops:erc8004-reputation-sync": "tsx scripts/erc8004-reputation-sync.ts",
     "ops:standards-check": "tsx scripts/standards-check.ts",
     "lint": "pnpm --recursive --if-present run lint",
     "test": "pnpm --recursive --if-present run test",

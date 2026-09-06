@@ -36,6 +36,20 @@
       "when": 1788641461827,
       "tag": "0004_swift_silverclaw",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788699774879,
+      "tag": "0005_outgoing_ezekiel",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788704065446,
+      "tag": "0006_reputation_replacement_log",
+      "breakpoints": true
     }
   ]
 }

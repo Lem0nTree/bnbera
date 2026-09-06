@@ -6,11 +6,17 @@ import {
   normalizeEvmAddress,
   type AgentStateAxes,
   type ChainObservationState,
+  type Erc8004Identity,
   type OriginType
 } from "@bnbera/domain";
 import { ingestionError } from "./errors.js";
 import { normalizeRegistryCheckpoint } from "./adapters/registry.js";
 import { assertIdentityReadProvenance, identityRecordReadReference } from "./identity-provenance.js";
+import {
+  normalizeReputationCheckpoint,
+  normalizeReputationFeedbackEvent,
+  projectReputationFeedback
+} from "./reputation.js";
 import type {
   CapabilityObservation,
   ChainCheckpoint,
@@ -27,6 +33,10 @@ import type {
   IngestionFilter,
   IngestionRepository,
   ReconciliationRecord,
+  ReputationCheckpoint,
+  ReputationCheckpointWriteCondition,
+  ReputationFeedback,
+  ReputationFeedbackEvent,
   ScanDiscoveryCheckpoint,
   ScanDiscoveryCheckpointWriteCondition,
   ScanDiscoveryCheckpointRepository,
@@ -51,6 +61,36 @@ function checkpointKey(chainId: number, identityRegistry: string): string {
 
 function observationKey(transactionHash: string, logIndex: number): string {
   return `${transactionHash.toLowerCase()}:${logIndex}`;
+}
+
+function reputationEventKey(transactionHash: string, logIndex: number, blockHash: string): string {
+  return `${transactionHash.toLowerCase()}:${logIndex}:${blockHash.toLowerCase()}`;
+}
+
+function sameReputationEvent(left: ReputationFeedbackEvent, right: ReputationFeedbackEvent): boolean {
+  return left.identity.namespace === right.identity.namespace
+    && left.identity.chainId === right.identity.chainId
+    && left.identity.identityRegistry === right.identity.identityRegistry
+    && left.identity.agentId === right.identity.agentId
+    && left.reputationRegistry === right.reputationRegistry
+    && left.eventType === right.eventType
+    && left.clientAddress === right.clientAddress
+    && left.feedbackIndex === right.feedbackIndex
+    && left.value === right.value
+    && left.valueDecimals === right.valueDecimals
+    && left.indexedTag1 === right.indexedTag1
+    && left.tag1 === right.tag1
+    && left.tag2 === right.tag2
+    && left.endpoint === right.endpoint
+    && left.feedbackUri === right.feedbackUri
+    && left.feedbackHash === right.feedbackHash
+    && left.blockNumber === right.blockNumber
+    && left.blockHash === right.blockHash
+    && left.payloadDigest === right.payloadDigest;
+}
+
+function compareReputationEvents(left: ReputationFeedbackEvent, right: ReputationFeedbackEvent): number {
+  return left.blockNumber - right.blockNumber || left.logIndex - right.logIndex || left.transactionHash.localeCompare(right.transactionHash) || left.blockHash.localeCompare(right.blockHash);
 }
 
 function sourceKey(identityKey: IdentityKey, source: string, sourceReference: string): string {
@@ -81,6 +121,8 @@ type RepositorySnapshot = {
   readonly identities: Map<IdentityKey, IdentityRecord>;
   readonly sources: Map<string, DiscoverySourceRecord>;
   readonly observations: Map<string, ChainObservation>;
+  readonly reputationEvents: Map<string, ReputationFeedbackEvent>;
+  readonly reputationCheckpoints: Map<string, ReputationCheckpoint>;
   readonly checkpoints: Map<string, ChainCheckpoint>;
   readonly scanCheckpoints: Map<string, ScanDiscoveryCheckpoint>;
   readonly claims: Map<IdentityKey, ClaimRecord>;
@@ -101,6 +143,8 @@ export class InMemoryIngestionRepository implements IngestionRepository, ScanDis
   private identities = new Map<IdentityKey, IdentityRecord>();
   private sources = new Map<string, DiscoverySourceRecord>();
   private observations = new Map<string, ChainObservation>();
+  private reputationEvents = new Map<string, ReputationFeedbackEvent>();
+  private reputationCheckpoints = new Map<string, ReputationCheckpoint>();
   private checkpoints = new Map<string, ChainCheckpoint>();
   private scanCheckpoints = new Map<string, ScanDiscoveryCheckpoint>();
   private claims = new Map<IdentityKey, ClaimRecord>();
@@ -140,6 +184,8 @@ export class InMemoryIngestionRepository implements IngestionRepository, ScanDis
       identities: new Map(this.identities),
       sources: new Map(this.sources),
       observations: new Map(this.observations),
+      reputationEvents: new Map(this.reputationEvents),
+      reputationCheckpoints: new Map(this.reputationCheckpoints),
       checkpoints: new Map(this.checkpoints),
       scanCheckpoints: new Map(this.scanCheckpoints),
       claims: new Map(this.claims),
@@ -155,6 +201,8 @@ export class InMemoryIngestionRepository implements IngestionRepository, ScanDis
     this.identities = snapshot.identities;
     this.sources = snapshot.sources;
     this.observations = snapshot.observations;
+    this.reputationEvents = snapshot.reputationEvents;
+    this.reputationCheckpoints = snapshot.reputationCheckpoints;
     this.checkpoints = snapshot.checkpoints;
     this.scanCheckpoints = snapshot.scanCheckpoints;
     this.claims = snapshot.claims;
@@ -415,6 +463,114 @@ export class InMemoryIngestionRepository implements IngestionRepository, ScanDis
       affected.add(observation.identityKey);
     }
     return [...affected];
+  }
+
+  async appendReputationEvent(input: ReputationFeedbackEvent): Promise<ReputationFeedbackEvent> {
+    const normalized = normalizeReputationFeedbackEvent(input);
+    const identityKey = erc8004IdentityKey(normalized.identity);
+    if (!this.identities.has(identityKey)) {
+      throw ingestionError("REPUTATION_IDENTITY_NOT_FOUND", "The reputation event identity is not in the ingestion index.", "import_identity");
+    }
+    const key = reputationEventKey(normalized.transactionHash, normalized.logIndex, normalized.blockHash);
+    const existing = this.reputationEvents.get(key);
+    if (existing !== undefined) {
+      if (!sameReputationEvent(existing, normalized)) {
+        throw ingestionError("REPUTATION_DUPLICATE_CONFLICT", "A reputation log position was observed with conflicting data.", "reconcile_reputation", { existing, input: normalized });
+      }
+      return existing;
+    }
+    this.reputationEvents.set(key, normalized);
+    return normalized;
+  }
+
+  async markReputationCanonical(input: {
+    readonly chainId: number;
+    readonly identityRegistry: string;
+    readonly reputationRegistry: string;
+    readonly throughBlock: number;
+    readonly canonicalizedAt: Date;
+  }): Promise<readonly ReputationFeedbackEvent[]> {
+    const identityRegistry = normalizeEvmAddress(input.identityRegistry);
+    const reputationRegistry = normalizeEvmAddress(input.reputationRegistry);
+    const promoted: ReputationFeedbackEvent[] = [];
+    for (const [key, event] of this.reputationEvents) {
+      if (event.identity.chainId !== input.chainId || event.identity.identityRegistry !== identityRegistry || event.reputationRegistry !== reputationRegistry || event.blockNumber > input.throughBlock || event.confirmationState !== "provisional") continue;
+      const canonical = { ...event, confirmationState: "canonical" as const, canonicalizedAt: input.canonicalizedAt };
+      this.reputationEvents.set(key, canonical);
+      promoted.push(canonical);
+    }
+    return promoted.sort(compareReputationEvents);
+  }
+
+  async listReputationEvents(input: {
+    readonly chainId: number;
+    readonly identityRegistry: string;
+    readonly reputationRegistry: string;
+    readonly fromBlock?: number;
+    readonly toBlock?: number;
+    readonly state?: ChainObservationState;
+  }): Promise<readonly ReputationFeedbackEvent[]> {
+    const identityRegistry = normalizeEvmAddress(input.identityRegistry);
+    const reputationRegistry = normalizeEvmAddress(input.reputationRegistry);
+    return [...this.reputationEvents.values()]
+      .filter((event) => event.identity.chainId === input.chainId && event.identity.identityRegistry === identityRegistry && event.reputationRegistry === reputationRegistry)
+      .filter((event) => input.fromBlock === undefined || event.blockNumber >= input.fromBlock)
+      .filter((event) => input.toBlock === undefined || event.blockNumber <= input.toBlock)
+      .filter((event) => input.state === undefined || event.confirmationState === input.state)
+      .sort(compareReputationEvents);
+  }
+
+  async markReputationOrphaned(input: {
+    readonly chainId: number;
+    readonly identityRegistry: string;
+    readonly reputationRegistry: string;
+    readonly fromBlock: number;
+    readonly occurredAt: Date;
+  }): Promise<void> {
+    const identityRegistry = normalizeEvmAddress(input.identityRegistry);
+    const reputationRegistry = normalizeEvmAddress(input.reputationRegistry);
+    for (const [key, event] of this.reputationEvents) {
+      if (event.identity.chainId !== input.chainId || event.identity.identityRegistry !== identityRegistry || event.reputationRegistry !== reputationRegistry || event.blockNumber < input.fromBlock || event.confirmationState === "orphaned") continue;
+      this.reputationEvents.set(key, { ...event, confirmationState: "orphaned", orphanedAt: input.occurredAt });
+    }
+  }
+
+  async listReputationFeedback(identity: Erc8004Identity, options: { readonly includeRevoked?: boolean } = {}): Promise<readonly ReputationFeedback[]> {
+    const normalizedIdentity = normalizeErc8004Identity(identity);
+    const events = [...this.reputationEvents.values()].filter((event) => erc8004IdentityKey(event.identity) === erc8004IdentityKey(normalizedIdentity));
+    return projectReputationFeedback(events, normalizedIdentity, options);
+  }
+
+  async getReputationCheckpoint(chainId: number, identityRegistry: string, reputationRegistry: string): Promise<ReputationCheckpoint | null> {
+    return this.reputationCheckpoints.get(`${chainId}:${normalizeEvmAddress(identityRegistry)}:${normalizeEvmAddress(reputationRegistry)}`) ?? null;
+  }
+
+  async saveReputationCheckpoint(input: ReputationCheckpoint, condition: ReputationCheckpointWriteCondition): Promise<ReputationCheckpoint> {
+    const normalized = normalizeReputationCheckpoint(input);
+    const key = `${normalized.chainId}:${normalized.identityRegistry}:${normalized.reputationRegistry}`;
+    const existing = this.reputationCheckpoints.get(key);
+    if (existing === undefined) {
+      if (condition.expectedCursorVersion !== null || condition.expectedLastScannedBlockHash !== null || normalized.cursorVersion !== 1) {
+        throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "The reputation checkpoint create condition does not match an empty cursor.", "reconcile_reputation", { condition, input: normalized });
+      }
+      this.reputationCheckpoints.set(key, normalized);
+      return normalized;
+    }
+    if (condition.expectedCursorVersion !== existing.cursorVersion || !sameNullableHash(condition.expectedLastScannedBlockHash, existing.lastScannedBlockHash)) {
+      throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "The reputation checkpoint changed before this update completed.", "reconcile_reputation", { existing, input: normalized, condition });
+    }
+    if (normalized.indexerVersion === existing.indexerVersion && normalized.confirmationThreshold !== existing.confirmationThreshold) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "The reputation confirmation threshold is immutable for an indexer version.", "reconcile_reputation", { existing, input: normalized });
+    if (normalized.cursorVersion !== existing.cursorVersion + 1) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "The reputation checkpoint cursor must advance exactly once.", "reconcile_reputation", { existing, input: normalized });
+    if (normalized.lastScannedBlock > existing.lastScannedBlock && (condition.previousScannedBlock !== existing.lastScannedBlock || !sameNullableHash(condition.previousScannedBlockHash ?? null, existing.lastScannedBlockHash))) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "The reputation checkpoint predecessor does not match the persisted scan cursor.", "reconcile_reputation", { existing, input: normalized, condition });
+    const rewind = condition.verifiedRewind;
+    const lowersScanned = normalized.lastScannedBlock < existing.lastScannedBlock;
+    const lowersFinality = normalized.lastFinalizedBlock < existing.lastFinalizedBlock;
+    if (lowersScanned || lowersFinality) {
+      if (rewind === undefined || rewind.previousScannedBlock !== existing.lastScannedBlock || !sameNullableHash(rewind.previousScannedBlockHash, existing.lastScannedBlockHash) || rewind.commonAncestorBlock !== normalized.lastScannedBlock || !sameNullableHash(rewind.commonAncestorHash, normalized.lastScannedBlockHash)) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "The reputation checkpoint would move backwards without an explicit verified rewind.", "reconcile_reputation", { existing, input: normalized, condition });
+    } else if (normalized.lastScannedBlock === existing.lastScannedBlock && !sameNullableHash(normalized.lastScannedBlockHash, existing.lastScannedBlockHash)) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "A reputation checkpoint block cannot change its hash without a verified rewind.", "reconcile_reputation", { existing, input: normalized });
+    if (normalized.lastFinalizedBlock === existing.lastFinalizedBlock && !sameNullableHash(normalized.lastFinalizedBlockHash, existing.lastFinalizedBlockHash) && rewind === undefined) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "A finalized reputation block cannot change its hash without a verified rewind.", "reconcile_reputation", { existing, input: normalized });
+    this.reputationCheckpoints.set(key, normalized);
+    return normalized;
   }
 
   async getCheckpoint(chainId: number, identityRegistry: string): Promise<ChainCheckpoint | null> {

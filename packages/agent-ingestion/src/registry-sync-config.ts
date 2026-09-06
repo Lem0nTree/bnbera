@@ -11,6 +11,10 @@ export type Erc8004RegistrySyncConfig = {
   readonly confirmationThreshold: number;
 };
 
+export type Erc8004ReputationSyncConfig = Erc8004RegistrySyncConfig & {
+  readonly reputationRegistry: string;
+};
+
 function record(value: unknown): Readonly<Record<string, unknown>> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Readonly<Record<string, unknown>>
@@ -105,4 +109,35 @@ export function resolveErc8004RegistrySyncConfig(
     finalityBlockTag: null,
     confirmationThreshold: thresholdValue
   };
+}
+
+/** Resolve the separate Reputation Registry stream from the same standards lock. */
+export function resolveErc8004ReputationSyncConfig(
+  lock: unknown,
+  chainId: number,
+  expectedAbiSha256: string
+): Erc8004ReputationSyncConfig {
+  const root = record(lock);
+  const networks = record(root?.networks);
+  const network = record(networks?.[String(chainId)]);
+  const erc8004 = record(network?.erc8004);
+  const abiHashes = record(erc8004?.abiHashes);
+  const identityAbiSha256 = abiHashes?.identityRegistry;
+  if (typeof identityAbiSha256 !== "string" || !/^[0-9a-f]{64}$/iu.test(identityAbiSha256)) {
+    throw ingestionError("REGISTRY_SYNC_CONFIG_INVALID", "The standards-locked identity registry ABI hash is unresolved.", "repair_registry_lock");
+  }
+  const base = resolveErc8004RegistrySyncConfig(lock, chainId, identityAbiSha256);
+  const reputationValue = erc8004?.reputationRegistry;
+  let reputationRegistry: string;
+  try {
+    if (typeof reputationValue !== "string") throw new Error("missing");
+    reputationRegistry = normalizeEvmAddress(reputationValue);
+  } catch {
+    throw ingestionError("REGISTRY_SYNC_CONFIG_INVALID", "The standards-locked reputation registry address is invalid.", "repair_registry_lock");
+  }
+  const abiSha256 = abiHashes?.reputationRegistry;
+  if (typeof abiSha256 !== "string" || !/^[0-9a-f]{64}$/iu.test(abiSha256) || abiSha256.toLowerCase() !== expectedAbiSha256.toLowerCase()) {
+    throw ingestionError("REGISTRY_SYNC_CONFIG_INVALID", "The standards-locked reputation registry ABI hash is unresolved or mismatched.", "repair_registry_lock");
+  }
+  return { ...base, reputationRegistry, abiSha256: abiSha256.toLowerCase() };
 }

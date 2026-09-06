@@ -384,6 +384,87 @@ export const erc8004ChainObservations = pgTable(
   ]
 );
 
+/**
+ * Append-only ERC-8004 Reputation Registry events. Identity observations use
+ * a different event shape and checkpoint stream, so reputation events keep
+ * their complete registry identity/provenance here. A read projection derives
+ * active feedback by applying canonical NewFeedback and FeedbackRevoked rows;
+ * revoked history is never deleted.
+ */
+export const erc8004ReputationEvents = pgTable(
+  "erc8004_reputation_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    identityId: uuid("identity_id")
+      .notNull()
+      .references(() => erc8004Identities.id, { onDelete: "cascade" }),
+    namespace: varchar("namespace", { length: 128 }).notNull(),
+    chainId: integer("chain_id").notNull(),
+    identityRegistry: varchar("identity_registry", { length: 42 }).notNull(),
+    reputationRegistry: varchar("reputation_registry", { length: 42 }).notNull(),
+    agentId: text("agent_id").notNull(),
+    eventType: varchar("event_type", { length: 32 }).notNull(),
+    clientAddress: varchar("client_address", { length: 42 }).notNull(),
+    feedbackIndex: text("feedback_index").notNull(),
+    value: text("value"),
+    valueDecimals: integer("value_decimals"),
+    indexedTag1: text("indexed_tag1"),
+    tag1: text("tag1"),
+    tag2: text("tag2"),
+    endpoint: text("endpoint"),
+    feedbackUri: text("feedback_uri"),
+    feedbackHash: varchar("feedback_hash", { length: 66 }),
+    transactionHash: varchar("transaction_hash", { length: 66 }).notNull(),
+    logIndex: integer("log_index").notNull(),
+    blockNumber: bigint("block_number", { mode: "number" }).notNull(),
+    blockHash: varchar("block_hash", { length: 66 }).notNull(),
+    confirmationState: chainObservationStateEnum("confirmation_state").notNull(),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull(),
+    canonicalizedAt: timestamp("canonicalized_at", { withTimezone: true }),
+    orphanedAt: timestamp("orphaned_at", { withTimezone: true }),
+    payloadDigest: varchar("payload_digest", { length: 64 }).notNull(),
+    createdAt: now()
+  },
+  (table) => [
+    uniqueIndex("erc8004_reputation_event_log_unique").on(table.transactionHash, table.logIndex, table.blockHash),
+    index("erc8004_reputation_event_identity_state_idx").on(table.identityId, table.confirmationState, table.blockNumber),
+    index("erc8004_reputation_event_feedback_key_idx").on(table.identityId, table.clientAddress, table.feedbackIndex),
+    check("erc8004_reputation_event_type_check", sql`${table.eventType} in ('NewFeedback', 'FeedbackRevoked')`),
+    check("erc8004_reputation_event_identity_registry_check", sql`${table.identityRegistry} ~ '^0x[0-9A-Fa-f]{40}$' AND ${table.reputationRegistry} ~ '^0x[0-9A-Fa-f]{40}$'`),
+    check("erc8004_reputation_event_agent_id_check", sql`${table.agentId} ~ '^(0|[1-9][0-9]*)$'`),
+    check("erc8004_reputation_event_feedback_index_check", sql`${table.feedbackIndex} ~ '^(0|[1-9][0-9]*)$'`),
+    check("erc8004_reputation_event_value_check", sql`${table.value} IS NULL OR ${table.value} ~ '^-?(0|[1-9][0-9]*)$'`),
+    check("erc8004_reputation_event_value_decimals_check", sql`${table.valueDecimals} IS NULL OR ${table.valueDecimals} between 0 and 255`),
+    check("erc8004_reputation_event_payload_digest_check", sql`${table.payloadDigest} ~ '^[0-9A-Fa-f]{64}$'`)
+  ]
+);
+
+/** Independent finalized/reorg-safe cursor for Reputation Registry events. */
+export const erc8004ReputationCheckpoints = pgTable(
+  "erc8004_reputation_checkpoints",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    chainId: integer("chain_id").notNull(),
+    identityRegistry: varchar("identity_registry", { length: 42 }).notNull(),
+    reputationRegistry: varchar("reputation_registry", { length: 42 }).notNull(),
+    indexerVersion: varchar("indexer_version", { length: 64 }).notNull().default("reputation-indexer-v1"),
+    lastScannedBlock: bigint("last_scanned_block", { mode: "number" }).notNull(),
+    lastScannedBlockHash: varchar("last_scanned_block_hash", { length: 66 }).notNull(),
+    lastFinalizedBlock: bigint("last_finalized_block", { mode: "number" }).notNull(),
+    lastFinalizedBlockHash: varchar("last_finalized_block_hash", { length: 66 }).notNull(),
+    confirmationThreshold: integer("confirmation_threshold").notNull(),
+    cursorVersion: integer("cursor_version").notNull().default(1),
+    lastReconciliationAt: timestamp("last_reconciliation_at", { withTimezone: true }),
+    updatedAt: now()
+  },
+  (table) => [
+    uniqueIndex("erc8004_reputation_checkpoint_unique").on(table.chainId, table.identityRegistry, table.reputationRegistry),
+    index("erc8004_reputation_checkpoint_updated_idx").on(table.updatedAt),
+    check("erc8004_reputation_checkpoint_registry_check", sql`${table.identityRegistry} ~ '^0x[0-9A-Fa-f]{40}$' AND ${table.reputationRegistry} ~ '^0x[0-9A-Fa-f]{40}$'`),
+    check("erc8004_reputation_checkpoint_block_check", sql`${table.lastFinalizedBlock} <= ${table.lastScannedBlock} AND ${table.confirmationThreshold} >= 0 AND ${table.cursorVersion} > 0`)
+  ]
+);
+
 export const chainIngestionCheckpoints = pgTable(
   "chain_ingestion_checkpoints",
   {
@@ -1433,6 +1514,8 @@ export const schemaTables = {
   agentServiceProbeResults,
   agentCapabilityObservations,
   erc8004ChainObservations,
+  erc8004ReputationEvents,
+  erc8004ReputationCheckpoints,
   chainIngestionCheckpoints,
   scanDiscoveryCheckpoints,
   marketplaceDiscoveryCursors,
