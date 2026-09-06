@@ -857,14 +857,26 @@ export class PostgresIngestionRepository implements IngestionRepository, ScanDis
     return result.rows.map(mapReputationEvent);
   }
 
-  async markReputationOrphaned(input: { readonly chainId: number; readonly identityRegistry: string; readonly reputationRegistry: string; readonly fromBlock: number; readonly occurredAt: Date }): Promise<void> {
-    await this.query(
-      `UPDATE erc8004_reputation_events r SET confirmation_state='orphaned', orphaned_at=$1
-         FROM erc8004_identities i
-        WHERE r.identity_id=i.id AND i.chain_id=$2 AND i.identity_registry=$3
-          AND r.reputation_registry=$4 AND r.block_number >= $5 AND r.confirmation_state <> 'orphaned'`,
+  async markReputationOrphaned(input: { readonly chainId: number; readonly identityRegistry: string; readonly reputationRegistry: string; readonly fromBlock: number; readonly occurredAt: Date }): Promise<readonly IdentityKey[]> {
+    const result = await this.query<{ namespace: string; chain_id: number; identity_registry: string; agent_id: string }>(
+      `WITH orphaned AS (
+         UPDATE erc8004_reputation_events r SET confirmation_state='orphaned', orphaned_at=$1
+            FROM erc8004_identities i
+           WHERE r.identity_id=i.id AND i.chain_id=$2 AND i.identity_registry=$3
+             AND r.reputation_registry=$4 AND r.block_number >= $5 AND r.confirmation_state <> 'orphaned'
+           RETURNING r.identity_id
+       )
+       SELECT i.namespace, i.chain_id, i.identity_registry, i.agent_id
+         FROM orphaned o JOIN erc8004_identities i ON i.id=o.identity_id`,
       [input.occurredAt, input.chainId, normalizeEvmAddress(input.identityRegistry), normalizeEvmAddress(input.reputationRegistry), input.fromBlock]
     );
+    return [...new Set(result.rows.map((row) => erc8004IdentityKey({
+      namespace: row.namespace,
+      chainId: row.chain_id,
+      identityRegistry: row.identity_registry,
+      agentId: row.agent_id
+    })))]
+      .sort();
   }
 
   async listReputationFeedback(identity: import("@bnbera/domain").Erc8004Identity, options: { readonly includeRevoked?: boolean } = {}): Promise<readonly ReputationFeedback[]> {

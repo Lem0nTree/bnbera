@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { encodeAbiParameters, keccak256, toHex } from "viem";
+import { erc8004IdentityKey } from "@bnbera/domain";
 import {
   InMemoryIngestionRepository,
   ReputationIngestionService,
@@ -15,6 +16,10 @@ const reputationRegistry = "0x2222222222222222222222222222222222222222";
 const reviewer = "0x3333333333333333333333333333333333333333";
 const block10 = `0x${"aa".repeat(32)}`;
 const block11 = `0x${"bb".repeat(32)}`;
+
+function blockHash(blockNumber: number): string {
+  return `0x${blockNumber.toString(16).padStart(64, "0")}`;
+}
 
 function word(value: bigint): string {
   return value.toString(16).padStart(64, "0");
@@ -123,5 +128,93 @@ describe("ERC-8004 Reputation Registry", () => {
     const valid = event({ eventType: "NewFeedback", transactionHash: `0x${"03".repeat(32)}`, logIndex: 0, blockNumber: 10, blockHash: block10 });
     const conflicting = { ...valid, payloadDigest: "0".repeat(64) };
     await expect(new ReputationIngestionService(repository).sync(reader([conflicting], 10), { chainId: 97, identityRegistry: identity.identityRegistry, reputationRegistry, startBlock: 0, confirmationThreshold: 0 })).rejects.toMatchObject({ code: "REPUTATION_DUPLICATE_CONFLICT" });
+  });
+
+  it("advances a historical start one bounded window at a time", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const ranges: Array<readonly [number, number]> = [];
+    const boundedReader: ReputationChainReader = {
+      async getLatestBlock() { return 25; },
+      async getTrustedBlockHash(blockNumber) { return blockHash(blockNumber); },
+      async getReputationEvents(query) {
+        ranges.push([query.fromBlock, query.toBlock]);
+        return [];
+      },
+      async findCommonAncestor() { return 0; }
+    };
+    const service = new ReputationIngestionService(repository);
+    const options = {
+      chainId: 97,
+      identityRegistry: identity.identityRegistry,
+      reputationRegistry,
+      startBlock: 0,
+      confirmationThreshold: 0,
+      maxBlockRange: 10
+    } as const;
+
+    const first = await service.sync(boundedReader, options);
+    const second = await service.sync(boundedReader, options);
+    const third = await service.sync(boundedReader, options);
+
+    expect(ranges).toEqual([[0, 9], [10, 19], [20, 25]]);
+    expect(first.checkpoint?.lastScannedBlock).toBe(9);
+    expect(second.checkpoint?.lastScannedBlock).toBe(19);
+    expect(third.checkpoint?.lastScannedBlock).toBe(25);
+  });
+
+  it("reports identities whose canonical feedback was orphaned during reorg replay", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const transactionHash = `0x${"05".repeat(32)}`;
+    const original = event({ eventType: "NewFeedback", transactionHash, logIndex: 0, blockNumber: 10, blockHash: block10 });
+    const replacement = event({ eventType: "NewFeedback", transactionHash, logIndex: 0, blockNumber: 10, blockHash: `0x${"cc".repeat(32)}` });
+    let replay = false;
+    const reorgReader: ReputationChainReader = {
+      async getLatestBlock() { return replay ? 11 : 10; },
+      async getTrustedBlockHash(blockNumber) {
+        if (blockNumber === 10) return replay ? replacement.blockHash : original.blockHash;
+        return blockHash(blockNumber);
+      },
+      async getReputationEvents() { return replay ? [replacement] : [original]; },
+      async findCommonAncestor() { return 9; }
+    };
+    const service = new ReputationIngestionService(repository);
+    const options = {
+      chainId: 97,
+      identityRegistry: identity.identityRegistry,
+      reputationRegistry,
+      startBlock: 0,
+      confirmationThreshold: 2,
+      maxBlockRange: 100
+    } as const;
+
+    await service.sync(reorgReader, options);
+    replay = true;
+    const result = await service.sync(reorgReader, options);
+
+    expect(result.reorgRewound).toBe(true);
+    expect(result.affectedIdentityKeys).toContain(erc8004IdentityKey(identity));
+    expect(await repository.listReputationEvents({
+      chainId: 97,
+      identityRegistry: identity.identityRegistry,
+      reputationRegistry,
+      state: "orphaned"
+    })).toMatchObject([{ transactionHash, blockHash: original.blockHash }]);
+  });
+
+  it("rejects a non-EVM reputation identity before checkpointing it", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const nonEvm = normalizeReputationEventWithDigest({
+      ...event({ eventType: "NewFeedback", transactionHash: `0x${"06".repeat(32)}`, logIndex: 0, blockNumber: 10, blockHash: block10 }),
+      identity: { ...identity, namespace: "other-chain" }
+    });
+    const resultReader = reader([nonEvm], 10);
+    await expect(new ReputationIngestionService(repository).sync(resultReader, {
+      chainId: 97,
+      identityRegistry: identity.identityRegistry,
+      reputationRegistry,
+      startBlock: 0,
+      confirmationThreshold: 0
+    })).rejects.toMatchObject({ code: "IDENTITY_CONFLICT" });
+    expect(await repository.getReputationCheckpoint(97, identity.identityRegistry, reputationRegistry)).toBeNull();
   });
 });
