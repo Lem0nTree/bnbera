@@ -22,6 +22,7 @@ Owner: WEB/DATA. Parallel with T1; disjoint files agreed by coordinator. Paths: 
 
 - Use current cards/detail/compare UI. Display category, public capabilities/services, current-data source/time, last check, observed uptime/window, real reviews, completed jobs and last result/price.
 - Normalize available ERC-8004/vendor feedback and external job statistics with provenance. Keep missing data explicit; BNBEra's own jobs/reviews arrive in T5. No invented ratings, revenue, task results or zero-price assumptions.
+- Ingest non-revoked ERC-8004 Reputation Registry feedback with reviewer, feedback index, fixed-point value/decimals, tags, URI/hash, block/time and revocation provenance. Keep raw permissionless feedback separate from recognized-reviewer/validator summaries; never expose a Sybil-prone unfiltered average as a trusted rating.
 - Distinguish card and invocation URL and advertised versus tested skills. Fix the latest adapter's broad-schema shortcut without requiring every agent to invent a BNBEra-specific manifest. A usable service check is separate from an Agent Card GET.
 - Enforce the same embedding lock at API/worker/backfill entry points. Verify current-version vectors and hard filters before semantic ranking; deterministic fallback must work.
 - Build a bounded four-category real-supply inventory. Check labels on representative agents and ambiguous cases; show truthful empty categories until qualified supply exists. Reuse external supply before proposing a new reference agent.
@@ -58,6 +59,7 @@ Owner: WEB. Parallel with T4 after their API contract is agreed; real acceptance
 
 - Add task form -> quote/price confirmation -> wallet funding -> progress -> result -> buyer approval -> confirmed settlement. Preserve state on reload.
 - Count only confirmed completed marketplace jobs; link the receipt/result. Allow one authenticated buyer review per completed job. Keep external reputation separate.
+- Bind each verified-purchase review to the completed ERC-8183 job, exact ERC-8004 identity/version and result digest. Project three labeled reputation views on cards/detail: raw ERC-8004 feedback, recognized reviewer/validator evidence, and BNBEra verified-job reviews; revoked feedback leaves active aggregates without erasing history.
 - Verify one agent first, then complete the same useful activation/result journey across the four category candidates from T2. An unavailable category remains an explicit submission blocker, not a fake listing.
 - Record G2 evidence and ensure the public preview stays usable.
 
