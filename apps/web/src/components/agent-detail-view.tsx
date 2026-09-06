@@ -9,6 +9,11 @@ function SchemaPreview({ value }: { readonly value: Record<string, unknown> }) {
   return <pre>{JSON.stringify(value, null, 2)}</pre>;
 }
 
+function reputationViewSummary(view: MarketplaceAgentReadModel["metrics"]["reputation"]["rawPermissionless"]): string {
+  if (view.count !== null) return `${view.count} active${view.source === null ? "" : ` · ${view.source}`}`;
+  return view.reason ?? "Unavailable";
+}
+
 export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentReadModel }) {
   const identityRead = agent.dataProvenance.identityRead;
   const identityConsistency = identityRead.readConsistency === null
@@ -156,7 +161,9 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
           <div className="detail-section__body">
             <div className="detail-kv"><span>Observed probe samples</span><span>{agent.metrics.uptime.status === "observed" ? `${agent.metrics.uptime.successfulChecks}/${agent.metrics.uptime.attemptedChecks} successful · ${Math.round((agent.metrics.uptime.successRatio ?? 0) * 100)}%` : "Not observed"}</span></div>
             <div className="detail-kv"><span>Observed span / coverage</span><span>{agent.metrics.uptime.windowSeconds === null ? "Not observed" : `${agent.metrics.uptime.windowSeconds === 0 ? "0 sec" : `${Math.round(agent.metrics.uptime.windowSeconds / 60)} min`} observed · ${Math.round((agent.metrics.uptime.coverageRatio ?? 0) * 100)}% of ${Math.round((agent.metrics.uptime.monitoringWindowSeconds ?? 0) / 60)} min horizon · ${formatObservedAt(agent.metrics.uptime.observedFrom)} to ${formatObservedAt(agent.metrics.uptime.observedTo)}`}</span></div>
-            <div className="detail-kv"><span>Reviews / reputation</span><span>{agent.metrics.reviews.count === null ? "Unavailable" : `${agent.metrics.reviews.count}${agent.metrics.reviews.averageScore === null ? "" : ` · score ${agent.metrics.reviews.averageScore}`}`} · {agent.metrics.reviews.source ?? "No source"}</span></div>
+            <div className="detail-kv"><span>Raw ERC-8004 feedback</span><span>{reputationViewSummary(agent.metrics.reputation.rawPermissionless)}</span></div>
+            <div className="detail-kv"><span>Recognized reviewer / validator</span><span>{reputationViewSummary(agent.metrics.reputation.recognizedReviewers)}</span></div>
+            <div className="detail-kv"><span>BNBEra verified-purchase reviews</span><span>{reputationViewSummary(agent.metrics.reputation.verifiedPurchases)}</span></div>
             <div className="detail-kv"><span>Completed jobs</span><span>{agent.metrics.completedJobs.completedCount === null ? "Unavailable" : agent.metrics.completedJobs.completedCount} · {agent.metrics.completedJobs.source ?? "No source"}</span></div>
             <div className="detail-kv"><span>Last result</span><span>{agent.metrics.lastResult.summary ?? "Unavailable"}{agent.metrics.lastResult.reference === null ? "" : ` · ${agent.metrics.lastResult.reference}`}</span></div>
             <p className="muted-label">Metrics are observed from persisted probes/enrichment only; no live qualification or fabricated zero values are implied.</p>

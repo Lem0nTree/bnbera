@@ -190,7 +190,8 @@ describe("combined Wave 1 database schema", () => {
       "0001_wave1_combined.sql",
       "0002_wave1_legacy_repair.sql",
       "0003_scan_discovery_checkpoint.sql",
-      "0004_swift_silverclaw.sql"
+      "0004_swift_silverclaw.sql",
+      "0005_outgoing_ezekiel.sql"
     ]);
     expect(wave1Files).toEqual(["0001_wave1_combined.sql"]);
 
@@ -207,5 +208,9 @@ describe("combined Wave 1 database schema", () => {
     expect(marketplaceScheduling).toContain('CREATE TABLE "marketplace_discovery_cursors"');
     expect(marketplaceScheduling).toContain('CREATE TABLE "marketplace_ingestion_retries"');
     expect(marketplaceScheduling).not.toContain('DROP CONSTRAINT "agents_current_version_id_agent_versions_id_fk"');
+    const reputation = readFileSync(join(migrationsPath, "0005_outgoing_ezekiel.sql"), "utf8");
+    expect(reputation).toContain('CREATE TABLE "erc8004_reputation_events"');
+    expect(reputation).toContain('CREATE TABLE "erc8004_reputation_checkpoints"');
+    expect(reputation).not.toContain('DROP CONSTRAINT "agents_current_version_id_agent_versions_id_fk"');
   });
 });

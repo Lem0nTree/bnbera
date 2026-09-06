@@ -26,6 +26,7 @@ const atomicAmountSchema = z
   .regex(/^(0|[1-9][0-9]*)$/u, "Atomic amounts must be unsigned decimal strings");
 const protocolNameSchema = z.string().trim().min(1).max(128);
 const selectorSchema = z.string().regex(/^0x[0-9a-fA-F]{8}$/u, "Expected a 4-byte function selector");
+const signedDecimalSchema = z.string().regex(/^-?(0|[1-9][0-9]*)$/u, "Expected a signed decimal string");
 
 export const marketplaceSourceStatuses = ["healthy", "degraded"] as const;
 export type MarketplaceSourceStatus = (typeof marketplaceSourceStatuses)[number];
@@ -183,6 +184,63 @@ export const marketplaceReviewMetricsSchema = z.object({
 
 export type MarketplaceReviewMetrics = z.infer<typeof marketplaceReviewMetricsSchema>;
 
+/** One public ERC-8004 feedback item, retaining its chain provenance. */
+export const marketplaceReputationFeedbackSchema = z.object({
+  reputationRegistry: evmAddressSchema,
+  reviewerAddress: evmAddressSchema,
+  feedbackIndex: atomicAmountSchema,
+  value: signedDecimalSchema,
+  valueDecimals: z.number().int().min(0).max(255),
+  indexedTag1: z.string().max(512),
+  tag1: z.string().max(512),
+  tag2: z.string().max(512),
+  endpoint: z.string().max(2_048),
+  feedbackUri: z.string().max(2_048),
+  feedbackHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/u).nullable(),
+  feedbackTransactionHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/u),
+  feedbackLogIndex: z.number().int().nonnegative(),
+  feedbackBlockNumber: z.number().int().nonnegative(),
+  feedbackBlockHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/u),
+  feedbackObservedAt: isoDateSchema,
+  revoked: z.boolean(),
+  revocationTransactionHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/u).nullable(),
+  revocationLogIndex: z.number().int().nonnegative().nullable(),
+  revocationBlockNumber: z.number().int().nonnegative().nullable(),
+  revocationBlockHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/u).nullable(),
+  revocationObservedAt: isoDateSchema.nullable()
+}).superRefine((value, context) => {
+  if (value.revoked && (value.revocationTransactionHash === null || value.revocationLogIndex === null || value.revocationBlockNumber === null || value.revocationBlockHash === null || value.revocationObservedAt === null)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["revoked"], message: "Revoked feedback must retain revocation provenance" });
+  }
+  if (!value.revoked && (value.revocationTransactionHash !== null || value.revocationLogIndex !== null || value.revocationBlockNumber !== null || value.revocationBlockHash !== null || value.revocationObservedAt !== null)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["revocationTransactionHash"], message: "Active feedback cannot carry revocation provenance" });
+  }
+});
+
+export type MarketplaceReputationFeedback = z.infer<typeof marketplaceReputationFeedbackSchema>;
+
+export const marketplaceReputationViewSchema = z.object({
+  status: marketplaceMetricStatusSchema,
+  count: z.number().int().nonnegative().nullable(),
+  feedback: z.array(marketplaceReputationFeedbackSchema).max(64),
+  source: z.string().trim().min(1).max(160).nullable(),
+  observedAt: isoDateSchema.nullable(),
+  reason: z.string().trim().min(1).max(500).nullable()
+}).superRefine((value, context) => {
+  if (value.status === "available" && value.count === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["count"], message: "Available reputation evidence must include a count" });
+  if (value.status === "unavailable" && value.reason === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["reason"], message: "Unavailable reputation views must explain why" });
+});
+
+export type MarketplaceReputationView = z.infer<typeof marketplaceReputationViewSchema>;
+
+export const marketplaceReputationSchema = z.object({
+  rawPermissionless: marketplaceReputationViewSchema,
+  recognizedReviewers: marketplaceReputationViewSchema,
+  verifiedPurchases: marketplaceReputationViewSchema
+});
+
+export type MarketplaceReputation = z.infer<typeof marketplaceReputationSchema>;
+
 export const marketplaceJobMetricsSchema = z.object({
   status: marketplaceMetricStatusSchema,
   completedCount: z.number().int().nonnegative().nullable(),
@@ -219,6 +277,7 @@ export type MarketplaceCurrentData = z.infer<typeof marketplaceCurrentDataSchema
 export const marketplaceMetricsSchema = z.object({
   uptime: marketplaceUptimeSchema,
   reviews: marketplaceReviewMetricsSchema,
+  reputation: marketplaceReputationSchema,
   completedJobs: marketplaceJobMetricsSchema,
   lastResult: marketplaceLastResultSchema,
   currentData: marketplaceCurrentDataSchema
@@ -266,6 +325,11 @@ function unknownMarketplaceMetrics(): MarketplaceMetrics {
       source: null
     },
     reviews: { status: "unavailable", count: null, averageScore: null, source: null, observedAt: null },
+    reputation: {
+      rawPermissionless: { status: "unknown", count: null, feedback: [], source: null, observedAt: null, reason: "No canonical ERC-8004 feedback has been observed." },
+      recognizedReviewers: { status: "unavailable", count: null, feedback: [], source: null, observedAt: null, reason: "No recognized reviewer or validator allowlist is configured." },
+      verifiedPurchases: { status: "unavailable", count: null, feedback: [], source: null, observedAt: null, reason: "BNBEra verified-purchase reviews are enabled by G2." }
+    },
     completedJobs: { status: "unavailable", completedCount: null, source: null, observedAt: null },
     lastResult: { status: "unavailable", summary: null, reference: null, source: null, observedAt: null },
     currentData: {

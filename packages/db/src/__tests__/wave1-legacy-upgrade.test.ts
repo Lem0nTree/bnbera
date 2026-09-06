@@ -75,8 +75,8 @@ describe("Wave 1 legacy upgrade path", () => {
     expect(legacySmoke).toContain('DROP TABLE IF EXISTS "marketplace_ingestion_retries" CASCADE;');
     expect(legacySmoke).toContain('DROP TABLE IF EXISTS "marketplace_discovery_cursors" CASCADE;');
     expect(legacySmoke).toContain('DROP TABLE IF EXISTS "scan_discovery_checkpoints" CASCADE;');
-    expect(legacySmoke).toContain("LIMIT 3");
-    expect(legacySmoke).toContain('count === "5"');
+    expect(legacySmoke).toContain("LIMIT 4");
+    expect(legacySmoke).toContain('count === "6"');
     expect(legacySmoke).toContain("MARKETPLACE_RETRY_MIGRATION_MISSING");
   });
 });

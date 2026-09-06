@@ -4,6 +4,7 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createDb } from "../packages/db/src/client.ts";
 import { loadRuntimeConfig, validateSemanticEmbeddingLock, type RuntimeConfig } from "../packages/config/src/runtime.ts";
+import { agentCategories, type AgentCategory } from "../packages/domain/src/index.ts";
 
 const MAX_DB_CONNECTION_TIMEOUT_MS = 5_000;
 const MAX_DB_QUERY_TIMEOUT_MS = 10_000;
@@ -44,7 +45,23 @@ export type MarketplaceDataDiagnosis = Readonly<{
   reasonCodes: readonly string[];
 }>;
 
+export type MarketplaceCategorySupply = Readonly<{
+  category: AgentCategory;
+  agentCount: number;
+  publishedCount: number;
+  verifiedCount: number;
+  liveCount: number;
+}>;
+
 type RawCountRow = Readonly<Record<string, number | string>>;
+
+type RawCategorySupplyRow = Readonly<{
+  category: string;
+  agent_count: number | string;
+  published_count: number | string;
+  verified_count: number | string;
+  live_count: number | string;
+}>;
 
 type MigrationRow = Readonly<{
   id: number | string;
@@ -65,6 +82,8 @@ type DatabaseInspection = Readonly<{
   pgvectorVersion: string | null;
   migrations: MigrationInspection;
   counts: MarketplaceReadinessCounts;
+  /** Bounded category supply stages; this does not change eligibility gates. */
+  categorySupply: readonly MarketplaceCategorySupply[];
   diagnosis: MarketplaceDataDiagnosis;
 }>;
 
@@ -181,6 +200,26 @@ function parseCounts(row: RawCountRow | undefined): MarketplaceReadinessCounts {
     enrichmentObservations: countValue(row.enrichment_observation_count),
     canonicalChainObservations: countValue(row.canonical_chain_observation_count)
   };
+}
+
+function parseCategorySupply(rows: readonly RawCategorySupplyRow[]): readonly MarketplaceCategorySupply[] {
+  const byCategory = new Map<string, RawCategorySupplyRow>();
+  for (const row of rows) {
+    if (!agentCategories.includes(row.category as AgentCategory) || byCategory.has(row.category)) {
+      throw new ReadinessError("DATABASE_CATEGORY_SUPPLY_INVALID");
+    }
+    byCategory.set(row.category, row);
+  }
+  return agentCategories.map((category) => {
+    const row = byCategory.get(category);
+    return {
+      category,
+      agentCount: countValue(row?.agent_count ?? 0),
+      publishedCount: countValue(row?.published_count ?? 0),
+      verifiedCount: countValue(row?.verified_count ?? 0),
+      liveCount: countValue(row?.live_count ?? 0)
+    };
+  });
 }
 
 export function diagnoseMarketplaceData(
@@ -304,6 +343,24 @@ async function inspectDatabase(config: RuntimeConfig): Promise<DatabaseInspectio
       throw new ReadinessError("DATABASE_COUNTS_UNAVAILABLE");
     }
     const counts = parseCounts(rawCounts);
+    let rawCategorySupply: readonly RawCategorySupplyRow[];
+    try {
+      rawCategorySupply = (
+        await pool.query<RawCategorySupplyRow>(`
+          SELECT category,
+                 count(*)::int AS agent_count,
+                 count(*) FILTER (WHERE listing_status = 'published')::int AS published_count,
+                 count(*) FILTER (WHERE verification_status = 'verified')::int AS verified_count,
+                 count(*) FILTER (WHERE runtime_status = 'live')::int AS live_count
+            FROM agents
+           GROUP BY category
+           ORDER BY category
+        `)
+      ).rows;
+    } catch {
+      throw new ReadinessError("DATABASE_CATEGORY_SUPPLY_UNAVAILABLE");
+    }
+    const categorySupply = parseCategorySupply(rawCategorySupply);
     const diagnosis = diagnoseMarketplaceData(counts, {
       ingestionEnabled: config.erc8004IngestionEnabled,
       scanDiscoveryEnabled: config.erc8004ScanDiscoveryEnabled,
@@ -315,6 +372,7 @@ async function inspectDatabase(config: RuntimeConfig): Promise<DatabaseInspectio
       pgvectorVersion: identity.pgvector_version,
       migrations: journalInspection,
       counts,
+      categorySupply,
       diagnosis
     };
   } finally {

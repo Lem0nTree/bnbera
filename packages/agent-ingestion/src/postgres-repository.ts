@@ -11,6 +11,11 @@ import {
 } from "@bnbera/domain";
 import { ingestionError } from "./errors.js";
 import { assertIdentityReadProvenance, identityRecordReadReference } from "./identity-provenance.js";
+import {
+  normalizeReputationCheckpoint,
+  normalizeReputationFeedbackEvent,
+  projectReputationFeedback
+} from "./reputation.js";
 import { normalizeRegistryCheckpoint } from "./adapters/registry.js";
 import {
   claimRecordFromRow,
@@ -37,6 +42,10 @@ import type {
   IngestionFilter,
   IngestionRepository,
   ReconciliationRecord,
+  ReputationCheckpoint,
+  ReputationCheckpointWriteCondition,
+  ReputationFeedback,
+  ReputationFeedbackEvent,
   ScanDiscoveryCheckpoint,
   ScanDiscoveryCheckpointWriteCondition,
   ScanDiscoveryCheckpointRepository,
@@ -114,6 +123,50 @@ type ObservationDbRow = {
 type CheckpointDbRow = {
   chain_id: number;
   identity_registry: string;
+  indexer_version: string;
+  last_scanned_block: number;
+  last_scanned_block_hash: string;
+  last_finalized_block: number;
+  last_finalized_block_hash: string;
+  confirmation_threshold: number;
+  cursor_version: number;
+  last_reconciliation_at: Date | null;
+};
+
+type ReputationEventDbRow = {
+  id: string;
+  identity_id: string;
+  namespace: string;
+  chain_id: number;
+  identity_registry: string;
+  reputation_registry: string;
+  agent_id: string;
+  event_type: ReputationFeedbackEvent["eventType"];
+  client_address: string;
+  feedback_index: string;
+  value: string | null;
+  value_decimals: number | null;
+  indexed_tag1: string | null;
+  tag1: string | null;
+  tag2: string | null;
+  endpoint: string | null;
+  feedback_uri: string | null;
+  feedback_hash: string | null;
+  transaction_hash: string;
+  log_index: number;
+  block_number: number;
+  block_hash: string;
+  confirmation_state: ChainObservationState;
+  observed_at: Date;
+  canonicalized_at: Date | null;
+  orphaned_at: Date | null;
+  payload_digest: string;
+};
+
+type ReputationCheckpointDbRow = {
+  chain_id: number;
+  identity_registry: string;
+  reputation_registry: string;
   indexer_version: string;
   last_scanned_block: number;
   last_scanned_block_hash: string;
@@ -268,6 +321,54 @@ function mapCheckpoint(row: CheckpointDbRow): ChainCheckpoint {
   });
 }
 
+function mapReputationEvent(row: ReputationEventDbRow): ReputationFeedbackEvent {
+  return normalizeReputationFeedbackEvent({
+    identity: {
+      namespace: row.namespace,
+      chainId: row.chain_id,
+      identityRegistry: row.identity_registry,
+      agentId: row.agent_id
+    },
+    reputationRegistry: row.reputation_registry,
+    eventType: row.event_type,
+    clientAddress: row.client_address,
+    feedbackIndex: row.feedback_index,
+    value: row.value,
+    valueDecimals: row.value_decimals,
+    indexedTag1: row.indexed_tag1,
+    tag1: row.tag1,
+    tag2: row.tag2,
+    endpoint: row.endpoint,
+    feedbackUri: row.feedback_uri,
+    feedbackHash: row.feedback_hash,
+    transactionHash: row.transaction_hash,
+    logIndex: safeInteger(row.log_index, "reputation log index"),
+    blockNumber: safeInteger(row.block_number, "reputation block number"),
+    blockHash: row.block_hash,
+    confirmationState: row.confirmation_state,
+    observedAt: row.observed_at,
+    canonicalizedAt: row.canonicalized_at,
+    orphanedAt: row.orphaned_at,
+    payloadDigest: row.payload_digest
+  });
+}
+
+function mapReputationCheckpoint(row: ReputationCheckpointDbRow): ReputationCheckpoint {
+  return normalizeReputationCheckpoint({
+    chainId: row.chain_id,
+    identityRegistry: row.identity_registry,
+    reputationRegistry: row.reputation_registry,
+    indexerVersion: row.indexer_version,
+    lastScannedBlock: safeInteger(row.last_scanned_block, "reputation last scanned block"),
+    lastScannedBlockHash: row.last_scanned_block_hash,
+    lastFinalizedBlock: safeInteger(row.last_finalized_block, "reputation last finalized block"),
+    lastFinalizedBlockHash: row.last_finalized_block_hash,
+    confirmationThreshold: row.confirmation_threshold,
+    cursorVersion: row.cursor_version,
+    lastReconciliationAt: row.last_reconciliation_at
+  });
+}
+
 function mapScanDiscoveryCheckpoint(row: ScanDiscoveryCheckpointDbRow): ScanDiscoveryCheckpoint {
   return {
     scope: row.scope,
@@ -307,6 +408,28 @@ function sameHash(left: string | null, right: string | null): boolean {
   return left === null || right === null ? left === right : left.toLowerCase() === right.toLowerCase();
 }
 
+function sameReputationEvent(left: ReputationFeedbackEvent, right: ReputationFeedbackEvent): boolean {
+  return left.identity.namespace === right.identity.namespace
+    && left.identity.chainId === right.identity.chainId
+    && left.identity.identityRegistry === right.identity.identityRegistry
+    && left.identity.agentId === right.identity.agentId
+    && left.reputationRegistry === right.reputationRegistry
+    && left.eventType === right.eventType
+    && left.clientAddress === right.clientAddress
+    && left.feedbackIndex === right.feedbackIndex
+    && left.value === right.value
+    && left.valueDecimals === right.valueDecimals
+    && left.indexedTag1 === right.indexedTag1
+    && left.tag1 === right.tag1
+    && left.tag2 === right.tag2
+    && left.endpoint === right.endpoint
+    && left.feedbackUri === right.feedbackUri
+    && left.feedbackHash === right.feedbackHash
+    && left.blockNumber === right.blockNumber
+    && left.blockHash === right.blockHash
+    && left.payloadDigest === right.payloadDigest;
+}
+
 function observationSelect(): string {
   return `
     SELECT o.id, o.identity_id, i.namespace, i.chain_id, i.identity_registry, i.agent_id,
@@ -316,6 +439,18 @@ function observationSelect(): string {
            o.first_observed_at, o.canonicalized_at, o.orphaned_at, o.payload_digest
       FROM erc8004_chain_observations o
       JOIN erc8004_identities i ON i.id = o.identity_id`;
+}
+
+function reputationEventSelect(): string {
+  return `
+    SELECT r.id, r.identity_id, i.namespace, i.chain_id, i.identity_registry,
+           r.reputation_registry, i.agent_id, r.event_type, r.client_address,
+           r.feedback_index, r.value, r.value_decimals, r.indexed_tag1, r.tag1,
+           r.tag2, r.endpoint, r.feedback_uri, r.feedback_hash, r.transaction_hash,
+           r.log_index, r.block_number, r.block_hash, r.confirmation_state,
+           r.observed_at, r.canonicalized_at, r.orphaned_at, r.payload_digest
+      FROM erc8004_reputation_events r
+      JOIN erc8004_identities i ON i.id = r.identity_id`;
 }
 
 function identitySelect(): string {
@@ -663,6 +798,136 @@ export class PostgresIngestionRepository implements IngestionRepository, ScanDis
     );
     return [...new Set(result.rows.map((row) => erc8004IdentityKey({ namespace: row.namespace, chainId: row.chain_id, identityRegistry: row.identity_registry, agentId: row.agent_id })))]
       .sort();
+  }
+
+  async appendReputationEvent(input: ReputationFeedbackEvent): Promise<ReputationFeedbackEvent> {
+    const normalized = normalizeReputationFeedbackEvent(input);
+    const identity = await this.findIdentity(normalized.identity);
+    if (identity === null) throw ingestionError("REPUTATION_IDENTITY_NOT_FOUND", "The reputation event identity is not in the ingestion index.", "import_identity");
+    await this.query(
+      `INSERT INTO erc8004_reputation_events
+       (id, identity_id, namespace, chain_id, identity_registry, reputation_registry, agent_id,
+        event_type, client_address, feedback_index, value, value_decimals, indexed_tag1, tag1,
+        tag2, endpoint, feedback_uri, feedback_hash, transaction_hash, log_index, block_number,
+        block_hash, confirmation_state, observed_at, canonicalized_at, orphaned_at, payload_digest)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+       ON CONFLICT (transaction_hash, log_index) DO NOTHING`,
+      [randomUUID(), identity.id, normalized.identity.namespace, normalized.identity.chainId, normalized.identity.identityRegistry, normalized.reputationRegistry, normalized.identity.agentId,
+        normalized.eventType, normalized.clientAddress, normalized.feedbackIndex, normalized.value, normalized.valueDecimals, normalized.indexedTag1, normalized.tag1,
+        normalized.tag2, normalized.endpoint, normalized.feedbackUri, normalized.feedbackHash, normalized.transactionHash, normalized.logIndex, normalized.blockNumber,
+        normalized.blockHash, normalized.confirmationState, normalized.observedAt, normalized.canonicalizedAt, normalized.orphanedAt, normalized.payloadDigest]
+    );
+    const stored = await this.query<ReputationEventDbRow>(`${reputationEventSelect()} WHERE r.transaction_hash=$1 AND r.log_index=$2`, [normalized.transactionHash, normalized.logIndex]);
+    const row = stored.rows[0];
+    if (row === undefined) throw ingestionError("REPOSITORY_FAILURE", "The reputation event was not readable after persistence.", "retry_repository");
+    const existing = mapReputationEvent(row);
+    if (!sameReputationEvent(existing, normalized)) throw ingestionError("REPUTATION_DUPLICATE_CONFLICT", "A reputation log position was observed with conflicting data.", "reconcile_reputation", { existing, input: normalized });
+    return existing;
+  }
+
+  async markReputationCanonical(input: { readonly chainId: number; readonly identityRegistry: string; readonly reputationRegistry: string; readonly throughBlock: number; readonly canonicalizedAt: Date }): Promise<readonly ReputationFeedbackEvent[]> {
+    const result = await this.query<ReputationEventDbRow>(
+      `WITH promoted AS (
+         UPDATE erc8004_reputation_events r SET confirmation_state='canonical', canonicalized_at=$1
+          FROM erc8004_identities i
+         WHERE r.identity_id=i.id AND i.chain_id=$2 AND i.identity_registry=$3
+           AND r.reputation_registry=$4 AND r.block_number <= $5 AND r.confirmation_state='provisional'
+         RETURNING r.*
+       )
+       SELECT p.id, p.identity_id, i.namespace, i.chain_id, i.identity_registry,
+              p.reputation_registry, i.agent_id, p.event_type, p.client_address,
+              p.feedback_index, p.value, p.value_decimals, p.indexed_tag1, p.tag1,
+              p.tag2, p.endpoint, p.feedback_uri, p.feedback_hash, p.transaction_hash,
+              p.log_index, p.block_number, p.block_hash, p.confirmation_state,
+              p.observed_at, p.canonicalized_at, p.orphaned_at, p.payload_digest
+         FROM promoted p JOIN erc8004_identities i ON i.id=p.identity_id
+        ORDER BY p.block_number, p.log_index`,
+      [input.canonicalizedAt, input.chainId, normalizeEvmAddress(input.identityRegistry), normalizeEvmAddress(input.reputationRegistry), input.throughBlock]
+    );
+    return result.rows.map(mapReputationEvent);
+  }
+
+  async listReputationEvents(input: { readonly chainId: number; readonly identityRegistry: string; readonly reputationRegistry: string; readonly fromBlock?: number; readonly toBlock?: number; readonly state?: ChainObservationState }): Promise<readonly ReputationFeedbackEvent[]> {
+    const values: unknown[] = [input.chainId, normalizeEvmAddress(input.identityRegistry), normalizeEvmAddress(input.reputationRegistry)];
+    const clauses = ["i.chain_id=$1", "i.identity_registry=$2", "r.reputation_registry=$3"];
+    if (input.fromBlock !== undefined) { values.push(input.fromBlock); clauses.push(`r.block_number >= $${values.length}`); }
+    if (input.toBlock !== undefined) { values.push(input.toBlock); clauses.push(`r.block_number <= $${values.length}`); }
+    if (input.state !== undefined) { values.push(input.state); clauses.push(`r.confirmation_state = $${values.length}`); }
+    const result = await this.query<ReputationEventDbRow>(`${reputationEventSelect()} WHERE ${clauses.join(" AND ")} ORDER BY r.block_number, r.log_index`, values);
+    return result.rows.map(mapReputationEvent);
+  }
+
+  async markReputationOrphaned(input: { readonly chainId: number; readonly identityRegistry: string; readonly reputationRegistry: string; readonly fromBlock: number; readonly occurredAt: Date }): Promise<void> {
+    await this.query(
+      `UPDATE erc8004_reputation_events r SET confirmation_state='orphaned', orphaned_at=$1
+         FROM erc8004_identities i
+        WHERE r.identity_id=i.id AND i.chain_id=$2 AND i.identity_registry=$3
+          AND r.reputation_registry=$4 AND r.block_number >= $5 AND r.confirmation_state <> 'orphaned'`,
+      [input.occurredAt, input.chainId, normalizeEvmAddress(input.identityRegistry), normalizeEvmAddress(input.reputationRegistry), input.fromBlock]
+    );
+  }
+
+  async listReputationFeedback(identity: import("@bnbera/domain").Erc8004Identity, options: { readonly includeRevoked?: boolean } = {}): Promise<readonly ReputationFeedback[]> {
+    const normalizedIdentity = normalizeErc8004Identity(identity);
+    // The registry is a separate configured axis; callers of this method query
+    // all rows for the identity below, then project canonical feedback. Keeping
+    // the identity tuple in the WHERE clause prevents cross-agent joins.
+    const all = await this.query<ReputationEventDbRow>(`${reputationEventSelect()} WHERE i.namespace=$1 AND i.chain_id=$2 AND i.identity_registry=$3 AND i.agent_id=$4 ORDER BY r.block_number, r.log_index`, [normalizedIdentity.namespace, normalizedIdentity.chainId, normalizedIdentity.identityRegistry, normalizedIdentity.agentId]);
+    return projectReputationFeedback(all.rows.map(mapReputationEvent), normalizedIdentity, options);
+  }
+
+  async getReputationCheckpoint(chainId: number, identityRegistry: string, reputationRegistry: string): Promise<ReputationCheckpoint | null> {
+    const result = await this.query<ReputationCheckpointDbRow>(
+      `SELECT chain_id, identity_registry, reputation_registry, indexer_version,
+              last_scanned_block, last_scanned_block_hash, last_finalized_block,
+              last_finalized_block_hash, confirmation_threshold, cursor_version,
+              last_reconciliation_at
+         FROM erc8004_reputation_checkpoints
+        WHERE chain_id=$1 AND identity_registry=$2 AND reputation_registry=$3`,
+      [chainId, normalizeEvmAddress(identityRegistry), normalizeEvmAddress(reputationRegistry)]
+    );
+    return result.rows[0] === undefined ? null : mapReputationCheckpoint(result.rows[0]);
+  }
+
+  async saveReputationCheckpoint(input: ReputationCheckpoint, condition: ReputationCheckpointWriteCondition): Promise<ReputationCheckpoint> {
+    const normalized = normalizeReputationCheckpoint(input);
+    const existing = await this.getReputationCheckpoint(normalized.chainId, normalized.identityRegistry, normalized.reputationRegistry);
+    if (existing === null) {
+      if (condition.expectedCursorVersion !== null || condition.expectedLastScannedBlockHash !== null || normalized.cursorVersion !== 1) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "The reputation checkpoint create condition does not match an empty cursor.", "reconcile_reputation", { condition, input: normalized });
+      const inserted = await this.query(
+        `INSERT INTO erc8004_reputation_checkpoints
+          (id, chain_id, identity_registry, reputation_registry, indexer_version,
+           last_scanned_block, last_scanned_block_hash, last_finalized_block,
+           last_finalized_block_hash, confirmation_threshold, cursor_version,
+           last_reconciliation_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         ON CONFLICT (chain_id, identity_registry, reputation_registry) DO NOTHING`,
+        [randomUUID(), normalized.chainId, normalized.identityRegistry, normalized.reputationRegistry, normalized.indexerVersion, normalized.lastScannedBlock, normalized.lastScannedBlockHash, normalized.lastFinalizedBlock, normalized.lastFinalizedBlockHash, normalized.confirmationThreshold, normalized.cursorVersion, normalized.lastReconciliationAt]
+      );
+      if (inserted.rowCount !== 1) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "The reputation checkpoint changed before this update completed.", "reconcile_reputation", { condition, input: normalized, concurrentCreate: true });
+      return normalized;
+    }
+    if (condition.expectedCursorVersion !== existing.cursorVersion || !sameHash(condition.expectedLastScannedBlockHash, existing.lastScannedBlockHash)) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "The reputation checkpoint changed before this update completed.", "reconcile_reputation", { existing, input: normalized, condition });
+    if (normalized.indexerVersion === existing.indexerVersion && normalized.confirmationThreshold !== existing.confirmationThreshold) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "The reputation confirmation threshold is immutable for an indexer version.", "reconcile_reputation", { existing, input: normalized });
+    if (normalized.cursorVersion !== existing.cursorVersion + 1) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "The reputation checkpoint cursor must advance exactly once.", "reconcile_reputation", { existing, input: normalized });
+    if (normalized.lastScannedBlock > existing.lastScannedBlock && (condition.previousScannedBlock !== existing.lastScannedBlock || !sameHash(condition.previousScannedBlockHash ?? null, existing.lastScannedBlockHash))) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "The reputation checkpoint predecessor does not match the persisted scan cursor.", "reconcile_reputation", { existing, input: normalized, condition });
+    const rewind = condition.verifiedRewind;
+    const lowersScanned = normalized.lastScannedBlock < existing.lastScannedBlock;
+    const lowersFinality = normalized.lastFinalizedBlock < existing.lastFinalizedBlock;
+    if (lowersScanned || lowersFinality) {
+      if (rewind === undefined || rewind.previousScannedBlock !== existing.lastScannedBlock || !sameHash(rewind.previousScannedBlockHash, existing.lastScannedBlockHash) || rewind.commonAncestorBlock !== normalized.lastScannedBlock || !sameHash(rewind.commonAncestorHash, normalized.lastScannedBlockHash)) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "The reputation checkpoint would move backwards without an explicit verified rewind.", "reconcile_reputation", { existing, input: normalized, condition });
+    } else if (normalized.lastScannedBlock === existing.lastScannedBlock && !sameHash(normalized.lastScannedBlockHash, existing.lastScannedBlockHash)) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "A reputation checkpoint block cannot change its hash without a verified rewind.", "reconcile_reputation", { existing, input: normalized });
+    if (normalized.lastFinalizedBlock === existing.lastFinalizedBlock && !sameHash(normalized.lastFinalizedBlockHash, existing.lastFinalizedBlockHash) && rewind === undefined) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "A finalized reputation block cannot change its hash without a verified rewind.", "reconcile_reputation", { existing, input: normalized });
+    const result = await this.query(
+      `UPDATE erc8004_reputation_checkpoints SET indexer_version=$1, last_scanned_block=$2,
+        last_scanned_block_hash=$3, last_finalized_block=$4, last_finalized_block_hash=$5,
+        confirmation_threshold=$6, cursor_version=$7, last_reconciliation_at=$8, "updatedAt"=now()
+       WHERE chain_id=$9 AND identity_registry=$10 AND reputation_registry=$11
+         AND cursor_version=$12 AND last_scanned_block_hash=$13`,
+      [normalized.indexerVersion, normalized.lastScannedBlock, normalized.lastScannedBlockHash, normalized.lastFinalizedBlock, normalized.lastFinalizedBlockHash, normalized.confirmationThreshold, normalized.cursorVersion, normalized.lastReconciliationAt, normalized.chainId, normalized.identityRegistry, normalized.reputationRegistry, existing.cursorVersion, existing.lastScannedBlockHash]
+    );
+    if (result.rowCount !== 1) throw ingestionError("REPUTATION_CHECKPOINT_CONFLICT", "The reputation checkpoint changed before this update completed.", "reconcile_reputation", { existing, input: normalized });
+    return normalized;
   }
 
   async getCheckpoint(chainId: number, identityRegistry: string): Promise<ChainCheckpoint | null> {

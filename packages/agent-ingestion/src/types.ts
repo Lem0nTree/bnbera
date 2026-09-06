@@ -279,6 +279,133 @@ export type ReconciliationRecord = {
   readonly errorCode: string | null;
 };
 
+/** ERC-8004 Reputation Registry events are kept separate from identity
+ * observations. Reputation has its own registry, event lifecycle, and
+ * revocation semantics; joining it to an identity never changes the six
+ * marketplace state axes. */
+export type ReputationEventType = "NewFeedback" | "FeedbackRevoked";
+
+export type ReputationFeedbackEvent = {
+  readonly identity: Erc8004Identity;
+  readonly reputationRegistry: string;
+  readonly eventType: ReputationEventType;
+  readonly clientAddress: string;
+  /** uint64 is represented as a decimal string to avoid JavaScript precision loss. */
+  readonly feedbackIndex: string;
+  /** int128 fixed-point value, preserved exactly as a signed decimal string. */
+  readonly value: string | null;
+  readonly valueDecimals: number | null;
+  readonly indexedTag1: string | null;
+  readonly tag1: string | null;
+  readonly tag2: string | null;
+  readonly endpoint: string | null;
+  readonly feedbackUri: string | null;
+  readonly feedbackHash: string | null;
+  readonly transactionHash: string;
+  readonly logIndex: number;
+  readonly blockNumber: number;
+  readonly blockHash: string;
+  readonly confirmationState: ChainObservationState;
+  /** Wall-clock observation time for the indexed chain event. */
+  readonly observedAt: Date;
+  readonly canonicalizedAt: Date | null;
+  readonly orphanedAt: Date | null;
+  /** Digest of the normalized event fields; raw provider payloads are not stored. */
+  readonly payloadDigest: string;
+};
+
+export type ReputationFeedback = {
+  readonly identity: Erc8004Identity;
+  readonly reputationRegistry: string;
+  readonly clientAddress: string;
+  readonly feedbackIndex: string;
+  readonly value: string;
+  readonly valueDecimals: number;
+  readonly indexedTag1: string;
+  readonly tag1: string;
+  readonly tag2: string;
+  readonly endpoint: string;
+  readonly feedbackUri: string;
+  readonly feedbackHash: string;
+  readonly feedbackTransactionHash: string;
+  readonly feedbackLogIndex: number;
+  readonly feedbackBlockNumber: number;
+  readonly feedbackBlockHash: string;
+  readonly feedbackObservedAt: Date;
+  readonly revoked: boolean;
+  readonly revocationTransactionHash: string | null;
+  readonly revocationLogIndex: number | null;
+  readonly revocationBlockNumber: number | null;
+  readonly revocationBlockHash: string | null;
+  readonly revocationObservedAt: Date | null;
+};
+
+export type ReputationCheckpoint = {
+  readonly chainId: number;
+  readonly identityRegistry: string;
+  readonly reputationRegistry: string;
+  readonly indexerVersion: string;
+  readonly lastScannedBlock: number;
+  readonly lastScannedBlockHash: string;
+  readonly lastFinalizedBlock: number;
+  readonly lastFinalizedBlockHash: string;
+  readonly confirmationThreshold: number;
+  readonly cursorVersion: number;
+  readonly lastReconciliationAt: Date | null;
+};
+
+export type ReputationCheckpointWriteCondition = {
+  readonly expectedCursorVersion: number | null;
+  readonly expectedLastScannedBlockHash: string | null;
+  readonly previousScannedBlock?: number | null;
+  readonly previousScannedBlockHash?: string | null;
+  readonly verifiedRewind?: {
+    readonly previousScannedBlock: number;
+    readonly previousScannedBlockHash: string;
+    readonly commonAncestorBlock: number;
+    readonly commonAncestorHash: string;
+  };
+};
+
+export interface ReputationRepository {
+  appendReputationEvent(input: ReputationFeedbackEvent): Promise<ReputationFeedbackEvent>;
+  markReputationCanonical(input: {
+    readonly chainId: number;
+    readonly identityRegistry: string;
+    readonly reputationRegistry: string;
+    readonly throughBlock: number;
+    readonly canonicalizedAt: Date;
+  }): Promise<readonly ReputationFeedbackEvent[]>;
+  listReputationEvents(input: {
+    readonly chainId: number;
+    readonly identityRegistry: string;
+    readonly reputationRegistry: string;
+    readonly fromBlock?: number;
+    readonly toBlock?: number;
+    readonly state?: ChainObservationState;
+  }): Promise<readonly ReputationFeedbackEvent[]>;
+  markReputationOrphaned(input: {
+    readonly chainId: number;
+    readonly identityRegistry: string;
+    readonly reputationRegistry: string;
+    readonly fromBlock: number;
+    readonly occurredAt: Date;
+  }): Promise<void>;
+  listReputationFeedback(
+    identity: Erc8004Identity,
+    options?: { readonly includeRevoked?: boolean }
+  ): Promise<readonly ReputationFeedback[]>;
+  getReputationCheckpoint(
+    chainId: number,
+    identityRegistry: string,
+    reputationRegistry: string
+  ): Promise<ReputationCheckpoint | null>;
+  saveReputationCheckpoint(
+    input: ReputationCheckpoint,
+    condition: ReputationCheckpointWriteCondition
+  ): Promise<ReputationCheckpoint>;
+}
+
 export type IdentityUpsertInput = {
   readonly identity: Erc8004Identity;
   readonly originType: OriginType;
@@ -451,7 +578,8 @@ export interface IngestionRepository
     CheckpointRepository,
     ClaimRepository,
     ServiceRepository,
-    ReconciliationRepository {
+    ReconciliationRepository,
+    ReputationRepository {
   /**
    * Execute a unit of work with atomic commit/rollback semantics. A
    * checkpoint may be persisted only inside the same unit after all

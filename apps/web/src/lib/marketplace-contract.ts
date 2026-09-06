@@ -4,6 +4,7 @@ import {
   MarketplaceReadService,
   marketplaceRetrievalModes,
   marketplaceSourceKinds,
+  marketplaceReputationSchema,
   marketplaceScoreExplanationSchema,
   type MarketplaceAgentCard as CoreMarketplaceAgentCard,
   type MarketplaceAgentDetail as CoreMarketplaceAgentDetail,
@@ -109,6 +110,7 @@ const marketplaceMetricsSchema = z.object({
     source: z.string().trim().min(1).max(160).nullable(),
     observedAt: z.string().datetime({ offset: true }).nullable()
   }),
+  reputation: marketplaceReputationSchema,
   completedJobs: z.object({
     status: z.enum(["available", "unavailable", "unknown"]),
     completedCount: z.number().int().nonnegative().nullable(),
@@ -628,6 +630,11 @@ function mapCard(
       source: null
     },
     reviews: { status: "unavailable" as const, count: null, averageScore: null, source: null, observedAt: null },
+    reputation: {
+      rawPermissionless: { status: "unknown" as const, count: null, feedback: [], source: null, observedAt: null, reason: "No canonical ERC-8004 feedback has been observed." },
+      recognizedReviewers: { status: "unavailable" as const, count: null, feedback: [], source: null, observedAt: null, reason: "No recognized reviewer or validator allowlist is configured." },
+      verifiedPurchases: { status: "unavailable" as const, count: null, feedback: [], source: null, observedAt: null, reason: "BNBEra verified-purchase reviews are enabled by G2." }
+    },
     completedJobs: { status: "unavailable" as const, completedCount: null, source: null, observedAt: null },
     lastResult: { status: "unavailable" as const, summary: null, reference: null, source: null, observedAt: null },
     currentData: {
