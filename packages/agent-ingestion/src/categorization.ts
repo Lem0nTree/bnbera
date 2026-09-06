@@ -2,7 +2,11 @@ import { agentCategorySchema, canonicalSha256Hex, type AgentCategory } from "@bn
 import { ingestionError } from "./errors.js";
 import { assertSafePublicValue } from "./normalize.js";
 
-export const categoryClassifierVersion = "deterministic-rules-v2" as const;
+// v3 adds evidence-backed multi-category applicability to the persisted
+// prediction shape; the scalar primary category remains compatible.
+export const categoryClassifierVersion = "deterministic-rules-v3" as const;
+/** Minimum structured score for a category to be exposed as applicable. */
+export const applicableCategoryStructuredScoreThreshold = 25 as const;
 export const categoryReviewStates = ["auto", "needs_review"] as const;
 export type CategoryReviewState = (typeof categoryReviewStates)[number];
 
@@ -80,6 +84,13 @@ const categoryRules: readonly CategoryRule[] = [
 // their own. Compound/category-specific labels such as `grid-trading` and
 // `yield` remain eligible advertised evidence.
 const weakAdvertisedTerms = new Set(["maker", "vault"]);
+
+function hasOnlyWeakAdvertisedEvidence(evidence: CategoryEvidence): boolean {
+  return evidence.structuredMatches.length > 0 && evidence.structuredMatches.every((match) => {
+    const [field, term] = match.split(":", 2);
+    return field === "advertisedSkill" && term !== undefined && weakAdvertisedTerms.has(term);
+  });
+}
 
 const publicText = (value: unknown, max = 2_000): string => {
   if (typeof value !== "string") return "";
@@ -259,11 +270,12 @@ export function classifyAgent(input: CategoryClassificationInput): CategoryClass
   if (best === undefined) throw ingestionError("CATEGORY_CLASSIFICATION_FAILED", "No category rules are configured.", "configure_classifier");
   const structuredPresent = (fields.capability ?? "").length > 0 || (fields.protocol ?? "").length > 0 || (fields.skill ?? "").length > 0 || (fields.advertisedSkill ?? "").length > 0 || (fields.domain ?? "").length > 0;
   const confidence = confidenceFor(best, second, structuredPresent);
-  const hasOnlyWeakAdvertisedEvidence = best.structuredMatches.length > 0 && best.structuredMatches.every((match) => {
-    const [field, term] = match.split(":", 2);
-    return field === "advertisedSkill" && term !== undefined && weakAdvertisedTerms.has(term);
-  });
-  const promote = !hasOnlyWeakAdvertisedEvidence && best.structuredScore >= 25 && best.matchedTerms.length > 0 && confidence >= 0.55 && best.structuredScore > (second?.structuredScore ?? 0) + 4;
+  const applicableCategories = ranked
+    .filter((candidate) => candidate.structuredScore >= applicableCategoryStructuredScoreThreshold)
+    .filter((candidate) => !hasOnlyWeakAdvertisedEvidence(candidate))
+    .map((candidate) => candidate.category)
+    .slice(0, 4);
+  const promote = !hasOnlyWeakAdvertisedEvidence(best) && best.structuredScore >= applicableCategoryStructuredScoreThreshold && best.matchedTerms.length > 0 && confidence >= 0.55 && best.structuredScore > (second?.structuredScore ?? 0) + 4;
   const category: AgentCategory = promote ? best.category : "uncategorized";
   agentCategorySchema.parse(category);
   const evidenceDigest = canonicalSha256Hex({ fields, evidence });
@@ -272,6 +284,7 @@ export function classifyAgent(input: CategoryClassificationInput): CategoryClass
     structuredMatches: best.structuredMatches,
     semanticMatches: best.semanticMatches,
     candidates: evidence.map((item) => ({ category: item.category, structuredScore: item.structuredScore, semanticScore: item.semanticScore })),
+    ...(applicableCategories.length === 0 ? {} : { applicableCategories }),
     digest: evidenceDigest
   };
   assertSafePublicValue(acceptedEvidence, "category.evidence");

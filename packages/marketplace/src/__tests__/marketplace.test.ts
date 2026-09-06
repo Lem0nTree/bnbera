@@ -111,6 +111,47 @@ describe("MarketplaceReadService", () => {
     expect(response.results[0]?.serviceEvidence?.[0]?.testedSkills).toEqual([]);
   });
 
+  it("routes an evidence-backed secondary category without making it tested capability", async () => {
+    const original = developmentFixtureListings[0]!;
+    const a2a = original.services.find((candidate) => candidate.kind === "a2a") ?? original.services[0]!;
+    const listing: MarketplaceListingInput = {
+      ...original,
+      slug: "fixture-grid-yield",
+      category: "grid-trading",
+      applicableCategories: ["yield-optimisation"],
+      serviceEvidence: [{
+        kind: "a2a",
+        advertisedUrl: a2a.url,
+        cardUrl: a2a.url,
+        invocationUrls: [a2a.url],
+        advertisedSkills: [{
+          id: "grid-yield",
+          name: "Grid yield",
+          description: "Public strategy descriptor",
+          tags: ["grid-trading"],
+          keywords: ["yield"]
+        }],
+        testedSkills: [],
+        testStatus: "transport_only",
+        testedAt: null
+      }]
+    };
+    const readModel = service(new InMemoryMarketplaceSource([listing]));
+
+    const primary = await readModel.search({ category: "grid-trading" });
+    const secondary = await readModel.search({ category: "yield-optimisation" });
+    const text = await readModel.search({ query: "yield" });
+
+    expect(primary.results.map((agent) => agent.slug)).toEqual(["fixture-grid-yield"]);
+    expect(secondary.results.map((agent) => agent.slug)).toEqual(["fixture-grid-yield"]);
+    expect(text.results.map((agent) => agent.slug)).toEqual(["fixture-grid-yield"]);
+    expect(secondary.results[0]).toMatchObject({
+      category: "grid-trading",
+      applicableCategories: ["yield-optimisation"],
+      serviceEvidence: [{ testedSkills: [] }]
+    });
+  });
+
   it("uses stable score tie-breaking after equal score components", async () => {
     const tieB = { ...developmentFixtureListings[0]!, name: "Same Agent", slug: "tie-b" };
     const tieA = { ...developmentFixtureListings[1]!, name: "Same Agent", slug: "tie-a" };

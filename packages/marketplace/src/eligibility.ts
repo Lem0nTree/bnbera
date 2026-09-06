@@ -70,8 +70,9 @@ export function evaluateListing(
       `The observed pricing network ${listing.pricing.network} does not match the identity chain ${listing.identity.chainId}.`
     );
   }
-  if (request.category !== undefined && listing.category !== request.category) {
-    addReason("WRONG_CATEGORY", `The listing category is ${listing.category}, not ${request.category}.`);
+  if (request.category !== undefined && listing.category !== request.category && !(listing.applicableCategories ?? []).includes(request.category)) {
+    const categories = [listing.category, ...(listing.applicableCategories ?? [])].join(", ");
+    addReason("WRONG_CATEGORY", `The listing categories are ${categories}, not ${request.category}.`);
   }
 
   const supportedProtocols = collectProtocolNames(listing);
@@ -324,6 +325,7 @@ function searchableText(listing: MarketplaceListingInput): string {
     listing.slug,
     listing.description,
     listing.category,
+    ...(listing.applicableCategories ?? []),
     ...listing.supportedProtocols,
     ...listing.services.flatMap((service) => [service.kind, service.protocolVersion]),
     ...listing.capabilities.capabilities.flatMap((capability) => [

@@ -27,6 +27,7 @@ import {
   erc8004IdentityKey,
   erc8004IdentitySchema,
   evmAddressSchema,
+  type AgentCategory,
   type Erc8004Identity
 } from "@bnbera/domain";
 import {
@@ -94,6 +95,7 @@ type MarketplaceMetadataRow = {
   readonly public_metadata: unknown;
   readonly pricing_manifest: unknown;
   readonly category_prediction: string | null;
+  readonly category_evidence: unknown | null;
   readonly authority_wallet_provider: string | null;
   readonly authority_execution_wallet: string | null;
   readonly authority_expires_at: Date | null;
@@ -125,6 +127,7 @@ export class PostgresMarketplaceMetadataSource {
         v.public_metadata,
         v.pricing_manifest,
         cp.predicted_category AS category_prediction,
+        cp.evidence AS category_evidence,
         au.wallet_provider AS authority_wallet_provider,
         au.execution_wallet AS authority_execution_wallet,
         au.expires_at AS authority_expires_at,
@@ -142,7 +145,7 @@ export class PostgresMarketplaceMetadataSource {
         LIMIT 1
       ) v ON TRUE
       LEFT JOIN LATERAL (
-        SELECT predicted_category
+        SELECT predicted_category, evidence
         FROM agent_category_predictions
         WHERE agent_version_id = v.id
           AND review_state = 'auto'
@@ -217,6 +220,7 @@ function metadataFromRow(row: MarketplaceMetadataRow): MarketplaceListingMetadat
   const explicitSlug = boundedString(publicMetadata?.slug, 160);
   const slug = normalizeSlug(explicitSlug ?? name, identityKey);
   const category = resolveCategory(row, publicMetadata);
+  const applicableCategories = resolveApplicableCategories(row.category_evidence, category);
   const supportedProtocols = resolveProtocols(publicMetadata);
   const pricing = resolvePricing(
     publicMetadata?.pricing ?? row.pricing_manifest,
@@ -235,6 +239,7 @@ function metadataFromRow(row: MarketplaceMetadataRow): MarketplaceListingMetadat
       name,
       description,
       category,
+      ...(applicableCategories.length === 0 ? {} : { applicableCategories }),
       supportedProtocols,
       pricing,
       dataFreshness,
@@ -293,6 +298,22 @@ function resolveCategory(row: MarketplaceMetadataRow, metadata: Record<string, u
     if (parsed.success) return parsed.data;
   }
   return "uncategorized" as const;
+}
+
+function resolveApplicableCategories(value: unknown, primary: AgentCategory): AgentCategory[] {
+  const evidence = asRecord(value);
+  const raw = evidence?.applicableCategories;
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<AgentCategory>();
+  const categories: AgentCategory[] = [];
+  for (const candidate of raw) {
+    const parsed = agentCategorySchema.safeParse(candidate);
+    if (!parsed.success || parsed.data === "uncategorized" || parsed.data === primary || seen.has(parsed.data)) continue;
+    seen.add(parsed.data);
+    categories.push(parsed.data);
+    if (categories.length >= 4) break;
+  }
+  return categories;
 }
 
 function resolveProtocols(metadata: Record<string, unknown> | null): string[] {

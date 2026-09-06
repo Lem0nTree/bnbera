@@ -46,6 +46,7 @@ describe("deterministic category assignment", () => {
       advertisedSkills: [{ id: "grid-yield", name: "Grid yield", description: "Public strategy labels", tags: ["grid-trading", "yield"] }]
     });
     expect(result.category).toBe("grid-trading");
+    expect(result.evidence.applicableCategories).toEqual(["grid-trading", "yield-optimisation"]);
     expect(result.evidence.candidates).toEqual(expect.arrayContaining([
       expect.objectContaining({ category: "grid-trading", structuredScore: expect.any(Number) }),
       expect.objectContaining({ category: "yield-optimisation", structuredScore: expect.any(Number) })
@@ -56,6 +57,7 @@ describe("deterministic category assignment", () => {
     expect(classifyAgent({
       advertisedSkills: [{ id: "generic", name: "Generic", description: "A general agent", tags: ["trading", "strategy"] }]
     }).category).toBe("uncategorized");
+    expect(classifyAgent({ name: "Yield" }).evidence.applicableCategories).toBeUndefined();
 
     expect(classifyAgent({
       advertisedSkills: [{ id: "maker", name: "Maker", description: "A general agent", tags: ["maker"] }]
@@ -63,6 +65,9 @@ describe("deterministic category assignment", () => {
     expect(classifyAgent({
       advertisedSkills: [{ id: "vault", name: "Vault", description: "A general agent", keywords: ["vault"] }]
     }).category).toBe("uncategorized");
+    expect(classifyAgent({
+      advertisedSkills: [{ id: "vault", name: "Vault", description: "A general agent", keywords: ["vault"] }]
+    }).evidence.applicableCategories).toBeUndefined();
     expect(classifyAgent({
       advertisedSkills: [{ id: "maker", name: "Maker", description: "Places market making range orders", tags: ["maker"] }]
     }).category).toBe("grid-trading");
@@ -91,14 +96,14 @@ describe("deterministic category assignment", () => {
     const firstParams = query.mock.calls[0]?.[1] as unknown[] | undefined;
     const secondParams = query.mock.calls[1]?.[1] as unknown[] | undefined;
     expect(classification.classifierVersion).toBe(categoryClassifierVersion);
-    expect(categoryClassifierVersion).toBe("deterministic-rules-v2");
+    expect(categoryClassifierVersion).toBe("deterministic-rules-v3");
     expect(String(query.mock.calls[0]?.[0])).toMatch(/existing\.classifier_version = \$9/iu);
     expect(firstParams).toBeDefined();
     expect(secondParams).toBeDefined();
     if (firstParams === undefined || secondParams === undefined) return;
     expect((firstParams[6] as { digest: string }).digest).toBe(firstParams[11]);
     expect(secondParams[11]).toBe(firstParams[11]);
-    expect(firstParams[8]).toBe("deterministic-rules-v2");
+    expect(firstParams[8]).toBe("deterministic-rules-v3");
     expect(secondParams[8]).toBe(firstParams[8]);
   });
 });

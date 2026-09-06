@@ -128,7 +128,10 @@ const marketplaceMetricsSchema = z.object({
 const skillEvidenceSchema = z.object({
   id: z.string().trim().min(1).max(160),
   name: z.string().trim().min(1).max(160),
-  description: z.string().trim().min(1).max(2_000)
+  description: z.string().trim().min(1).max(2_000),
+  /** Public A2A labels; never invocation/test evidence. */
+  tags: z.array(z.string().trim().min(1).max(128)).max(32).optional(),
+  keywords: z.array(z.string().trim().min(1).max(128)).max(32).optional()
 });
 
 const serviceEvidenceSchema = z.object({
@@ -242,6 +245,8 @@ export const marketplaceAgentReadModelSchema = z.object({
   tagline: z.string().trim().min(1).max(240),
   description: z.string().trim().min(1).max(2_000),
   category: agentCategorySchema,
+  /** Reviewed secondary matches; `category` remains the primary label. */
+  applicableCategories: z.array(agentCategorySchema).max(4).optional(),
   protocols: z.array(z.string().trim().min(1).max(128)).max(64),
   stateAxes: agentStateAxesSchema,
   identity: erc8004IdentitySchema,
@@ -640,6 +645,7 @@ function mapCard(
     tagline: coreTagline(card.description),
     description: card.description,
     category: card.category,
+    ...(card.applicableCategories === undefined ? {} : { applicableCategories: card.applicableCategories }),
     protocols: card.supportedProtocols,
     stateAxes: card.state,
     identity: card.identity,
@@ -677,7 +683,7 @@ export function mapMarketplaceDetailResponse(
 }
 
 function selectionMatches(agent: MarketplaceAgentReadModel, input: MarketplaceSearchInput): boolean {
-  if (input.category && agent.category !== input.category) {
+  if (input.category && agent.category !== input.category && !(agent.applicableCategories ?? []).includes(input.category)) {
     return false;
   }
   if (input.chainId && agent.identity.chainId !== input.chainId) {
@@ -704,8 +710,16 @@ function selectionMatches(agent: MarketplaceAgentReadModel, input: MarketplaceSe
       agent.tagline,
       agent.description,
       agent.category,
+      ...(agent.applicableCategories ?? []),
       ...agent.protocols,
-      ...agent.capabilityManifest.capabilities.flatMap((capability) => [capability.id, capability.description])
+      ...agent.capabilityManifest.capabilities.flatMap((capability) => [capability.id, capability.description]),
+      ...(agent.serviceEvidence ?? []).flatMap((service) => service.advertisedSkills.flatMap((skill) => [
+        skill.id,
+        skill.name,
+        skill.description,
+        ...(skill.tags ?? []),
+        ...(skill.keywords ?? [])
+      ]))
     ].join(" ").toLowerCase();
     if (!searchableText.includes(input.query.toLowerCase())) {
       return false;

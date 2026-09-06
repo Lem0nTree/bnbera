@@ -415,6 +415,8 @@ export const marketplaceListingMetadataSchema = z.object({
   name: z.string().trim().min(1).max(160),
   description: z.string().trim().min(1).max(2_000),
   category: agentCategorySchema,
+  /** Additional reviewed category matches; the scalar category remains primary. */
+  applicableCategories: z.array(agentCategorySchema).max(4).optional(),
   supportedProtocols: z.array(protocolNameSchema).max(64),
   pricing: marketplacePricingSchema,
   dataFreshness: marketplaceFreshnessSchema,
@@ -445,6 +447,7 @@ export const marketplaceListingInputSchema = z.object({
   name: marketplaceListingMetadataSchema.shape.name,
   description: marketplaceListingMetadataSchema.shape.description,
   category: agentCategorySchema,
+  applicableCategories: marketplaceListingMetadataSchema.shape.applicableCategories,
   services: z.array(advertisedServiceSchema).max(128),
   capabilities: capabilityManifestSchema,
   supportedProtocols: z.array(protocolNameSchema).max(64),
