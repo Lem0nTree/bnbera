@@ -2,7 +2,7 @@
 
 Status: active scope, following the user's simplified MVP direction. Updated: 2026-09-05.
 Implementation baseline: `31d112fdcb3e6b99032f479a9274472e910cf445`, `codex/erc8004-pipeline`.
-This plan supersedes the archived plans. It defines the intended MVP; unchecked gates below are not implementation claims.
+This plan supersedes the archived plans. It defines the intended MVP; unchecked gates below are not implementation claims. The source-of-truth interpretation of the competition rubric is [HACKATHON-REQUIREMENTS.md](HACKATHON-REQUIREMENTS.md).
 
 ## Product and delivery order
 
@@ -70,7 +70,7 @@ Permissionless feedback is Sybil-prone. The UI may show its raw count and distri
 
 Implement **one ERC-8183 rail** using reviewed official deployment/ABI/token/policy pins. Resolve the existing testnet policy-address conflict before writes. Reuse the existing commerce lifecycle, add PostgreSQL persistence and verified chain adapters. Do not add x402/B402 to this MVP.
 
-ERC-8183 is selected because this milestone sells outcome-based work: escrowed budget, named client/provider/evaluator, explicit `Open -> Funded -> Submitted -> terminal` state, deliverable digest, rejection and expiry/refund. Those records map directly to completed-job evidence and an ERC-8004 verified review. x402 is an HTTP payment challenge/authorization mechanism optimized for paying to access a request or resource; by itself it does not provide the job, result acceptance, dispute or refund lifecycle required here. x402 can be reconsidered later for low-risk pay-per-call agents, but running both rails in the MVP would add integration surface without improving the judged end-to-end hire.
+ERC-8183 is selected because this milestone sells outcome-based work: escrowed budget, named client/provider/evaluator, explicit `Open -> Funded -> Submitted -> terminal` state, deliverable digest, rejection and expiry/refund. Those records map directly to completed-job evidence and an ERC-8004 verified review. The official Altana track also names ERC-8183 hiring as a bonus. x402 is an HTTP payment challenge/authorization mechanism optimized for paying to access a request or resource; by itself it does not provide the job, result acceptance, dispute or refund lifecycle required here. Keep it out of G2, then add at most one bounded paid capability after the core hire and Altana session flow if time permits; this targets the separate x402/B402 partner bonus without replacing ERC-8183.
 
 User flow: select agent -> enter task -> review quote/budget -> explicitly fund escrow -> agent performs work -> result/deliverable appears -> buyer verifies and approves -> settlement confirmed. Persist job ID, buyer/provider, full agent identity/version, quote, status, transaction hashes, output digest and result URL. Use IPFS only if the selected Studio/ERC-8183 deliverable path needs it; Greenfield comes later.
 
@@ -102,6 +102,6 @@ Keep later gates disabled until they pass. Record a short result per gate: code/
 
 Use clearly labeled testnet for authorized paid/Creator canaries. The existing main-track chain-56/97 question remains unresolved: obtain organizer acceptance of chain 97 or use verified chain-56 supply for main-track claims. Read-only mainnet discovery is allowed; it does not authorize mainnet payments or strategy writes. No invented contract pins or automatic use of paid resources.
 
-Before demo: public production build, persistent DB and cron, all four categories with useful real supply and activation evidence, one paid cycle, one Creator flow and two Greenfield links. Run relevant build/tests plus one real browser walkthrough. Back up the retained DB before migrations, verify any changed migration on disposable data, and preserve the existing forward-repair history. Keep all six state axes and secret-reference boundaries. Remaining cosmetic polish is deferred.
+Before demo: public production build, persistent DB and cron, all four categories with useful real supply and activation evidence, one paid cycle, one Creator flow and the required three-task Agent Advantage Report. Add the two Greenfield links and one x402 seller canary only after that core path works. Run relevant build/tests plus one real browser walkthrough. Back up the retained DB before migrations, verify any changed migration on disposable data, and preserve the existing forward-repair history. Keep all six state axes and secret-reference boundaries. Remaining cosmetic polish is deferred.
 
 Tasks: [MVP-TASKS.md](MVP-TASKS.md). Operations: [MVP-RUNBOOK.md](MVP-RUNBOOK.md).

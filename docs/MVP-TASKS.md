@@ -2,6 +2,8 @@
 
 Active backlog for [MVP-MASTER-PLAN.md](MVP-MASTER-PLAN.md). Baseline `31d112f`; updated 2026-09-05. All tasks below are open integration work, even where components already exist. Two implementation agents maximum; coordinator reviews each handoff before dispatching its dependent replacement.
 
+Competition acceptance and partner-track distinctions are summarized in [HACKATHON-REQUIREMENTS.md](HACKATHON-REQUIREMENTS.md).
+
 ## G1 — Marketplace pipeline
 
 ### T1 — Persistent cron and health refresh
@@ -62,6 +64,7 @@ Owner: WEB. Parallel with T4 after their API contract is agreed; real acceptance
 - Bind each verified-purchase review to the completed ERC-8183 job, exact ERC-8004 identity/version and result digest. Project three labeled reputation views on cards/detail: raw ERC-8004 feedback, recognized reviewer/validator evidence, and BNBEra verified-job reviews; revoked feedback leaves active aggregates without erasing history.
 - Verify one agent first, then complete the same useful activation/result journey across the four category candidates from T2. An unavailable category remains an explicit submission blocker, not a fake listing.
 - Record G2 evidence and ensure the public preview stays usable.
+- Capture the first of the three required Agent Advantage comparisons: same task with the marketplace agent and without it, including elapsed time, cost, output and quality assessment. T9 completes the report; at least one comparison must be trading, stock/equities or security-related.
 
 Done: a user completes the real paid journey inside the app; job count and review update correctly; errors and cancellation are intelligible. G2 requires T4 and T5; four-category coverage has its own explicit row in the status document.
 
@@ -87,6 +90,11 @@ Owner: CREATOR/WEB. After T6; form/template preparation can run in the second sl
 
 Done: create -> deploy -> register -> list -> hire works from the browser; user controls Altana and revocation stops writes. Gate G3 passes with one template; Greenfield is not a prerequisite.
 
+If G1-G3 and the Agent Advantage evidence are already working, expose one
+existing agent capability through Altana's x402/B402 server SDK and prove one
+tiny paid request. This is a partner-track bonus, not a reason to delay the
+ERC-8183 hire or create a second generic commerce subsystem.
+
 ## G4 — Greenfield and final demo
 
 ### T8 — Publish two useful Greenfield artifacts
@@ -106,6 +114,7 @@ Owner: QA/RELEASE. Prepare in parallel with T8; final verification after all sel
 - Run relevant build/tests and current migration checks. Verify the public deployed SHA and cron remain running.
 - Walk through four-category find/compare/understand/activate, one paid escrow cycle with review/job update, one Altana Creator/revoke flow and the two Greenfield links.
 - Produce a short demo script and current `MVP-STATUS.md`: each gate pass/fail, evidence references, unresolved network/category/access gaps and rollback command. Confirm submission cutoff and avoid cosmetic work during the final verification window.
+- Complete the required Agent Advantage Report with at least three real paired runs (agent versus manual/baseline), attached outputs and time/cost/quality measurements; include at least one trading, stock/equities or security task.
 
 Done: publicly accessible MVP and honest evidence for every claimed feature. Functional gaps block their claim; minor visual polish does not block the demo.
 
