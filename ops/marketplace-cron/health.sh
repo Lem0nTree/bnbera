@@ -18,6 +18,5 @@ cd "${repo_root}"
 exec /usr/bin/flock -n "${runtime_root}/locks/health.lock" \
   /usr/bin/timeout --kill-after=10s 50s \
   env ERC8004_INGESTION_ENABLED=true ERC8004SCAN_DISCOVERY_ENABLED=false \
-    MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED=false \
     "${node_bin}" scripts/run-with-repo-env.mjs -- "${pnpm_bin}" ops:marketplace-health \
     >> "${runtime_root}/logs/health.log" 2>&1

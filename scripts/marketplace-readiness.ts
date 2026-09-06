@@ -3,7 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createDb } from "../packages/db/src/client.ts";
-import { loadRuntimeConfig, type RuntimeConfig } from "../packages/config/src/runtime.ts";
+import { loadRuntimeConfig, validateSemanticEmbeddingLock, type RuntimeConfig } from "../packages/config/src/runtime.ts";
 
 const MAX_DB_CONNECTION_TIMEOUT_MS = 5_000;
 const MAX_DB_QUERY_TIMEOUT_MS = 10_000;
@@ -13,8 +13,7 @@ const MIGRATIONS_DIR = fileURLToPath(new URL("../packages/db/migrations/", impor
 
 const coreFeatureEnvironmentNames = [
   "ERC8004_INGESTION_ENABLED",
-  "ERC8004SCAN_DISCOVERY_ENABLED",
-  "MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED"
+  "ERC8004SCAN_DISCOVERY_ENABLED"
 ] as const;
 
 export type MarketplaceReadinessCounts = Readonly<{
@@ -219,8 +218,6 @@ export function diagnoseMarketplaceData(
   }
   if (!flags.ingestionEnabled) reasonCodes.push("ERC8004_INGESTION_DISABLED_READ_MODEL_MAY_BE_STALE");
   if (!flags.scanDiscoveryEnabled) reasonCodes.push("ERC8004SCAN_DISCOVERY_DISABLED_DISCOVERY_MAY_BE_STALE");
-  if (flags.semanticRetrievalEnabled) reasonCodes.push("MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED_CORE_GATE_VIOLATION");
-
   const structuralEmpty = counts.identities === 0 || counts.agents === 0 || counts.versions === 0;
   const state: MarketplaceDataDiagnosis["state"] = structuralEmpty
     ? "empty"
@@ -347,6 +344,18 @@ function checkCoreEnvironment(): readonly string[] {
     }
   }
   return reasons;
+}
+
+async function validateSemanticReadiness(config: RuntimeConfig): Promise<void> {
+  if (!config.marketplaceSemanticRetrievalEnabled) return;
+  try {
+    const lock = JSON.parse(await readFile(new URL("../config/standards.lock.json", import.meta.url), "utf8")) as unknown;
+    validateSemanticEmbeddingLock(lock, config);
+  } catch {
+    // Keep the readiness envelope stable and never expose lock/provider
+    // details. The ingestion and web entry points apply the same validation.
+    throw new ReadinessError("SEMANTIC_EMBEDDING_NOT_READY");
+  }
 }
 
 function objectRecord(value: unknown): Record<string, unknown> | null {
@@ -508,6 +517,14 @@ export async function runMarketplaceReadiness(options: Readonly<{ databaseOnly?:
   const environmentReasons = checkCoreEnvironment();
   if (environmentReasons.length > 0) {
     printReport(blockedReport(scope, configuration, environmentReasons));
+    return 2;
+  }
+
+  try {
+    await validateSemanticReadiness(config);
+  } catch (error) {
+    const reasonCode = error instanceof ReadinessError ? error.reasonCode : "SEMANTIC_EMBEDDING_NOT_READY";
+    printReport(blockedReport(scope, configuration, [reasonCode]));
     return 2;
   }
 
