@@ -3,7 +3,9 @@ import {
   canonicalSha256Hex,
   contentDigestSchema,
   evmAddressSchema,
-  transactionHashSchema
+  erc8004IdentitySchema,
+  transactionHashSchema,
+  type Erc8004Identity
 } from "@bnbera/domain";
 
 export const bscChainIds = [56, 97] as const;
@@ -138,6 +140,22 @@ export const erc8183JobTermsSchema = z.object({
 }).strict();
 export type Erc8183JobTerms = z.infer<typeof erc8183JobTermsSchema>;
 
+/** Explicit buyer approval for the exact deliverable submitted by a provider. */
+export const erc8183BuyerApprovalSchema = z.object({
+  buyerAddress: nonZeroAddressSchema,
+  resultDigest: contentDigestSchema,
+  approvedAtUnix: unixSecondsSchema
+}).strict();
+export type Erc8183BuyerApproval = z.infer<typeof erc8183BuyerApprovalSchema>;
+
+/** Full marketplace identity/version bound to a hired provider. */
+export const erc8183ProviderBindingSchema = z.object({
+  identity: erc8004IdentitySchema,
+  agentVersionId: z.string().uuid(),
+  agentVersion: z.number().int().positive()
+}).strict();
+export type Erc8183ProviderBinding = z.infer<typeof erc8183ProviderBindingSchema> & { readonly identity: Erc8004Identity };
+
 export const erc8183JobRecordSchema = z.object({
   jobKey: erc8183JobKeySchema,
   terms: erc8183JobTermsSchema,
@@ -148,6 +166,8 @@ export const erc8183JobRecordSchema = z.object({
   createdAtUnix: unixSecondsSchema,
   updatedAtUnix: unixSecondsSchema,
   deliverableDigest: contentDigestSchema.nullable(),
+  providerBinding: erc8183ProviderBindingSchema.nullable().default(null),
+  buyerApproval: erc8183BuyerApprovalSchema.nullable().default(null),
   fundingTransactionHash: transactionHashSchema.nullable(),
   submissionTransactionHash: transactionHashSchema.nullable(),
   completionTransactionHash: transactionHashSchema.nullable(),
@@ -165,6 +185,20 @@ export const erc8183JobRecordSchema = z.object({
   }
   if (erc8183DeploymentPinDigest(value.deploymentPin) !== value.deploymentPinDigest) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["deploymentPinDigest"], message: "The persisted ERC-8183 deployment pin digest does not match its terms." });
+  }
+  if (value.buyerApproval !== null) {
+    if (value.state !== "submitted" && value.state !== "completed") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["buyerApproval"], message: "Buyer approval is only valid for a submitted or completed job." });
+    }
+    if (value.buyerApproval.buyerAddress.toLowerCase() !== value.terms.clientAddress.toLowerCase()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["buyerApproval", "buyerAddress"], message: "Buyer approval must be issued by the job client." });
+    }
+    if (value.deliverableDigest === null || value.buyerApproval.resultDigest.toLowerCase() !== value.deliverableDigest.toLowerCase()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["buyerApproval", "resultDigest"], message: "Buyer approval must bind to the submitted deliverable digest." });
+    }
+  }
+  if (value.providerBinding !== null && value.providerBinding.identity.chainId !== value.terms.chainId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["providerBinding", "identity", "chainId"], message: "Provider identity chain must match the ERC-8183 job chain." });
   }
 });
 export type Erc8183JobRecord = z.infer<typeof erc8183JobRecordSchema>;

@@ -1046,6 +1046,13 @@ export const erc8183Jobs = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     state: erc8183JobStateEnum("state").notNull().default("open"),
     deliverableDigest: varchar("deliverable_digest", { length: 64 }),
+    // Full ERC-8004 identity/version binding for the marketplace provider.
+    // The canonical identity row remains owned by the agents relationship;
+    // this immutable JSON snapshot keeps a historical job self-describing.
+    providerBinding: jsonb("provider_binding").$type<Record<string, unknown>>(),
+    buyerApprovalAddress: varchar("buyer_approval_address", { length: 42 }),
+    buyerApprovalResultDigest: varchar("buyer_approval_result_digest", { length: 64 }),
+    buyerApprovedAt: timestamp("buyer_approved_at", { withTimezone: true }),
     fundingTransactionHash: varchar("funding_transaction_hash", { length: 66 }),
     submissionTransactionHash: varchar("submission_transaction_hash", { length: 66 }),
     completionTransactionHash: varchar("completion_transaction_hash", { length: 66 }),
@@ -1071,6 +1078,9 @@ export const erc8183Jobs = pgTable(
     check("erc8183_job_expiry_bounds_check", sql`${table.minExpiryLeadSeconds} > 0 AND ${table.maxExpiryHorizonSeconds} >= ${table.minExpiryLeadSeconds}`),
     check("erc8183_job_pin_budget_bounds_check", sql`${table.minBudgetAtomic} >= 0 AND ${table.maxBudgetAtomic} >= ${table.minBudgetAtomic} AND ${table.budgetAtomic} between ${table.minBudgetAtomic} and ${table.maxBudgetAtomic}`),
     check("erc8183_job_id_decimal_check", sql`${table.erc8183JobId} ~ '^(0|[1-9][0-9]*)$'`),
+    check("erc8183_job_buyer_approval_check", sql`num_nonnulls(${table.buyerApprovalAddress}, ${table.buyerApprovalResultDigest}, ${table.buyerApprovedAt}) in (0, 3)`),
+    check("erc8183_job_buyer_approval_address_check", sql`${table.buyerApprovalAddress} IS NULL OR ${table.buyerApprovalAddress} ~ '^0x[0-9A-Fa-f]{40}$'`),
+    check("erc8183_job_buyer_approval_digest_check", sql`${table.buyerApprovalResultDigest} IS NULL OR ${table.buyerApprovalResultDigest} ~ '^[0-9A-Fa-f]{64}$'`),
     index("erc8183_job_state_idx").on(table.state, table.expiresAt),
     index("erc8183_job_provider_idx").on(table.providerAddress, table.state)
   ]
@@ -1104,6 +1114,44 @@ export const erc8183JobEvents = pgTable(
     uniqueIndex("erc8183_job_event_chain_log_unique").on(table.transactionHash, table.logIndex),
     index("erc8183_job_event_job_time_idx").on(table.erc8183JobId, table.observedAt),
     index("erc8183_job_event_state_idx").on(table.confirmationState, table.blockNumber)
+  ]
+);
+
+/** Durable pre-send/idempotency and reconciliation state for SDK operations. */
+export const erc8183Operations = pgTable(
+  "erc8183_operations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+    requestDigest: varchar("request_digest", { length: 64 }).notNull(),
+    chainId: integer("chain_id").notNull(),
+    commerceContract: varchar("commerce_contract", { length: 42 }).notNull(),
+    erc8183JobId: text("erc8183_job_id"),
+    operationKind: varchar("operation_kind", { length: 32 }).notNull(),
+    signerRole: varchar("signer_role", { length: 16 }).notNull(),
+    status: varchar("status", { length: 32 }).notNull().default("awaiting_signature"),
+    transactionHash: varchar("transaction_hash", { length: 66 }),
+    blockNumber: bigint("block_number", { mode: "number" }),
+    blockHash: varchar("block_hash", { length: 66 }),
+    logIndex: integer("log_index"),
+    failureCode: varchar("failure_code", { length: 80 }),
+    operationContext: jsonb("operation_context").$type<Record<string, unknown>>(),
+    createdAtUnix: bigint("created_at_unix", { mode: "number" }).notNull(),
+    updatedAtUnix: bigint("updated_at_unix", { mode: "number" }).notNull()
+  },
+  (table) => [
+    uniqueIndex("erc8183_operation_idempotency_unique").on(table.idempotencyKey),
+    index("erc8183_operation_job_idx").on(table.chainId, table.commerceContract, table.erc8183JobId),
+    index("erc8183_operation_status_idx").on(table.status, table.updatedAtUnix),
+    check("erc8183_operation_chain_check", sql`${table.chainId} in (56, 97)`),
+    check("erc8183_operation_contract_check", sql`${table.commerceContract} ~ '^0x[0-9A-Fa-f]{40}$'`),
+    check("erc8183_operation_digest_check", sql`${table.requestDigest} ~ '^[0-9A-Fa-f]{64}$'`),
+    check("erc8183_operation_job_id_check", sql`${table.erc8183JobId} IS NULL OR ${table.erc8183JobId} ~ '^(0|[1-9][0-9]*)$'`),
+    check("erc8183_operation_kind_check", sql`${table.operationKind} in ('create', 'register', 'set_budget', 'approve', 'fund', 'submit', 'settle', 'claim_refund', 'mark_expired', 'cancel', 'reject', 'dispute', 'vote')`),
+    check("erc8183_operation_role_check", sql`${table.signerRole} in ('client', 'provider', 'evaluator', 'voter', 'system')`),
+    check("erc8183_operation_status_check", sql`${table.status} in ('awaiting_signature', 'submitted', 'confirmed', 'reverted', 'unknown', 'reconciled', 'manual_review')`),
+    check("erc8183_operation_hash_check", sql`(${table.transactionHash} IS NULL OR ${table.transactionHash} ~ '^0x[0-9A-Fa-f]{64}$') AND (${table.blockHash} IS NULL OR ${table.blockHash} ~ '^0x[0-9A-Fa-f]{64}$')`),
+    check("erc8183_operation_log_check", sql`${table.logIndex} IS NULL OR ${table.logIndex} >= 0`)
   ]
 );
 
@@ -1538,6 +1586,7 @@ export const schemaTables = {
   commerceJobs,
   erc8183Jobs,
   erc8183JobEvents,
+  erc8183Operations,
   paymentChallenges,
   paymentAttempts,
   paymentAttemptEvents,

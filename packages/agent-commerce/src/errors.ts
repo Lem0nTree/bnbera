@@ -10,6 +10,9 @@ export const commerceErrorCodes = [
   "INVALID_EXPIRY",
   "INVALID_QUOTE",
   "INVALID_JOB",
+  "CHAIN_PROVIDER_INVALID",
+  "TRANSACTION_REVERTED",
+  "TRANSACTION_UNKNOWN",
   "ILLEGAL_TRANSITION",
   "UNAUTHORIZED_ACTOR",
   "STALE_JOB",
@@ -28,6 +31,8 @@ export interface CommerceErrorOptions {
   readonly message: string;
   readonly retriable?: boolean;
   readonly nextAction?: string;
+  readonly transactionHash?: `0x${string}`;
+  readonly relayCallsId?: `0x${string}`;
   readonly cause?: unknown;
 }
 
@@ -39,6 +44,8 @@ export class CommerceError extends Error {
   readonly code: CommerceErrorCode;
   readonly retriable: boolean;
   readonly nextAction: string;
+  readonly transactionHash: `0x${string}` | undefined;
+  readonly relayCallsId: `0x${string}` | undefined;
   readonly causeValue: unknown;
 
   constructor(options: CommerceErrorOptions) {
@@ -47,6 +54,8 @@ export class CommerceError extends Error {
     this.code = commerceErrorCodeSchema.parse(options.code);
     this.retriable = options.retriable ?? false;
     this.nextAction = options.nextAction ?? "none";
+    this.transactionHash = options.transactionHash;
+    this.relayCallsId = options.relayCallsId;
     Object.defineProperty(this, "causeValue", {
       configurable: false,
       enumerable: false,

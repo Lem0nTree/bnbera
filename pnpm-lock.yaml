@@ -90,9 +90,15 @@ importers:
 
   packages/agent-commerce:
     dependencies:
+      '@altananetwork/sdk':
+        specifier: 0.9.0
+        version: 0.9.0(@types/react@19.2.2)(react@19.2.0)(typescript@5.9.3)(zod@3.24.1)
       '@bnbera/domain':
         specifier: workspace:*
         version: link:../domain
+      viem:
+        specifier: 2.56.3
+        version: 2.56.3(typescript@5.9.3)(zod@3.24.1)
       zod:
         specifier: 3.24.1
         version: 3.24.1
@@ -2439,6 +2445,28 @@ snapshots:
 
   '@adraffy/ens-normalize@1.11.1': {}
 
+  '@altananetwork/sdk@0.9.0(@types/react@19.2.2)(react@19.2.0)(typescript@5.9.3)(zod@3.24.1)':
+    dependencies:
+      ox: 0.14.44(typescript@5.9.3)(zod@3.24.1)
+      porto: 0.2.37(@types/react@19.2.2)(react@19.2.0)(typescript@5.9.3)(viem@2.56.3(typescript@5.9.3)(zod@3.24.1))
+      viem: 2.56.3(typescript@5.9.3)(zod@3.24.1)
+    transitivePeerDependencies:
+      - '@tanstack/react-query'
+      - '@types/react'
+      - '@wagmi/core'
+      - bufferutil
+      - expo-auth-session
+      - expo-crypto
+      - expo-web-browser
+      - immer
+      - react
+      - react-native
+      - typescript
+      - use-sync-external-store
+      - utf-8-validate
+      - wagmi
+      - zod
+
   '@altananetwork/sdk@0.9.0(@types/react@19.2.2)(react@19.2.0)(typescript@5.9.3)(zod@4.5.4)':
     dependencies:
       ox: 0.14.44(typescript@5.9.3)(zod@4.5.4)
@@ -3992,6 +4020,23 @@ snapshots:
   picocolors@1.1.1: {}
 
   picomatch@2.3.2: {}
+
+  porto@0.2.37(@types/react@19.2.2)(react@19.2.0)(typescript@5.9.3)(viem@2.56.3(typescript@5.9.3)(zod@3.24.1)):
+    dependencies:
+      hono: 4.13.5
+      idb-keyval: 6.3.0
+      mipd: 0.0.7(typescript@5.9.3)
+      ox: 0.9.17(typescript@5.9.3)(zod@4.5.4)
+      viem: 2.56.3(typescript@5.9.3)(zod@3.24.1)
+      zod: 4.5.4
+      zustand: 5.0.15(@types/react@19.2.2)(react@19.2.0)
+    optionalDependencies:
+      react: 19.2.0
+      typescript: 5.9.3
+    transitivePeerDependencies:
+      - '@types/react'
+      - immer
+      - use-sync-external-store
 
   porto@0.2.37(@types/react@19.2.2)(react@19.2.0)(typescript@5.9.3)(viem@2.56.3(typescript@5.9.3)(zod@4.5.4)):
     dependencies:

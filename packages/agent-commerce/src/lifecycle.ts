@@ -5,6 +5,7 @@ import {
   type Erc8183ActionMetadata,
   type Erc8183ActionType,
   type Erc8183ActorRole,
+  type Erc8183BuyerApproval,
   type Erc8183JobRecord,
   type Erc8183JobState
 } from "./types.js";
@@ -113,6 +114,11 @@ export function assertErc8183Transition(input: {
   if (action === "complete" && !(job.state === "submitted" && nextState === "completed")) {
     throw new CommerceError({ code: "ILLEGAL_TRANSITION", message: "Only a submitted job can be completed by its evaluator." });
   }
+  if (action === "complete") {
+    if (job.buyerApproval === null || job.deliverableDigest === null || job.buyerApproval.resultDigest.toLowerCase() !== job.deliverableDigest.toLowerCase()) {
+      throw new CommerceError({ code: "RECONCILIATION_REQUIRED", message: "An authorized buyer approval bound to the submitted result is required before settlement.", nextAction: "approve_result" });
+    }
+  }
   if (action === "reject" && !((job.state === "open" && nextState === "rejected") || ((job.state === "funded" || job.state === "submitted") && nextState === "rejected"))) {
     throw new CommerceError({ code: "ILLEGAL_TRANSITION", message: "Rejection is not valid from this state." });
   }
@@ -126,6 +132,44 @@ export function assertErc8183Transition(input: {
   if (nextState === "submitted" && job.terms.providerAddress === null) {
     throw new CommerceError({ code: "INVALID_JOB", message: "A provider must be assigned before submission." });
   }
+}
+
+/** Persist explicit buyer approval for exactly the submitted deliverable. */
+export function approveErc8183Result(input: {
+  readonly job: Erc8183JobRecord;
+  readonly actorAddress: string;
+  readonly resultDigest: string;
+  readonly nowUnix: number;
+}): Erc8183JobRecord {
+  const job = erc8183JobRecordSchema.parse(input.job);
+  const actor = normalizeAddress(input.actorAddress, "buyer address");
+  if (job.state !== "submitted") {
+    throw new CommerceError({ code: "ILLEGAL_TRANSITION", message: "Only a submitted job result can be approved." });
+  }
+  if (actor.toLowerCase() !== normalizeAddress(job.terms.clientAddress, "client address").toLowerCase()) {
+    throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "Only the job client may approve the result." });
+  }
+  if (!/^[0-9a-f]{64}$/iu.test(input.resultDigest)) {
+    throw new CommerceError({ code: "INVALID_JOB", message: "The buyer approval must reference a 32-byte result digest." });
+  }
+  if (job.deliverableDigest === null || job.deliverableDigest.toLowerCase() !== input.resultDigest.toLowerCase()) {
+    throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "Buyer approval must match the submitted deliverable digest." });
+  }
+  if (!Number.isSafeInteger(input.nowUnix) || input.nowUnix <= 0) {
+    throw new CommerceError({ code: "INVALID_EXPIRY", message: "A trusted Unix timestamp is required for buyer approval." });
+  }
+  const approval: Erc8183BuyerApproval = {
+    buyerAddress: actor,
+    resultDigest: input.resultDigest.toLowerCase(),
+    approvedAtUnix: input.nowUnix
+  };
+  if (job.buyerApproval !== null) {
+    if (job.buyerApproval.buyerAddress.toLowerCase() !== approval.buyerAddress.toLowerCase() || job.buyerApproval.resultDigest.toLowerCase() !== approval.resultDigest) {
+      throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "A different buyer approval is already persisted for this result." });
+    }
+    return job;
+  }
+  return erc8183JobRecordSchema.parse({ ...job, buyerApproval: approval, updatedAtUnix: input.nowUnix });
 }
 
 function eventTypeFor(action: Erc8183ActionType, nextState: Erc8183JobState): "job_created" | "provider_set" | "budget_set" | "job_funded" | "job_submitted" | "job_completed" | "job_rejected" | "job_expired" | "reconciliation_requested" | "reconciliation_succeeded" | "reconciliation_failed" {
