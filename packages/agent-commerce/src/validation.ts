@@ -20,6 +20,9 @@ import {
 
 const FORBIDDEN_FIELD = /(?:private.?key|seed|mnemonic|password|secret|credential|session.?token|access.?token|raw.?signature|wallet.?key)/i;
 
+/** Hard ceiling for the reviewed MVP paid-hire canary. */
+export const ERC8183_MVP_MAX_BUDGET_ATOMIC = "10000000000000000";
+
 export function parseAtomic(value: string, label = "atomic amount"): bigint {
   if (!decimalUintSchema.safeParse(value).success) {
     throw new CommerceError({ code: "INVALID_AMOUNT", message: `${label} must be a non-negative decimal integer.` });
@@ -121,7 +124,7 @@ export function assertBudgetMatchesPin(
 ): void {
   parseAtomic(budgetAtomic, "Job budget");
   const budget = BigInt(budgetAtomic);
-  if (budget < BigInt(pin.minBudgetAtomic) || budget > BigInt(pin.maxBudgetAtomic)) {
+  if (budget < BigInt(pin.minBudgetAtomic) || budget > BigInt(pin.maxBudgetAtomic) || budget > BigInt(ERC8183_MVP_MAX_BUDGET_ATOMIC)) {
     throw new CommerceError({ code: "INVALID_AMOUNT", message: "Job budget is outside the pinned min/max range." });
   }
 }

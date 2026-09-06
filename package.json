@@ -22,6 +22,7 @@
     "ops:marketplace-health": "tsx scripts/marketplace-health-job.ts",
     "ops:erc8004-registry-sync": "tsx scripts/erc8004-registry-sync.ts",
     "ops:erc8004-reputation-sync": "tsx scripts/erc8004-reputation-sync.ts",
+    "ops:t4-canary": "tsx scripts/t4-operator-canary.ts",
     "ops:standards-check": "tsx scripts/standards-check.ts",
     "lint": "pnpm --recursive --if-present run lint",
     "test": "pnpm --recursive --if-present run test",
@@ -29,6 +30,7 @@
     "check": "pnpm build && pnpm lint && pnpm typecheck && pnpm test"
   },
   "devDependencies": {
+    "@altananetwork/sdk": "0.9.0",
     "@types/node": "22.10.2",
     "@types/pg": "8.11.10",
     "@typescript-eslint/eslint-plugin": "8.18.2",
@@ -37,6 +39,7 @@
     "eslint": "9.17.0",
     "tsx": "4.19.2",
     "typescript": "5.7.2",
+    "viem": "2.56.3",
     "vitest": "2.1.8"
   }
 }
