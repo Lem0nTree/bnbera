@@ -71,11 +71,6 @@ export interface CommerceAuthorityResolver {
   resolve(request: Request, identity: AuthenticatedCommerceIdentity): Promise<Erc8183AltanaAuthority>;
 }
 
-/** Compatibility shape for callers that need to describe both boundaries. */
-export interface AuthenticatedCommerceActor extends AuthenticatedCommerceIdentity {
-  readonly authority: Erc8183AltanaAuthority;
-}
-
 export interface CommerceParentHireResolutionInput {
   /** Stable persisted `commerce_jobs.id`, not the protocol job ID. */
   readonly commerceJobId: string;
