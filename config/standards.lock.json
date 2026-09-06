@@ -219,11 +219,43 @@
         "verificationStatus": "verified-read-only-bytecode-and-abi"
       },
       "erc8183": {
-        "commerceProxy": null,
-        "routerProxy": null,
-        "policy": null,
-        "paymentToken": null,
-        "verificationStatus": "blocked-policy-address-conflict"
+        "enabled": false,
+        "releaseEnabled": false,
+        "disabledReason": "Testnet token-control risk acceptance and the bounded paid canary remain pending.",
+        "specRevision": "a078cab5cc8e9581c15f76c091ed96eed28f02f7",
+        "sourceRevision": "b40b18011407ba13516661d3784bcb727a0c7794",
+        "commerceProxy": "0xa206c0517b6371c6638cd9e4a42cc9f02a33b0de",
+        "routerProxy": "0xd7d36d66d2f1b608a0f943f722d27e3744f66f25",
+        "policy": "0xd6a4217588f6b1f5657a92a3e94e6422ad771cea",
+        "paymentToken": "0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565",
+        "paymentTokenSymbol": "U",
+        "paymentTokenName": "United Stables",
+        "paymentDecimals": 18,
+        "commerceImplementation": "0x153783ddbdf5233c591965f04644b1df2d1a7815",
+        "routerImplementation": "0x40c0254610d92f1eb9c2d7d5d2114bc4c99d935e",
+        "paymentTokenImplementation": "0x6b5c44cbd4bbddf11723557ba1b77ec5e33225cc",
+        "paymentTokenProxyAdmin": "0x1e33d209c18f51d97f66ea461c6f819b59e78b30",
+        "abiHashes": {
+          "commerce": "4d8ac8b406dff522f1b9066eb3e00e2c8e491d4d09df2564ede124220b623ede",
+          "router": "75194cd4777b17459108a69da2e65c15dc00b2b8c7fe340794d28dceeb3d3329",
+          "policy": "843d484a26c8a21271df31078347cdb5bcfad705cd69bed729c2773bb392cc62"
+        },
+        "runtimeSha256": {
+          "commerceProxy": "a04dc24cdccd0690eae672f2ce21d4b2188c15bc30000b783da51d6bbd6ea13d",
+          "routerProxy": "a04dc24cdccd0690eae672f2ce21d4b2188c15bc30000b783da51d6bbd6ea13d",
+          "commerceImplementation": "df9996ee849157d112de9ca9eff870ddf30bd51d1c9b785669887797c697fd10",
+          "routerImplementation": "41ff045ec43932e4f28d25146edaf0a5c1d2425f3dab826c88afa52ec8ab1fa1",
+          "policy": "4a17125e2600679a15b88acf8cd481f442d8056fd38da709a4a774e621258ed5",
+          "paymentToken": "1076ca0b58e992bba671ddbde6a9d96685c712113eee50caa891c458fc2b48a9"
+        },
+        "riskLimits": {
+          "network": 97,
+          "token": "0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565",
+          "tokenSymbol": "U",
+          "maxBudgetAtomic": "10000000000000000",
+          "maxBudgetDisplay": "0.01"
+        },
+        "verificationStatus": "verified-read-only-address-bytecode-linkage-and-abi-source-pins; token-semantics-risk-and-paid-canary-pending"
       },
       "b402": {
         "enabled": false,
@@ -262,10 +294,10 @@
   "releaseGates": {
     "bscMainTrackNetworkDecision": "unresolved",
     "erc8004ValidationRegistry": "disabled-no-official-bsc-address",
-    "erc8183TestnetPolicyConflict": {
-      "readmeCandidate": "0x4f4678d4439fec812ac7674bb3efb4c8f5fb78a6",
-      "addressFileCandidate": "0xd6a4217588f6b1f5657a92a3e94e6422ad771cea",
-      "status": "must-verify-bytecode-linkage-and-authoritative-docs"
+    "erc8183TestnetPolicy": {
+      "activePolicy": "0xd6a4217588f6b1f5657a92a3e94e6422ad771cea",
+      "status": "resolved-active-whitelisted-policy",
+      "verificationStatus": "verified-read-only-linkage-and-router-whitelist"
     },
     "b402HostedSettlement": "disabled-until-real-facilitator-canary",
     "greenfieldProvider": "must-select-from-official-allowlist-at-runtime"

@@ -71,12 +71,14 @@ describe("Wave 1 legacy upgrade path", () => {
     expect(client).toContain("repairLegacyWaveOneBaseline");
   });
 
-  it("rewinds all disposable scheduling tables before replaying the latest migrations", () => {
+  it("rewinds all disposable scheduling and commerce tables before replaying the latest migrations", () => {
     expect(legacySmoke).toContain('DROP TABLE IF EXISTS "marketplace_ingestion_retries" CASCADE;');
     expect(legacySmoke).toContain('DROP TABLE IF EXISTS "marketplace_discovery_cursors" CASCADE;');
     expect(legacySmoke).toContain('DROP TABLE IF EXISTS "scan_discovery_checkpoints" CASCADE;');
-    expect(legacySmoke).toContain("LIMIT 5");
-    expect(legacySmoke).toContain('count === "7"');
+    expect(legacySmoke).toContain('DROP TABLE IF EXISTS "erc8183_operations" CASCADE;');
+    expect(legacySmoke).toContain('DROP COLUMN IF EXISTS "provider_binding" CASCADE');
+    expect(legacySmoke).toContain("LIMIT 6");
+    expect(legacySmoke).toContain('count === "8"');
     expect(legacySmoke).toContain("MARKETPLACE_RETRY_MIGRATION_MISSING");
   });
 });
