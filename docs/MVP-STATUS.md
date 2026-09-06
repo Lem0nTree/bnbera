@@ -214,3 +214,101 @@ deployed-browser evidence remains pending the public URL.
 Rollback is application-only: stop the preview process and/or remove only the
 two installed BNBEra cron lines, then restore the prior application artifact.
 Do not reset, delete, or roll back retained PostgreSQL history.
+
+## T2 retained reputation rollout addendum
+
+Updated: `2026-09-06T14:54:28Z`
+
+This addendum records the forward rollout from the merged reputation code at
+`7a79b3b4d1b943d2380491d7778f2dff12cc30ab` in the isolated checkout
+`/home/ubuntu/bnbera-t2-reputation-rollout`, branch
+`task/t2-reputation-rollout`. It does not change eligibility, semantic release,
+cron topology, or any later gate.
+
+### Backup and migration evidence
+
+- Retained PostgreSQL container: `bnbera_erc8004_pgvector`, healthy, loopback
+  `127.0.0.1:55432`, retained volume `bnbera_erc8004_pgdata`; database/role
+  observed as `bnbera_erc8004` / `bnbera_local`. Credentials were not printed
+  or recorded.
+- Pre-migration retained journal: five rows (through `0004`); no reputation
+  event or checkpoint rows existed.
+- Backup: `/home/ubuntu/bnbera-backups/bnbera_erc8004_retained_20260906T143826Z.dump`;
+  4,221,289 bytes; SHA-256
+  `c42aacfc43c6a8ff09b48a36a7dc191b3484c1786e3cce6efec60186f04a6ffe`;
+  `pg_restore --list` returned 336 entries.
+- Disposable migration smoke on the separate healthy `bnbera-t3-disposable-pg`
+  passed: `freshInstall=true`, `restartNoOp=true`,
+  `adr0003LegacyRepair=true`, `disposableDatabase=true`.
+- `pnpm db:migrate` applied only the forward `0005_outgoing_ezekiel.sql` and
+  `0006_reputation_replacement_log.sql` changes to retained data. Final
+  journal: seven rows, IDs `1`–`7`, all seven checked-in migration hashes
+  match. `erc8004_reputation_events`,
+  `erc8004_reputation_checkpoints`, and the replacement unique index are
+  present; event/checkpoint counts remain `0` / `0`.
+
+### Retained read snapshot
+
+The final read-only readiness snapshot used one-off safety overrides
+`ERC8004_INGESTION_ENABLED=false`,
+`ERC8004SCAN_DISCOVERY_ENABLED=false`, and
+`MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED=false`; this did not modify the
+retained environment or cron. `marketplace-readiness.ts --database-only`
+reported `status=degraded`, `dataState=degraded`, `appliedCount=7`,
+`expectedCount=7`, `hashesMatch=true`, and pgvector `0.8.6`.
+
+| Projection | Count |
+| --- | ---: |
+| ERC-8004 identities / agents | 2,120 / 2,120 |
+| Exact identity reads | 1,594 |
+| Published / verified / live agents | 25 / 25 / 25 |
+| Agent versions | 39 |
+| Capabilities / category predictions | 25 / 75 |
+| Discovery sources | 3,054 |
+| Service observations / healthy | 701 / 37 |
+| Services / healthy | 39 / 39 |
+| Service probes / healthy | 14,216 / 13,216 |
+| Listing embeddings (1536-dimensional lock) | 29 |
+| Reputation events / checkpoints | 0 / 0 |
+
+Published category supply at the snapshot was rebalancing `2`, grid-trading
+`3`, yield-optimisation `2`, health-factor `2`, and uncategorized `16`.
+
+### Reputation sync result and blocker
+
+The bounded command used the standards-locked BSC testnet identity/reputation
+registries, chain `97`, finalized RPC tag, max block range `10,000`, max events
+`10,000`, and an explicitly derived 5,000-block development read window. It
+was run with `ERC8004_INGESTION_ENABLED=true` and
+`ERC8004_REPUTATION_SYNC_ENABLED=true`; no private key or write-capable RPC
+method was used. The configured provider returned JSON-RPC `-32005 limit
+exceeded` from `eth_getLogs` even for a one-block query (with and without the
+reviewed event-topic filter), and `-32000 missing trie node` for finalized
+`eth_getCode`. The sync therefore returned sanitized `CHAIN_PROVIDER_ERROR`
+and did not commit a checkpoint or event. A retry returned the same error;
+reputation counts stayed `0 / 0` before and after (`retry_sync_exit=1`).
+Latest/finalized block preflight reads succeeded at the same block/hash before
+the provider log failure, so this is an RPC log/archive limitation rather than
+a standards-lock or migration failure. No fallback provider was invented.
+
+### Read/restart checks
+
+- `pnpm db:check` passed.
+- Targeted ERC-8004 reputation/RPC tests passed `5/5`; DB schema/legacy
+  migration tests passed `14/14`; isolated SHA production build passed.
+- A local web process on port `3110` passed the API verifier: HTTP `200`,
+  contract `bnbera.marketplace-read/v0.1`, degraded live read, deterministic
+  retrieval, `12/25` returned/total, zero fixture records. Detail read for
+  `b8x-health-factor-agent` returned the full tuple
+  `eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:2097`.
+- After stopping and restarting only that local process, the API projection,
+  ordered identity list, and explicit raw/recognized/verified reputation-view
+  statuses were unchanged. Readiness database+web remained HTTP/API pass with
+  7/7 migration hashes matching. The local process was stopped after checks.
+
+T2 reputation ingestion remains blocked on the configured provider's bounded
+`eth_getLogs`/finalized-state behavior. Raw, recognized-reviewer, and verified
+purchase views remain provenance-separated and explicitly unknown/unavailable;
+no rating or review count was fabricated. Retry after provider repair should
+resume from the still-empty checkpoint using the same finalized and bounded
+configuration.
