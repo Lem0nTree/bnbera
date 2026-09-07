@@ -107,7 +107,9 @@ describe("W0/W1 optional rails fail closed", () => {
     expect(lock.greenfield.storageProviders).toHaveLength(0);
     expect(lock.greenfield.verificationStatus).toMatch(/pending|blocked/i);
     expect(lock.altana.mainnet.verificationStatus).toMatch(/pending|blocked/i);
-    expect(lock.altana.testnet.verificationStatus).toMatch(/pending|blocked/i);
+    // The testnet Altana contracts have read-only runtime evidence, but no
+    // Creator authority or write rail is enabled by this lock.
+    expect(lock.altana.testnet.verificationStatus).toBe("verified-read-only-runtime-at-block-129582452");
     expect(lock.toolchain.agentStudioRuntime.integrity).toBeNull();
     expect(lock.toolchain.agentStudioRuntime.verificationStatus).toMatch(/pending|blocked/i);
     expect(lock.releaseGates.bscMainTrackNetworkDecision).toBe("unresolved");
@@ -193,8 +195,16 @@ describe("read-only marketplace surface", () => {
       detailRoutePath
     ];
     const sources = await Promise.all(sourcePaths.map((path) => readFile(path, "utf8")));
-    const optionalRailImport = /(?:@bnbera\/(?:altana|agent-commerce|payment-gateway|greenfield)|from\s+["'](?:altana|agent-commerce|payment-gateway|greenfield))/iu;
+    const optionalRailImport = /(?:@bnbera\/(?:altana|payment-gateway|greenfield)|from\s+["'](?:altana|payment-gateway|greenfield))/iu;
     const writeMethod = /(?:eth_sendRawTransaction|eth_sendTransaction|personal_sign|eth_sign|wallet_sendTransaction|sendTransaction|writeContract|signTransaction|broadcastTransaction)/iu;
+
+    // T5's server-side read model may compose the confirmed commerce
+    // projection to display completed jobs and verified reviews. Keep this
+    // narrow read dependency explicit: no other commerce bindings may enter
+    // the marketplace read seam.
+    const commerceImport = sources[1]?.match(/^import\s*\{([^}]*)\}\s*from\s*["']@bnbera\/agent-commerce["']/mu);
+    expect(commerceImport).not.toBeNull();
+    expect(commerceImport?.[1]?.replace(/\s+/gu, "")).toBe("PostgresErc8183MarketplaceProjection");
 
     for (const source of sources) {
       expect(source).not.toMatch(optionalRailImport);
