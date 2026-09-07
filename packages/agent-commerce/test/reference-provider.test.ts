@@ -16,6 +16,7 @@ import {
   erc8183JobRecordSchema,
   healthFactorLendingSnapshotSchema,
   referenceProviderIdempotencyKey,
+  referenceProviderReadinessConfigFromEnvironment,
   referenceProviderRunnerConfigFromEnvironment,
   referenceProviderSecretReferenceSchema,
   type Erc8183AltanaAuthority,
@@ -289,6 +290,7 @@ describe("BNBEra reference health-factor provider", () => {
 
   it("accepts only secret references and keeps the runner disabled without an opt-in", () => {
     expect(referenceProviderRunnerConfigFromEnvironment({})).toMatchObject({ enabled: false, releaseEnabled: false, chainId: 97 });
+    expect(referenceProviderReadinessConfigFromEnvironment({})).toMatchObject({ enabled: false, releaseEnabled: false, chainId: 97 });
     expect(() => referenceProviderSecretReferenceSchema.parse(PROVIDER)).toThrow(/secret reference/i);
     expect(() => referenceProviderSecretReferenceSchema.parse("secret://")).toThrow(/secret reference/i);
 
@@ -314,6 +316,26 @@ describe("BNBEra reference health-factor provider", () => {
       releaseEnabled: false,
       authoritySecretReference: "secret://t5/reference-provider"
     });
+
+    const readinessEnvironment = Object.fromEntries(
+      Object.entries({ ...enabledEnvironment, T5_REFERENCE_PROVIDER_SECRET_REFERENCE: "secret://t5/reference-provider" })
+        .filter(([name]) => name !== "T5_REFERENCE_PROVIDER_JOB_ID")
+    );
+    expect(referenceProviderReadinessConfigFromEnvironment(readinessEnvironment)).toMatchObject({
+      enabled: true,
+      chainId: 97,
+      identity: PROVIDER_BINDING.identity,
+      expectedOwnerAddress: OWNER,
+      providerAddress: PROVIDER,
+      providerEndpoint: "https://provider.example/api/reference-provider/health-factor",
+      authoritySecretReference: "secret://t5/reference-provider",
+      commerceContract: COMMERCE,
+      routerContract: ROUTER,
+      policyContract: POLICY,
+      maxBudgetAtomic: REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC
+    });
+    expect(referenceProviderReadinessConfigFromEnvironment(readinessEnvironment)).not.toHaveProperty("jobKey");
+    expect(() => referenceProviderRunnerConfigFromEnvironment(readinessEnvironment)).toThrow(/T5_REFERENCE_PROVIDER_JOB_ID/);
   });
 
   it("calls the existing health-factor endpoint and retains its exact canonical bytes and digest", async () => {

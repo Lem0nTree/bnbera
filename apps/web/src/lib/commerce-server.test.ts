@@ -209,7 +209,7 @@ describe("T5 commerce server composition", () => {
     }
   });
 
-  it("injects the configured reference readiness resolver while keeping unresolved secrets closed", async () => {
+  it("enables configured reference readiness before a protocol job exists while keeping unresolved secrets closed", async () => {
     vi.stubEnv("NODE_ENV", "test");
     vi.stubEnv("T5_ALTANA_AUTH_ENABLED", "false");
     vi.stubEnv("T5_WALLETCONNECT_AUTH_ENABLED", "true");
@@ -220,7 +220,6 @@ describe("T5 commerce server composition", () => {
     vi.stubEnv("T5_REFERENCE_PROVIDER_IDENTITY_REGISTRY", IDENTITY.identityRegistry);
     vi.stubEnv("T5_REFERENCE_PROVIDER_AGENT_ID", IDENTITY.agentId);
     vi.stubEnv("T5_REFERENCE_PROVIDER_COMMERCE_CONTRACT", COMMERCE);
-    vi.stubEnv("T5_REFERENCE_PROVIDER_JOB_ID", "7");
     vi.stubEnv("T5_REFERENCE_PROVIDER_EXPECTED_OWNER_ADDRESS", BUYER);
     vi.stubEnv("T5_REFERENCE_PROVIDER_ADDRESS", OTHER);
     vi.stubEnv("T5_REFERENCE_PROVIDER_SERVICE_URL", "https://provider.example/a2a");
