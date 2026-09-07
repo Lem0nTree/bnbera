@@ -180,6 +180,9 @@ export const authSessions = pgTable(
       .notNull()
       .references(() => authUsers.id, { onDelete: "cascade" }),
     tokenDigest: varchar("token_digest", { length: 128 }).notNull(),
+    /** Nullable only for legacy rows; new sessions must bind both fields. */
+    walletAddress: varchar("wallet_address", { length: 42 }),
+    chainId: integer("chain_id"),
     issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
@@ -187,7 +190,12 @@ export const authSessions = pgTable(
   },
   (table) => [
     uniqueIndex("auth_sessions_token_digest_unique").on(table.tokenDigest),
-    index("auth_sessions_user_idx").on(table.userId)
+    index("auth_sessions_user_idx").on(table.userId),
+    index("auth_sessions_wallet_context_idx").on(table.walletAddress, table.chainId),
+    check(
+      "auth_sessions_wallet_binding_check",
+      sql`(${table.walletAddress} IS NULL AND ${table.chainId} IS NULL) OR (${table.walletAddress} IS NOT NULL AND ${table.chainId} IN (56, 97))`
+    )
   ]
 );
 
@@ -1117,6 +1125,138 @@ export const erc8183JobEvents = pgTable(
   ]
 );
 
+/**
+ * Public result projection for a confirmed BNBEra ERC-8183 job. The protocol
+ * job/event tables remain the canonical lifecycle; this table is deliberately
+ * a small read projection that keeps the two result digests and the receipt
+ * provenance needed by marketplace cards, detail pages, and verified reviews.
+ * It is populated only after a receipt-backed submission/settlement event.
+ */
+export const commerceJobResults = pgTable(
+  "commerce_job_results",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    commerceJobId: uuid("commerce_job_id")
+      .notNull()
+      .references(() => commerceJobs.id, { onDelete: "cascade" }),
+    erc8183JobRecordId: uuid("erc8183_job_record_id")
+      .notNull()
+      .references(() => erc8183Jobs.id, { onDelete: "cascade" }),
+    chainId: integer("chain_id").notNull(),
+    commerceContract: varchar("commerce_contract", { length: 42 }).notNull(),
+    protocolJobId: text("protocol_job_id").notNull(),
+    buyerUserId: uuid("buyer_user_id").references(() => authUsers.id, { onDelete: "set null" }),
+    buyerAddress: varchar("buyer_address", { length: 42 }).notNull(),
+    identityNamespace: varchar("identity_namespace", { length: 128 }).notNull(),
+    identityChainId: integer("identity_chain_id").notNull(),
+    identityRegistry: varchar("identity_registry", { length: 42 }).notNull(),
+    identityAgentId: text("identity_agent_id").notNull(),
+    agentVersionId: uuid("agent_version_id").notNull(),
+    agentVersion: integer("agent_version").notNull(),
+    providerAddress: varchar("provider_address", { length: 42 }).notNull(),
+    providerBinding: jsonb("provider_binding").$type<Record<string, unknown>>().notNull(),
+    resultSha256: varchar("result_sha256", { length: 64 }).notNull(),
+    resultKeccak: varchar("result_keccak", { length: 66 }).notNull(),
+    resultUrl: text("result_url"),
+    resultPayload: jsonb("result_payload").$type<Record<string, unknown>>(),
+    submissionTransactionHash: varchar("submission_transaction_hash", { length: 66 }).notNull(),
+    submissionBlockNumber: bigint("submission_block_number", { mode: "number" }).notNull(),
+    submissionBlockHash: varchar("submission_block_hash", { length: 66 }).notNull(),
+    submissionLogIndex: integer("submission_log_index"),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull(),
+    state: varchar("state", { length: 16 }).notNull().default("submitted"),
+    settlementTransactionHash: varchar("settlement_transaction_hash", { length: 66 }),
+    settlementBlockNumber: bigint("settlement_block_number", { mode: "number" }),
+    settlementBlockHash: varchar("settlement_block_hash", { length: 66 }),
+    settlementLogIndex: integer("settlement_log_index"),
+    settledAt: timestamp("settled_at", { withTimezone: true }),
+    createdAt: now(),
+    updatedAt: now()
+  },
+  (table) => [
+    uniqueIndex("commerce_job_result_protocol_unique").on(table.chainId, table.commerceContract, table.protocolJobId),
+    uniqueIndex("commerce_job_result_erc8183_job_unique").on(table.erc8183JobRecordId),
+    index("commerce_job_result_identity_idx").on(table.identityNamespace, table.identityChainId, table.identityRegistry, table.identityAgentId, table.agentVersionId),
+    index("commerce_job_result_settled_idx").on(table.state, table.settledAt),
+    check("commerce_job_result_chain_check", sql`${table.chainId} in (56, 97) AND ${table.identityChainId} = ${table.chainId}`),
+    check("commerce_job_result_contract_check", sql`${table.commerceContract} ~ '^0x[0-9A-Fa-f]{40}$' AND ${table.identityRegistry} ~ '^0x[0-9A-Fa-f]{40}$'`),
+    check("commerce_job_result_protocol_job_id_check", sql`${table.protocolJobId} ~ '^(0|[1-9][0-9]*)$'`),
+    check("commerce_job_result_address_check", sql`${table.buyerAddress} ~ '^0x[0-9A-Fa-f]{40}$' AND ${table.providerAddress} ~ '^0x[0-9A-Fa-f]{40}$'`),
+    check("commerce_job_result_agent_id_check", sql`${table.identityAgentId} ~ '^(0|[1-9][0-9]*)$'`),
+    check("commerce_job_result_version_check", sql`${table.agentVersion} > 0`),
+    check("commerce_job_result_sha_check", sql`${table.resultSha256} ~ '^[0-9A-Fa-f]{64}$'`),
+    check("commerce_job_result_keccak_check", sql`${table.resultKeccak} ~ '^0x[0-9A-Fa-f]{64}$'`),
+    check("commerce_job_result_submission_hash_check", sql`${table.submissionTransactionHash} ~ '^0x[0-9A-Fa-f]{64}$' AND ${table.submissionBlockHash} ~ '^0x[0-9A-Fa-f]{64}$'`),
+    check("commerce_job_result_settlement_state_check", sql`${table.state} in ('submitted', 'settled')`),
+    check("commerce_job_result_settlement_fields_check", sql`num_nonnulls(${table.settlementTransactionHash}, ${table.settlementBlockNumber}, ${table.settlementBlockHash}, ${table.settledAt}) in (0, 4)`),
+    check("commerce_job_result_settled_state_check", sql`(${table.state} = 'settled') = (${table.settlementTransactionHash} IS NOT NULL)`),
+    check("commerce_job_result_log_index_check", sql`(${table.submissionLogIndex} IS NULL OR ${table.submissionLogIndex} >= 0) AND (${table.settlementLogIndex} IS NULL OR ${table.settlementLogIndex} >= 0)`)
+  ]
+);
+
+/**
+ * BNBEra verified-purchase reviews are revisioned rows, not a generic review
+ * platform and not ERC-8004 Reputation Registry feedback. Historical rows are
+ * retained as revoked/superseded; `activeReviewKey` is non-null only for the
+ * current row and its unique index enforces at most one active review/job.
+ */
+export const commerceJobReviews = pgTable(
+  "commerce_job_reviews",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    commerceJobResultId: uuid("commerce_job_result_id")
+      .notNull()
+      .references(() => commerceJobResults.id, { onDelete: "cascade" }),
+    commerceJobId: uuid("commerce_job_id")
+      .notNull()
+      .references(() => commerceJobs.id, { onDelete: "cascade" }),
+    buyerUserId: uuid("buyer_user_id")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "restrict" }),
+    buyerAddress: varchar("buyer_address", { length: 42 }).notNull(),
+    identityNamespace: varchar("identity_namespace", { length: 128 }).notNull(),
+    identityChainId: integer("identity_chain_id").notNull(),
+    identityRegistry: varchar("identity_registry", { length: 42 }).notNull(),
+    identityAgentId: text("identity_agent_id").notNull(),
+    agentVersionId: uuid("agent_version_id").notNull(),
+    agentVersion: integer("agent_version").notNull(),
+    providerBinding: jsonb("provider_binding").$type<Record<string, unknown>>().notNull(),
+    resultSha256: varchar("result_sha256", { length: 64 }).notNull(),
+    resultKeccak: varchar("result_keccak", { length: 66 }).notNull(),
+    settlementTransactionHash: varchar("settlement_transaction_hash", { length: 66 }).notNull(),
+    score: integer("score").notNull(),
+    comment: text("comment").notNull().default(""),
+    reviewState: varchar("review_state", { length: 16 }).notNull().default("active"),
+    revision: integer("revision").notNull().default(1),
+    activeReviewKey: uuid("active_review_key"),
+    supersedesReviewId: uuid("supersedes_review_id"),
+    idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revocationReason: varchar("revocation_reason", { length: 240 }),
+    createdAt: now(),
+    updatedAt: now()
+  },
+  (table) => [
+    uniqueIndex("commerce_job_review_active_unique").on(table.activeReviewKey),
+    uniqueIndex("commerce_job_review_revision_unique").on(table.commerceJobId, table.revision),
+    uniqueIndex("commerce_job_review_idempotency_unique").on(table.buyerUserId, table.idempotencyKey),
+    index("commerce_job_review_identity_idx").on(table.identityNamespace, table.identityChainId, table.identityRegistry, table.identityAgentId, table.agentVersionId, table.reviewState),
+    index("commerce_job_review_result_idx").on(table.commerceJobResultId, table.reviewState),
+    check("commerce_job_review_chain_check", sql`${table.identityChainId} in (56, 97)`),
+    check("commerce_job_review_address_check", sql`${table.buyerAddress} ~ '^0x[0-9A-Fa-f]{40}$' AND ${table.identityRegistry} ~ '^0x[0-9A-Fa-f]{40}$'`),
+    check("commerce_job_review_agent_id_check", sql`${table.identityAgentId} ~ '^(0|[1-9][0-9]*)$'`),
+    check("commerce_job_review_version_check", sql`${table.agentVersion} > 0`),
+    check("commerce_job_review_sha_check", sql`${table.resultSha256} ~ '^[0-9A-Fa-f]{64}$'`),
+    check("commerce_job_review_keccak_check", sql`${table.resultKeccak} ~ '^0x[0-9A-Fa-f]{64}$'`),
+    check("commerce_job_review_receipt_check", sql`${table.settlementTransactionHash} ~ '^0x[0-9A-Fa-f]{64}$'`),
+    check("commerce_job_review_score_check", sql`${table.score} between 1 and 5`),
+    check("commerce_job_review_state_check", sql`${table.reviewState} in ('active', 'superseded', 'revoked')`),
+    check("commerce_job_review_active_key_check", sql`(${table.reviewState} = 'active') = (${table.activeReviewKey} IS NOT NULL)`),
+    check("commerce_job_review_revocation_check", sql`(${table.reviewState} = 'revoked') = (${table.revokedAt} IS NOT NULL)`),
+    check("commerce_job_review_revision_check", sql`${table.revision} > 0`)
+  ]
+);
+
 /** Durable pre-send/idempotency and reconciliation state for SDK operations. */
 export const erc8183Operations = pgTable(
   "erc8183_operations",
@@ -1586,6 +1726,8 @@ export const schemaTables = {
   commerceJobs,
   erc8183Jobs,
   erc8183JobEvents,
+  commerceJobResults,
+  commerceJobReviews,
   erc8183Operations,
   paymentChallenges,
   paymentAttempts,

@@ -700,6 +700,23 @@ describe("MarketplaceReadService", () => {
       recognizedReviewers: { status: "unavailable", count: null },
       verifiedPurchases: { status: "unavailable", count: null }
     });
+
+    repository.listReputationFeedback = async () => [];
+    const commerceDegradedSource = new IngestionMarketplaceSource(
+      repository,
+      new InMemoryMarketplaceMetadataSource([metadata]),
+      {
+        now: () => sourceNow,
+        commerceProjection: {
+          readForIdentity: async () => {
+            throw new Error("commerce projection temporarily unavailable");
+          }
+        }
+      }
+    );
+    const commerceDegradedSnapshot = await commerceDegradedSource.read();
+    expect(commerceDegradedSnapshot.status).toBe("degraded");
+    expect(commerceDegradedSnapshot.warning).toContain("BNBEra completed-job/review projection was unavailable");
   });
 
   it("fills an explicit reputation absence for legacy listings", async () => {

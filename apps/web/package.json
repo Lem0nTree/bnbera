@@ -12,16 +12,21 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@altananetwork/sdk": "0.9.0",
     "@bnbera/agent-commerce": "workspace:*",
     "@bnbera/agent-ingestion": "workspace:*",
+    "@bnbera/auth": "workspace:*",
     "@bnbera/config": "workspace:*",
     "@bnbera/domain": "workspace:*",
     "@bnbera/marketplace": "workspace:*",
     "@bnbera/ui": "workspace:*",
+    "@tanstack/react-query": "5.59.0",
     "next": "16.0.1",
     "pg": "8.13.1",
     "react": "19.2.0",
     "react-dom": "19.2.0",
+    "viem": "2.56.3",
+    "wagmi": "2.16.9",
     "zod": "3.24.1"
   },
   "devDependencies": {

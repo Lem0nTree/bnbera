@@ -16,6 +16,7 @@ function reputationViewSummary(view: MarketplaceAgentReadModel["metrics"]["reput
 
 type ReputationView = MarketplaceAgentReadModel["metrics"]["reputation"]["rawPermissionless"];
 type ReputationFeedback = ReputationView["feedback"][number];
+type VerifiedPurchaseReview = MarketplaceAgentReadModel["metrics"]["reputation"]["verifiedReviews"][number];
 
 /** Only HTTP(S) feedback URIs become links; every other URI stays inert text. */
 function safeFeedbackLink(value: string): string | null {
@@ -81,6 +82,37 @@ function ReputationFeedbackView({ label, view }: { readonly label: string; reado
       {view.feedback.length > 0
         ? view.feedback.map((feedback) => <ReputationFeedbackRecord key={`${feedback.feedbackTransactionHash}-${feedback.feedbackLogIndex}-${feedback.feedbackBlockHash}`} feedback={feedback} />)
         : <p className="detail-section__lede">{view.reason ?? "No feedback records are available in this view."}</p>}
+    </div>
+  );
+}
+
+function VerifiedPurchaseReviewRecord({ review }: { readonly review: VerifiedPurchaseReview }) {
+  return (
+    <div className="capability-card">
+      <div className="detail-actions">
+        <StatusBadge value={`${review.score}/5`} tone="success" />
+        <span className="muted-label">Verified purchase · {formatObservedAt(review.observedAt)}</span>
+      </div>
+      <div className="detail-kv"><span>Reviewer</span><span><code>{review.reviewerAddress}</code></span></div>
+      <div className="detail-kv"><span>Completed job</span><span><code>{review.commerceJobId}</code></span></div>
+      <div className="detail-kv"><span>Result SHA-256</span><span><code>{review.resultSha256}</code></span></div>
+      <div className="detail-kv"><span>Result Keccak</span><span><code>{review.resultKeccak}</code></span></div>
+      <div className="detail-kv"><span>Settlement receipt</span><span><code>{review.settlementTransactionHash}</code></span></div>
+      <div className="detail-kv"><span>Buyer comment</span><span>{review.comment || "No comment provided."}</span></div>
+    </div>
+  );
+}
+
+function VerifiedPurchaseReviewView({ reviews }: { readonly reviews: readonly VerifiedPurchaseReview[] }) {
+  return (
+    <div className="detail-section__body">
+      <div className="detail-actions">
+        <strong>Verified-purchase reviews</strong>
+        <StatusBadge value={reviews.length > 0 ? `${reviews.length} observed` : "None observed"} tone={reviews.length > 0 ? "success" : "neutral"} />
+      </div>
+      {reviews.length > 0
+        ? reviews.map((review) => <VerifiedPurchaseReviewRecord key={review.reviewId} review={review} />)
+        : <p className="detail-section__lede">No settled BNBEra review is available for this listing.</p>}
     </div>
   );
 }
@@ -236,12 +268,13 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
             <div className="detail-kv"><span>Recognized reviewer / validator</span><span>{reputationViewSummary(agent.metrics.reputation.recognizedReviewers)}</span></div>
             <div className="detail-kv"><span>BNBEra verified-purchase reviews</span><span>{reputationViewSummary(agent.metrics.reputation.verifiedPurchases)}</span></div>
             <div className="detail-kv"><span>Completed jobs</span><span>{agent.metrics.completedJobs.completedCount === null ? "Unavailable" : agent.metrics.completedJobs.completedCount} · {agent.metrics.completedJobs.source ?? "No source"}</span></div>
-            <div className="detail-kv"><span>Last result</span><span>{agent.metrics.lastResult.summary ?? "Unavailable"}{agent.metrics.lastResult.reference === null ? "" : ` · ${agent.metrics.lastResult.reference}`}</span></div>
+            <div className="detail-kv"><span>Latest settled result / receipt</span><span>{agent.metrics.lastResult.summary ?? "Unavailable"}{agent.metrics.lastResult.reference === null ? "" : ` · ${agent.metrics.lastResult.reference}`}</span></div>
             <p className="muted-label">Metrics are observed from persisted probes/enrichment only; no live qualification or fabricated zero values are implied.</p>
           </div>
           <ReputationFeedbackView label="Raw permissionless feedback provenance" view={agent.metrics.reputation.rawPermissionless} />
           <ReputationFeedbackView label="Recognized reviewer / validator provenance" view={agent.metrics.reputation.recognizedReviewers} />
           <ReputationFeedbackView label="BNBEra verified-purchase review provenance" view={agent.metrics.reputation.verifiedPurchases} />
+          <VerifiedPurchaseReviewView reviews={agent.metrics.reputation.verifiedReviews} />
         </section>
 
         <section className="detail-section">

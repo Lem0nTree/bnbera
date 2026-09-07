@@ -19,15 +19,15 @@ export async function POST(request: Request): Promise<Response> {
   try {
     const input = await parseCommerceJson(request, commerceHireRequestSchema);
     const composition = await getCommerceComposition();
-    const result = await composition.hire(request, input);
-    const jobId = result.operation.jobId ?? result.result?.jobId ?? null;
-    const job = jobId === null ? null : await composition.readWithoutActor(jobId);
+    const result = await composition.prepareHireIntent(request, input);
+    const jobId = result.operation.jobId;
     return commerceHttpJson(commerceActionResponse({
-      status: result.replayed ? "replayed" : "confirmed",
+      status: result.replayed ? "replayed" : "prepared",
       jobId,
       operationId: result.operation.operationId,
       operation: toErc8183PublicOperation(result.operation),
-      job
+      job: result.read,
+      dispatch: result.dispatch
     }));
   } catch (error) {
     return commerceHttpError(error);

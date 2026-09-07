@@ -31,7 +31,8 @@ export async function POST(
       jobId,
       operationId: result.operation.operationId,
       operation: toErc8183PublicOperation(result.operation),
-      job
+      job,
+      dispatch: null
     }));
   } catch (error) {
     return commerceHttpError(error);

@@ -285,10 +285,23 @@
       "verificationStatus": "pending-address-capture-and-code-check"
     },
     "testnet": {
-      "relay": null,
-      "keyStore": null,
-      "controller": null,
-      "verificationStatus": "pending-address-capture-and-code-check"
+      "chainId": 97,
+      "relay": "https://testnet-relay.altana.network",
+      "keyStore": "0x6b8361C29d05D498b1a12B54A37310f94171E94A",
+      "controller": "0xb530D1971f5453F3359518343F05D0AedFfF7e12",
+      "publicRpcUrl": "https://bsc-testnet-rpc.publicnode.com",
+      "verificationBlock": 129582452,
+      "keyStoreRuntimeSha256": "a6fd38a6c657bf35a02ad3505be00a58893ae058b886264e4c6ac69c51c4d368",
+      "controllerRuntimeSha256": "d4d5a418229b436b9437b87135a411384c0bf90fe3c027812e1bb9aefec42184",
+      "controllerKeyStore": "0x6b8361C29d05D498b1a12B54A37310f94171E94A",
+      "deploymentKind": "direct",
+      "eip1967ImplementationSlot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "eip1967BeaconSlot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "relayGet": {
+        "status": 405,
+        "body": "Used HTTP Method is not allowed. POST is required"
+      },
+      "verificationStatus": "verified-read-only-runtime-at-block-129582452"
     }
   },
   "releaseGates": {

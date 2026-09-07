@@ -1,7 +1,8 @@
 import { canonicalSha256Hex } from "@bnbera/domain";
 import { CommerceError } from "./errors.js";
 import { approveErc8183Result } from "./lifecycle.js";
-import type { Erc8183OperationQueryPool } from "./operations.js";
+import { persistMarketplaceSettlementProjection, persistMarketplaceSubmissionProjection } from "./marketplace-projection.js";
+import type { Erc8183OperationQueryClient, Erc8183OperationQueryPool } from "./operations.js";
 import {
   erc8183JobEventSchema,
   erc8183JobRecordSchema,
@@ -66,7 +67,7 @@ type JobRow = {
   readonly updated_at: Date | string;
 };
 
-type JobIdRow = { readonly id: string };
+type JobIdRow = { readonly id: string; readonly commerce_job_id?: string };
 
 type EventRow = {
   readonly chain_id: number;
@@ -274,6 +275,29 @@ function jobValues(input: PersistentErc8183JobCreateInput | PersistentErc8183Job
 export class PostgresErc8183JobRepository {
   public constructor(private readonly pool: Erc8183OperationQueryPool) {}
 
+  /** Keep the buyer-facing parent bound to the same confirmed funding proof. */
+  private async syncMarketplaceFunding(
+    client: Erc8183OperationQueryClient,
+    input: PersistentErc8183JobCreateInput,
+    job: Erc8183JobRecord
+  ): Promise<void> {
+    if (job.state === "open" || job.fundingTransactionHash === null) return;
+    const result = await client.query<{ readonly id: string }>(`
+      UPDATE commerce_jobs
+      SET erc8183_job_id = $2,
+          status = CASE WHEN status IN ('draft', 'negotiating') THEN 'funded' ELSE status END,
+          funding_transaction_hash = COALESCE(funding_transaction_hash, $3),
+          "updatedAt" = now()
+      WHERE id = $1
+        AND (funding_transaction_hash IS NULL OR funding_transaction_hash = $3)
+        AND (erc8183_job_id = $2 OR erc8183_job_id LIKE 'draft:%' OR erc8183_job_id LIKE 'intent:%')
+      RETURNING id
+    `, [input.commerceJobId, job.jobKey.jobId, job.fundingTransactionHash]);
+    if (result.rows[0] === undefined) {
+      throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed funding proof could not be bound to its parent commerce reservation.", transactionHash: job.fundingTransactionHash as `0x${string}`, nextAction: "manual_review" });
+    }
+  }
+
   public async get(jobKey: { readonly chainId: 56 | 97; readonly commerceContract: string; readonly jobId: string }): Promise<Erc8183JobRecord | null> {
     const result = await this.pool.query<JobRow>(`${jobSelect} WHERE chain_id = $1 AND commerce_contract = $2 AND erc8183_job_id = $3`, [jobKey.chainId, normalizeAddress(jobKey.commerceContract, "commerce contract"), jobKey.jobId]);
     return result.rows[0] === undefined ? null : rowToJob(result.rows[0]);
@@ -328,6 +352,7 @@ export class PostgresErc8183JobRepository {
     const existing = await this.get(job.jobKey);
     if (existing !== null) {
       if (canonicalSha256Hex(existing) !== canonicalSha256Hex(job)) throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "An ERC-8183 protocol job already exists with different terms." });
+      if (existing.fundingTransactionHash !== null) await this.syncMarketplaceFunding(this.pool, input, existing);
       return { job: existing, replayed: true };
     }
     const client = await this.pool.connect();
@@ -356,6 +381,7 @@ export class PostgresErc8183JobRepository {
           confirmation_state, payload_digest, payload, correlation_id, observed_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15)
       `, eventValues(event, protocolRow.id));
+      await this.syncMarketplaceFunding(client, input, job);
       await client.query("COMMIT");
     } catch (cause) {
       try { await client.query("ROLLBACK"); } catch { /* retain original error */ }
@@ -414,7 +440,7 @@ export class PostgresErc8183JobRepository {
           completion_transaction_hash = $14, rejection_transaction_hash = $15,
           refund_transaction_hash = $16, last_observed_block = $17,
           last_observed_block_hash = $18, last_observed_at = $19, "updatedAt" = $20
-        WHERE chain_id = $1 AND commerce_contract = $2 AND erc8183_job_id = $3 AND state = $21 RETURNING id
+        WHERE chain_id = $1 AND commerce_contract = $2 AND erc8183_job_id = $3 AND state = $21 RETURNING id, commerce_job_id
       `, [job.jobKey.chainId, job.jobKey.commerceContract, job.jobKey.jobId, job.terms.providerAddress, job.terms.budgetAtomic, job.state, job.deliverableDigest, job.providerBinding ?? null, job.buyerApproval?.buyerAddress ?? null, job.buyerApproval?.resultDigest ?? null, job.buyerApproval === null ? null : new Date(job.buyerApproval.approvedAtUnix * 1_000), job.fundingTransactionHash, job.submissionTransactionHash, job.completionTransactionHash, job.rejectionTransactionHash, job.refundTransactionHash, job.lastObservedBlock, job.lastObservedBlockHash, job.lastObservedAtUnix === null ? null : new Date(job.lastObservedAtUnix * 1_000), new Date(job.updatedAtUnix * 1_000), input.previousState]);
       const protocolRow = updated.rows[0];
       if (protocolRow === undefined) throw new CommerceError({ code: "STALE_JOB", message: "The persisted ERC-8183 job is not in the expected state.", retriable: true, nextAction: "reconcile_job" });
@@ -424,7 +450,14 @@ export class PostgresErc8183JobRepository {
           actor_address, transaction_hash, block_number, block_hash, log_index,
           confirmation_state, payload_digest, payload, correlation_id, observed_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15)
-      `, eventValues(event, protocolRow.id));
+        `, eventValues(event, protocolRow.id));
+      if (event.eventType === "job_submitted") {
+        if (protocolRow.commerce_job_id === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted ERC-8183 job has no BNBEra commerce job binding." });
+        await persistMarketplaceSubmissionProjection(client, { jobRecordId: protocolRow.id, commerceJobId: protocolRow.commerce_job_id, job, event });
+      } else if (event.eventType === "job_completed") {
+        if (protocolRow.commerce_job_id === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted ERC-8183 job has no BNBEra commerce job binding." });
+        await persistMarketplaceSettlementProjection(client, { jobRecordId: protocolRow.id, commerceJobId: protocolRow.commerce_job_id, job, event });
+      }
       await client.query("COMMIT");
     } catch (cause) {
       try { await client.query("ROLLBACK"); } catch { /* retain original error */ }

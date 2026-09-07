@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { encodeAbiParameters } from "viem";
 import {
   JsonRpcClient,
   JsonRpcRegistryChainReader,
+  createOfficialErc8004RegistryEventDecoder,
+  createOfficialErc8004RegistryReader,
   createOfficialErc8004RegistryReadDefinitions,
   officialErc8004IdentityAbiSha256
 } from "../index.js";
@@ -9,6 +12,7 @@ import {
 const registry = "0x1111111111111111111111111111111111111111";
 const identity = { namespace: "eip155", chainId: 97, identityRegistry: registry, agentId: "7" } as const;
 const blockHash = `0x${"aa".repeat(32)}`;
+const metadataBlockHash = `0x${"bb".repeat(32)}`;
 
 function rpcResponse(result: unknown, id: number): Response {
   return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), { status: 200, headers: { "content-type": "application/json" } });
@@ -94,6 +98,57 @@ describe("configured read-only registry adapter", () => {
       definitions.agentWallet.calldata(identity),
       definitions.agentUri.calldata(identity)
     ]);
+  });
+
+  it("uses a bounded chain-97 range and decodes MetadataUpdate from the locked _tokenId argument", async () => {
+    const decoder = createOfficialErc8004RegistryEventDecoder();
+    const requests: Array<{ readonly method: string; readonly params: readonly unknown[] }> = [];
+    const metadataUpdateLog = {
+      address: registry,
+      topics: [decoder.logTopics[4]],
+      data: encodeAbiParameters([{ type: "uint256" }], [7n]),
+      blockNumber: "0xb",
+      transactionHash: `0x${"cc".repeat(32)}`,
+      logIndex: "0x0",
+      blockHash: metadataBlockHash
+    };
+    const fetcher = async (_input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
+      const body = JSON.parse(String(init?.body)) as { readonly method: string; readonly id: number; readonly params?: readonly unknown[] };
+      const params = body.params ?? [];
+      requests.push({ method: body.method, params });
+      if (body.method === "eth_chainId") return rpcResponse("0x61", body.id);
+      if (body.method === "eth_getLogs") return rpcResponse([metadataUpdateLog], body.id);
+      if (body.method === "eth_getBlockByNumber" && params[0] === "0xb") return rpcResponse({ hash: metadataBlockHash }, body.id);
+      throw new Error(`unexpected request ${body.method} ${JSON.stringify(params)}`);
+    };
+    const reader = createOfficialErc8004RegistryReader({
+      chainId: 97,
+      identityRegistry: registry,
+      client: new JsonRpcClient("https://rpc.example.test", { fetch: fetcher }),
+      expectedAbiSha256: officialErc8004IdentityAbiSha256
+    });
+
+    const events = await reader.getRegistryEvents({
+      chainId: 97,
+      identityRegistry: registry,
+      fromBlock: 10,
+      toBlock: 11
+    });
+
+    expect(events).toMatchObject([{
+      identity,
+      eventType: "MetadataUpdate",
+      blockNumber: 11,
+      blockHash: metadataBlockHash,
+      payload: { event: "MetadataUpdate", args: { _tokenId: "7" } }
+    }]);
+    const logRequest = requests.find((request) => request.method === "eth_getLogs");
+    expect(logRequest?.params[0]).toEqual({
+      address: registry,
+      fromBlock: "0xa",
+      toBlock: "0xb",
+      topics: [decoder.logTopics]
+    });
   });
 
   it("preserves a nonexistent/reverting registry read as an error", async () => {

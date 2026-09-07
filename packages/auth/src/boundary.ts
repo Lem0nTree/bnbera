@@ -41,7 +41,10 @@ export const siweRequestSchema = z.object({
   expirationTime: z.coerce.date(),
   notBefore: z.coerce.date().optional(),
   statement: z.string().max(1_000).optional(),
-  resources: z.array(z.string().url()).max(32).optional()
+  resources: z.array(z.string().url()).max(32).optional(),
+  /** Present for EOA/SIWE verification; never persisted in the session. */
+  message: z.string().min(1).max(8_192).optional(),
+  signature: z.string().regex(/^0x[0-9a-fA-F]+$/u).max(2_048).optional()
 });
 
 export type SiweRequest = z.infer<typeof siweRequestSchema>;
@@ -82,12 +85,12 @@ export interface SiweVerifier {
 }
 
 export interface NonceStore {
-  issue(input: { readonly domain: string; readonly chainId: number }): Promise<{
+  issue(input: { readonly domain: string; readonly chainId: number; readonly walletAddress?: string }): Promise<{
     readonly nonce: string;
     readonly expiresAt: Date;
   }>;
   /** Consume atomically: at most one concurrent verifier may receive true. */
-  consume(input: { readonly domain: string; readonly chainId: number; readonly nonce: string }): Promise<boolean>;
+  consume(input: { readonly domain: string; readonly chainId: number; readonly nonce: string; readonly walletAddress?: string }): Promise<boolean>;
 }
 
 export interface SessionStore {
@@ -294,7 +297,8 @@ export async function verifySiweRequest(
     consumed = await nonceStore.consume({
       domain: context.domain,
       chainId: request.chainId,
-      nonce: request.nonce
+      nonce: request.nonce,
+      walletAddress: verifiedAddress
     });
   } catch (cause) {
     throw authError("SIWE_NONCE_UNAVAILABLE", "Wallet proof could not be accepted.", "try_again", cause);

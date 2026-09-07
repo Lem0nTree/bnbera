@@ -45,6 +45,8 @@ export interface Erc8183OperationContext {
   readonly sdkAction?: Erc8183SdkAction;
   readonly parameters?: Readonly<Record<string, unknown>>;
   readonly callsId?: `0x${string}` | null;
+  /** Set by the server's atomic browser dispatch claim; never supplied by a client. */
+  readonly dispatchClaimed?: boolean;
   readonly to?: `0x${string}`;
   readonly data?: `0x${string}`;
   readonly valueAtomic?: string;
@@ -225,6 +227,12 @@ function parseContext(value: unknown): Erc8183OperationContext | null {
   } else if (row.callsId === null) {
     (context as { callsId?: `0x${string}` | null }).callsId = null;
   }
+  if (row.dispatchClaimed !== undefined) {
+    if (typeof row.dispatchClaimed !== "boolean") {
+      throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted operation dispatch claim is invalid." });
+    }
+    (context as { dispatchClaimed?: boolean }).dispatchClaimed = row.dispatchClaimed;
+  }
   if (row.to !== undefined) (context as { to?: `0x${string}` }).to = normalizeAddress(String(row.to), "operation target");
   if (row.data !== undefined) (context as { data?: `0x${string}` }).data = assertHex(row.data, "operation calldata");
   if (row.valueAtomic !== undefined) {
@@ -366,7 +374,11 @@ export class PostgresErc8183OperationRepository {
     const nowUnix = assertNow(input.nowUnix);
     const result = await this.pool.query<OperationRow>(`
       UPDATE erc8183_operations SET status = 'submitted', transaction_hash = $2, updated_at_unix = $3
-      WHERE id = $1 AND status = 'awaiting_signature'
+      WHERE id = $1
+        AND (
+          status = 'awaiting_signature'
+          OR (status = 'unknown' AND (transaction_hash IS NULL OR transaction_hash = $2))
+        )
       RETURNING id, idempotency_key, request_digest, chain_id, commerce_contract, erc8183_job_id, operation_kind, signer_role, status, transaction_hash, block_number, block_hash, log_index, failure_code, operation_context, created_at_unix, updated_at_unix
     `, [input.operationId, hash, nowUnix]);
     if (result.rows[0] !== undefined) return parseOperationRow(result.rows[0]);
@@ -402,6 +414,58 @@ export class PostgresErc8183OperationRepository {
     const existing = await this.get(input.operationId);
     if (existing?.context?.callsId?.toLowerCase() === callsId.toLowerCase()) return existing;
     throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The operation already has a different relay calls ID." });
+  }
+
+  /**
+   * Atomically move an unsigned browser step into an in-flight/unknown state.
+   * The claim is persisted before wallet send, so a crash before a hash is
+   * still non-dispatchable and cannot double-fund on reload.
+   */
+  public async claimExternalDispatch(input: { readonly operationId: string; readonly nowUnix?: number }): Promise<{ readonly operation: Erc8183OperationRecord; readonly claimed: boolean }> {
+    const nowUnix = assertNow(input.nowUnix);
+    const result = await this.pool.query<OperationRow>(`
+      UPDATE erc8183_operations
+      SET status = 'unknown',
+          failure_code = 'EOA_DISPATCH_IN_FLIGHT',
+          operation_context = jsonb_set(COALESCE(operation_context, '{}'::jsonb), '{dispatchClaimed}', 'true'::jsonb, true),
+          updated_at_unix = $2
+      WHERE id = $1
+        AND status = 'awaiting_signature'
+        AND COALESCE(operation_context->>'dispatchClaimed', 'false') = 'false'
+        AND transaction_hash IS NULL
+      RETURNING id, idempotency_key, request_digest, chain_id, commerce_contract, erc8183_job_id, operation_kind, signer_role, status, transaction_hash, block_number, block_hash, log_index, failure_code, operation_context, created_at_unix, updated_at_unix
+    `, [input.operationId, nowUnix]);
+    if (result.rows[0] !== undefined) return { operation: parseOperationRow(result.rows[0]), claimed: true };
+    const existing = await this.get(input.operationId);
+    if (existing === null) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The commerce operation disappeared during dispatch reservation." });
+    return { operation: existing, claimed: false };
+  }
+
+  /**
+   * Re-open one claimed step only after the browser explicitly reports a
+   * wallet rejection. The transaction-hash/null and claim-reason predicates
+   * make this a compare-and-set; submitted/unknown chain outcomes cannot be
+   * reopened into another dispatch.
+   */
+  public async releaseExternalDispatch(input: { readonly operationId: string; readonly nowUnix?: number }): Promise<{ readonly operation: Erc8183OperationRecord; readonly released: boolean }> {
+    const nowUnix = assertNow(input.nowUnix);
+    const result = await this.pool.query<OperationRow>(`
+      UPDATE erc8183_operations
+      SET status = 'awaiting_signature',
+          failure_code = NULL,
+          operation_context = jsonb_set(COALESCE(operation_context, '{}'::jsonb), '{dispatchClaimed}', 'false'::jsonb, true),
+          updated_at_unix = $2
+      WHERE id = $1
+        AND status = 'unknown'
+        AND transaction_hash IS NULL
+        AND COALESCE(operation_context->>'dispatchClaimed', 'false') = 'true'
+        AND failure_code = 'EOA_DISPATCH_IN_FLIGHT'
+      RETURNING id, idempotency_key, request_digest, chain_id, commerce_contract, erc8183_job_id, operation_kind, signer_role, status, transaction_hash, block_number, block_hash, log_index, failure_code, operation_context, created_at_unix, updated_at_unix
+    `, [input.operationId, nowUnix]);
+    if (result.rows[0] !== undefined) return { operation: parseOperationRow(result.rows[0]), released: true };
+    const existing = await this.get(input.operationId);
+    if (existing === null) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The commerce operation disappeared during dispatch rejection." });
+    return { operation: existing, released: false };
   }
 
   public async markReceipt(input: {
@@ -442,6 +506,20 @@ export class PostgresErc8183OperationRepository {
     const existing = await this.get(input.operationId);
     if (existing !== null && existing.status === "unknown") return existing;
     throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "Only an unresolved operation can become unknown." });
+  }
+
+  /** Mark a relay-declared terminal failure when no transaction hash exists. */
+  public async markFailed(input: { readonly operationId: string; readonly failureCode?: string | null; readonly nowUnix?: number }): Promise<Erc8183OperationRecord> {
+    const nowUnix = assertNow(input.nowUnix);
+    const result = await this.pool.query<OperationRow>(`
+      UPDATE erc8183_operations SET status = 'reverted', failure_code = $2, updated_at_unix = $3
+      WHERE id = $1 AND status IN ('awaiting_signature', 'submitted', 'unknown') AND transaction_hash IS NULL
+      RETURNING id, idempotency_key, request_digest, chain_id, commerce_contract, erc8183_job_id, operation_kind, signer_role, status, transaction_hash, block_number, block_hash, log_index, failure_code, operation_context, created_at_unix, updated_at_unix
+    `, [input.operationId, safeFailureCode(input.failureCode), nowUnix]);
+    if (result.rows[0] !== undefined) return parseOperationRow(result.rows[0]);
+    const existing = await this.get(input.operationId);
+    if (existing !== null && existing.status === "reverted" && existing.transactionHash === null) return existing;
+    throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The operation cannot accept a terminal relay failure from its current state." });
   }
 
   public async reconcile(input: { readonly operationId: string; readonly status: "reconciled" | "manual_review"; readonly nowUnix?: number }): Promise<Erc8183OperationRecord> {

@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   b402SellerConfigurations,
+  commerceJobReviews,
+  commerceJobResults,
   erc8183JobEvents,
   erc8183Jobs,
   paymentAttemptEvents,
@@ -20,6 +22,8 @@ describe("commerce and payment database schema", () => {
       "commerceJobs",
       "erc8183Jobs",
       "erc8183JobEvents",
+      "commerceJobResults",
+      "commerceJobReviews",
       "paymentChallenges",
       "paymentAttempts",
       "paymentAttemptEvents",
@@ -35,6 +39,18 @@ describe("commerce and payment database schema", () => {
     ]));
     expect(Object.keys(b402SellerConfigurations)).toEqual(expect.arrayContaining(["configurationVersion", "configurationDigest", "fixedEgressProfile", "payoutAddress", "payoutVerificationState"]));
     expect(Object.keys(erc8183JobEvents)).toEqual(expect.arrayContaining(["eventKey", "transactionHash", "confirmationState", "payloadDigest"]));
+    expect(Object.keys(commerceJobResults)).toEqual(expect.arrayContaining([
+      "commerceJobId", "erc8183JobRecordId", "identityNamespace", "identityChainId",
+      "identityRegistry", "identityAgentId", "agentVersionId", "agentVersion",
+      "resultSha256", "resultKeccak", "submissionTransactionHash", "settlementTransactionHash",
+      "state", "settledAt"
+    ]));
+    expect(Object.keys(commerceJobReviews)).toEqual(expect.arrayContaining([
+      "commerceJobResultId", "commerceJobId", "buyerUserId", "buyerAddress",
+      "identityNamespace", "identityRegistry", "identityAgentId", "agentVersionId",
+      "agentVersion", "resultSha256", "resultKeccak", "settlementTransactionHash",
+      "reviewState", "revision", "activeReviewKey", "supersedesReviewId"
+    ]));
     expect(Object.keys(paymentChallenges)).toEqual(expect.arrayContaining(["challengeDigest", "settlementNetwork", "settlementAsset", "amountAtomic", "recipient", "method", "expiresAt"]));
     expect(Object.keys(paymentAttempts)).toEqual(expect.arrayContaining([
       "idempotencyKey", "challengeId", "status", "pinDigest", "configurationVersion",

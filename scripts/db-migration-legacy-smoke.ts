@@ -4,6 +4,7 @@ import { createDb, migrateDb } from "../packages/db/src/client.ts";
 const MAX_DB_CONNECTION_TIMEOUT_MS = 5_000;
 const MAX_DB_QUERY_TIMEOUT_MS = 10_000;
 const DISPOSABLE_DATABASE_PREFIX = "bnbera_t6_adr0003_";
+const LEGACY_SENTINEL_ID = "00000000-0000-4000-8000-000000000801";
 
 class MigrationSmokeError extends Error {
   public constructor(public readonly code: string) {
@@ -99,6 +100,10 @@ async function makeLegacyShape(connectionString: string): Promise<void> {
     // database is generated for this test and the repair migration recreates
     // the reviewed constraints and indexes.
     await pool.query(`
+      INSERT INTO "erc8004_identities" ("id", "namespace", "chain_id", "identity_registry", "agent_id")
+      VALUES ('${LEGACY_SENTINEL_ID}', 'eip155', 97, '0x1111111111111111111111111111111111111111', '777')
+      ON CONFLICT ("id") DO NOTHING;
+
       ALTER TABLE "erc8183_jobs"
         DROP COLUMN IF EXISTS "spec_revision" CASCADE,
         DROP COLUMN IF EXISTS "abi_hash" CASCADE,
@@ -149,7 +154,17 @@ async function makeLegacyShape(connectionString: string): Promise<void> {
         DROP COLUMN IF EXISTS "buyer_approval_result_digest" CASCADE,
         DROP COLUMN IF EXISTS "buyer_approved_at" CASCADE;
 
-      -- 0002 through 0007 are deliberately rewound below. Remove the tables
+      -- The journal rewind includes 0009, which adds the wallet-bound
+      -- passkey session columns. Remove that later surface as well so the
+      -- replay models a database from before the migration being replayed.
+      ALTER TABLE "auth_sessions"
+        DROP CONSTRAINT IF EXISTS "auth_sessions_wallet_binding_check";
+      DROP INDEX IF EXISTS "auth_sessions_wallet_context_idx";
+      ALTER TABLE "auth_sessions"
+        DROP COLUMN IF EXISTS "wallet_address",
+        DROP COLUMN IF EXISTS "chain_id";
+
+      -- 0002 through 0009 are deliberately rewound below. Remove the tables
       -- introduced by the replayed migrations so their CREATE statements do
       -- not collide with the original disposable shape.
       DROP TABLE IF EXISTS "marketplace_ingestion_retries" CASCADE;
@@ -158,12 +173,14 @@ async function makeLegacyShape(connectionString: string): Promise<void> {
       DROP TABLE IF EXISTS "erc8004_reputation_events" CASCADE;
       DROP TABLE IF EXISTS "erc8004_reputation_checkpoints" CASCADE;
       DROP TABLE IF EXISTS "erc8183_operations" CASCADE;
+      DROP TABLE IF EXISTS "commerce_job_reviews" CASCADE;
+      DROP TABLE IF EXISTS "commerce_job_results" CASCADE;
       DELETE FROM drizzle.__drizzle_migrations
        WHERE id IN (
          SELECT id
            FROM drizzle.__drizzle_migrations
           ORDER BY id DESC
-          LIMIT 6
+          LIMIT 8
        );
     `);
   } catch {
@@ -209,10 +226,23 @@ async function verifyLegacyRepair(connectionString: string): Promise<void> {
     assertCondition(tables.rows[0]?.discovery_exists === true, "MARKETPLACE_DISCOVERY_CURSOR_MIGRATION_MISSING");
     assertCondition(tables.rows[0]?.retry_exists === true, "MARKETPLACE_RETRY_MIGRATION_MISSING");
 
+    const history = await pool.query<{ readonly namespace: string; readonly chain_id: number; readonly identity_registry: string; readonly agent_id: string }>(`
+      SELECT "namespace", "chain_id", "identity_registry", "agent_id"
+        FROM "erc8004_identities"
+       WHERE "id" = $1
+    `, [LEGACY_SENTINEL_ID]);
+    assertCondition(
+      history.rows[0]?.namespace === "eip155" &&
+      history.rows[0]?.chain_id === 97 &&
+      history.rows[0]?.identity_registry === "0x1111111111111111111111111111111111111111" &&
+      history.rows[0]?.agent_id === "777",
+      "LEGACY_HISTORY_NOT_PRESERVED"
+    );
+
     const journal = await pool.query<{ readonly count: string }>(`
       SELECT count(*)::text AS count FROM drizzle.__drizzle_migrations
     `);
-    assertCondition(journal.rows[0]?.count === "8", "MIGRATION_JOURNAL_INCOMPLETE");
+    assertCondition(journal.rows[0]?.count === "10", "MIGRATION_JOURNAL_INCOMPLETE");
   } catch (error) {
     if (error instanceof MigrationSmokeError) throw error;
     throw new MigrationSmokeError("LEGACY_REPAIR_VERIFICATION_FAILED");

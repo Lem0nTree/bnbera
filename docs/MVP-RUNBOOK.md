@@ -70,6 +70,64 @@ replay. Continue from the emitted `nextAfterAgentVersionId` with
 `ERC8004_CATEGORY_BACKFILL_AFTER_VERSION`; never reset or delete the retained
 history.
 
+## T5 browser commerce — EOA canary
+
+The T5 buyer path does not require an Altana smart wallet, passkey or Altana
+session. Configure wagmi with its `walletConnect` connector as the only wallet
+connector, using public `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`. WalletConnect
+may reach compatible extension wallets in a desktop browser and mobile wallets
+through QR/deep links; availability varies, so not every extension is
+guaranteed. Do not add `injected()` or a MetaMask-specific connector. The
+connector must resolve to one normalized buyer EOA and one SIWE session bound to
+BSC testnet (chain 97). Do not put the project ID in
+`config/standards.lock.json`, a server secret store or any application secret
+reference. No supplied project ID belongs in this runbook.
+
+Start the existing web process as shown above. For the canary, verify the
+connector reports chain 97 before requesting a quote, and have the buyer
+explicitly sign each transaction. The server creates the quote and persists a
+public operation intent; the browser wallet signs the following sequential
+APEX/ERC-8183 calls:
+
+1. `createJob` with the server-quoted client/provider/evaluator/hook, task,
+   deadline and bounded budget. Wait for the confirmed receipt, decode the
+   `JobCreated` event and persist its actual protocol job ID.
+2. Call the pinned Router `registerJob` for that exact job ID and policy; verify
+   `JobRegistered`.
+3. Call Commerce `setBudget` for the exact quoted atomic U amount.
+4. Send an exact, bounded ERC-20 `approve` to the pinned spender required by
+   the reviewed APEX path. Never request an unlimited allowance.
+5. Call Commerce `fund` for the same job ID and amount; verify `JobFunded` and
+   the `FUNDED` read state.
+
+Persist each step before sending and after confirmation with connector, EOA,
+chain, contract, operation kind, request digest, transaction hash, block,
+receipt status and operation-specific event evidence. A generic successful
+receipt, quote or nonce does not establish the job ID or a funded job. After
+the provider performs useful work, retain the existing provider submission
+boundary (the provider may use `@altananetwork/sdk@0.9.0` and its own Altana
+execution authority), verify the result digest/manifest and `JobSubmitted`,
+then let the buyer EOA explicitly settle/approve or dispute. Only after the
+pinned protocol expiry may the buyer EOA claim a refund; reconcile `JobExpired`
+and `Refunded`.
+
+On page reload, resume from the persisted operation step and receipt. On an
+account or chain change, pause the job, reject silent rebinding, require a new
+chain-97 SIWE session and obtain a fresh server quote before continuing. On a
+wallet/RPC timeout or unknown response, use the persisted operation ID,
+transaction hash, nonce and job/event reads to reconcile first; mark the step
+confirmed, reverted or unknown before any retry. Never blindly rebroadcast a
+possibly funded or settled step, and never auto-approve or auto-settle for the
+buyer.
+
+This is an authorized development canary only. Preserve the completed 2206
+quick-tunnel card/invocation, finalized reingestion and publication evidence;
+the tunnel has no uptime guarantee. Keep `releaseEnabled=false` until the full
+EOA browser journey, useful result, settlement/review and recovery evidence
+passes. Do not wholesale-revert the recent T5 passkey changes, reset
+migrations or delete retained database evidence; passkey/bootstrap work is
+deferred to T6/T7 Creator custody.
+
 ## Target cron behavior — implemented by T1
 
 | Job | Cadence | Behavior |

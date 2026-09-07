@@ -25,11 +25,12 @@ export async function POST(
     const composition = await getCommerceComposition();
     const result = await composition.approveOrDispute(request, jobId, input);
     return commerceHttpJson(commerceActionResponse({
-      status: result.replayed ? "replayed" : result.action === "approve" ? "approved" : "confirmed",
-      jobId,
-      operationId: result.operation?.operationId ?? null,
-      operation: result.operation === null ? null : toErc8183PublicOperation(result.operation),
-      job: result.read
+      status: result.replayed ? "replayed" : "prepared",
+      jobId: result.operation.jobId ?? jobId,
+      operationId: result.operation.operationId,
+      operation: toErc8183PublicOperation(result.operation),
+      job: result.read,
+      dispatch: result.dispatch
     }));
   } catch (error) {
     return commerceHttpError(error);

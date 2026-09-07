@@ -30,8 +30,10 @@ import {
   type AgentCategory,
   type Erc8004Identity
 } from "@bnbera/domain";
+import { PostgresErc8183MarketplaceProjection } from "@bnbera/agent-commerce";
 import {
   marketplaceActivationOfferSchema,
+  marketplaceErc8183ActivationBindingSchema,
   marketplaceAuthoritySchema,
   marketplaceExecutionEvidenceSchema,
   marketplaceFreshnessSchema,
@@ -423,10 +425,20 @@ function resolveActivationOffer(metadata: Record<string, unknown> | null) {
   const method = rawMethod === "erc8183" || rawMethod === "x402_b402" || rawMethod === "manual" || rawMethod === "none"
     ? rawMethod
     : "none";
-  return marketplaceActivationOfferSchema.parse({
+  const binding = marketplaceErc8183ActivationBindingSchema.safeParse(activation?.erc8183);
+  const parsed = marketplaceActivationOfferSchema.safeParse({
     advertised: advertised && method !== "none",
     method: advertised && method !== "none" ? method : "none",
-    label: boundedString(activation?.label, 200) ?? "Activation unavailable"
+    label: boundedString(activation?.label, 200) ?? "Activation unavailable",
+    ...(binding.success ? { erc8183: binding.data } : {})
+  });
+  if (parsed.success) return parsed.data;
+  // A malformed persisted offer must not take down the listing, and must not
+  // be projected as an executable rail. Keep the ordinary unavailable shape.
+  return marketplaceActivationOfferSchema.parse({
+    advertised: false,
+    method: "none",
+    label: "Activation unavailable"
   });
 }
 
@@ -804,6 +816,7 @@ async function createLiveReadService(): Promise<MarketplaceReadService> {
   const pool = getPool(runtime.databaseUrl, runtime.databaseSsl);
   const repository: IngestionRepository = new PostgresIngestionRepository(pool, { ssl: runtime.databaseSsl });
   const metadataSource = new PostgresMarketplaceMetadataSource(pool);
+  const commerceProjection = new PostgresErc8183MarketplaceProjection(pool);
   const recognizedReviewerAddresses = (process.env.ERC8004_RECOGNIZED_REVIEWER_ADDRESSES ?? "")
     .split(",")
     .map((value) => value.trim())
@@ -811,6 +824,7 @@ async function createLiveReadService(): Promise<MarketplaceReadService> {
   const source = new IngestionMarketplaceSource(repository, metadataSource, {
     sourceName: "postgres-ingestion-read-model",
     recognizedReviewerAddresses,
+    commerceProjection,
     ...(runtime.erc8004IngestionEnabled
       ? {}
       : {

@@ -219,6 +219,29 @@ export const marketplaceReputationFeedbackSchema = z.object({
 
 export type MarketplaceReputationFeedback = z.infer<typeof marketplaceReputationFeedbackSchema>;
 
+/**
+ * A BNBEra verified-purchase review is a local commerce projection. It is
+ * intentionally separate from ERC-8004 Reputation Registry feedback while
+ * retaining the full identity/version and settled-result provenance needed to
+ * explain why the review is shown.
+ */
+export const marketplaceVerifiedPurchaseReviewSchema = z.object({
+  reviewId: z.string().uuid(),
+  commerceJobId: z.string().uuid(),
+  reviewerAddress: evmAddressSchema,
+  identity: erc8004IdentitySchema,
+  agentVersionId: z.string().uuid(),
+  agentVersion: z.number().int().positive(),
+  resultSha256: digestSchema,
+  resultKeccak: z.string().regex(/^0x[0-9a-fA-F]{64}$/u),
+  settlementTransactionHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/u),
+  score: z.number().int().min(1).max(5),
+  comment: z.string().trim().max(2_000),
+  observedAt: isoDateSchema
+}).strict();
+
+export type MarketplaceVerifiedPurchaseReview = z.infer<typeof marketplaceVerifiedPurchaseReviewSchema>;
+
 export const marketplaceReputationViewSchema = z.object({
   status: marketplaceMetricStatusSchema,
   count: z.number().int().nonnegative().nullable(),
@@ -236,7 +259,9 @@ export type MarketplaceReputationView = z.infer<typeof marketplaceReputationView
 export const marketplaceReputationSchema = z.object({
   rawPermissionless: marketplaceReputationViewSchema,
   recognizedReviewers: marketplaceReputationViewSchema,
-  verifiedPurchases: marketplaceReputationViewSchema
+  verifiedPurchases: marketplaceReputationViewSchema,
+  /** Bounded BNBEra commerce reviews; never populated from raw ERC-8004 feedback. */
+  verifiedReviews: z.array(marketplaceVerifiedPurchaseReviewSchema).max(64).default([])
 });
 
 export type MarketplaceReputation = z.infer<typeof marketplaceReputationSchema>;
@@ -270,7 +295,8 @@ const defaultMarketplaceReputation: MarketplaceReputation = {
     source: null,
     observedAt: null,
     reason: "BNBEra verified-purchase reviews are enabled by G2."
-  }
+  },
+  verifiedReviews: []
 };
 
 export const marketplaceJobMetricsSchema = z.object({
@@ -468,10 +494,36 @@ export const marketplaceExecutionEvidenceSchema = z.object({
 
 export type MarketplaceExecutionEvidence = z.infer<typeof marketplaceExecutionEvidenceSchema>;
 
+/**
+ * The only activation offer that may be carried by the T5 reference listing.
+ * This is an offer/terms observation, not execution authority: the worker
+ * still has to verify the provider's active authority before a job can run.
+ * Keeping the binding nested makes the existing activation contract useful to
+ * older/general listings while allowing the reference provider to retain the
+ * exact chain-97 canary terms beside its advertised method.
+ */
+export const marketplaceErc8183ActivationBindingSchema = z.object({
+  chainId: z.literal(97),
+  commerceContract: evmAddressSchema,
+  routerContract: evmAddressSchema,
+  policyContract: evmAddressSchema,
+  paymentToken: evmAddressSchema,
+  paymentTokenSymbol: z.string().trim().min(1).max(32),
+  paymentDecimals: z.number().int().min(0).max(255),
+  providerAddress: evmAddressSchema,
+  priceAtomic: atomicAmountSchema,
+  /** The standards lock is deliberately still canary-only. */
+  releaseEnabled: z.literal(false)
+}).strict();
+
+export type MarketplaceErc8183ActivationBinding = z.infer<typeof marketplaceErc8183ActivationBindingSchema>;
+
 export const marketplaceActivationOfferSchema = z.object({
   advertised: z.boolean(),
   method: z.enum(activationMethods),
-  label: z.string().trim().min(1).max(200)
+  label: z.string().trim().min(1).max(200),
+  /** Optional so legacy/general listings retain their existing shape. */
+  erc8183: marketplaceErc8183ActivationBindingSchema.optional()
 }).superRefine((value, context) => {
   if (value.advertised && value.method === "none") {
     context.addIssue({
@@ -485,6 +537,13 @@ export const marketplaceActivationOfferSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["method"],
       message: "A non-advertised activation offer must use method none"
+    });
+  }
+  if (value.erc8183 !== undefined && (!value.advertised || value.method !== "erc8183")) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["erc8183"],
+      message: "An ERC-8183 activation binding must belong to an advertised ERC-8183 offer"
     });
   }
 });

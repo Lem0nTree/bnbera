@@ -594,6 +594,28 @@ function mapEvidence(card: CoreMarketplaceAgentCard): MarketplaceAgentReadModel[
 
 function mapActivation(card: CoreMarketplaceAgentCard): MarketplaceAgentReadModel["activation"] {
   const method = card.activation.method === "manual" ? "external" : card.activation.method;
+  const localCanary = process.env.NODE_ENV !== "production" &&
+    process.env.BNBERA_ENV !== "production" &&
+    process.env.T5_WALLETCONNECT_AUTH_ENABLED === "true" &&
+    process.env.T5_COMMERCE_LOCAL_ACTIVATION === "true" &&
+    process.env.T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED === "true" &&
+    method === "erc8183" &&
+    card.fixture === null &&
+    card.activationOffer.erc8183 !== undefined &&
+    card.activationOffer.erc8183.chainId === card.identity.chainId &&
+    card.activationOffer.erc8183.providerAddress.toLowerCase() === (card.agentWallet ?? "").toLowerCase() &&
+    card.activationOffer.erc8183.paymentToken.toLowerCase() === (card.pricing.tokenAddress ?? "").toLowerCase() &&
+    card.activationOffer.erc8183.priceAtomic === (card.pricing.minAtomic ?? card.pricing.maxAtomic);
+  if (localCanary) {
+    return {
+      enabled: true,
+      availability: "available",
+      method,
+      title: "Local ERC-8183 WalletConnect canary",
+      reason: "Browser EOA activation is enabled only for this local WalletConnect development canary; the standards-lock release gate remains closed.",
+      nextAction: "review_activation_terms"
+    };
+  }
   return {
     enabled: card.activation.available,
     availability: card.activation.available ? "available" : "unavailable",

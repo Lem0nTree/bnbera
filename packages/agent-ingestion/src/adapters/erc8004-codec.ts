@@ -276,6 +276,19 @@ function eventUri(args: Readonly<Record<string, unknown>>, name: string): string
   return value.length === 0 ? null : value;
 }
 
+function eventAgentIdArgument(eventName: OfficialRegistryEventName): string {
+  switch (eventName) {
+    case "Registered":
+    case "URIUpdated":
+    case "MetadataSet":
+      return "agentId";
+    case "Transfer":
+      return "tokenId";
+    case "MetadataUpdate":
+      return "_tokenId";
+  }
+}
+
 export type OfficialErc8004RegistryEventDecoder = {
   readonly logTopics: readonly Hex[];
   readonly decodeLog: RegistryLogDecoder;
@@ -316,7 +329,7 @@ export function createOfficialErc8004RegistryEventDecoder(): OfficialErc8004Regi
         namespace: "eip155",
         chainId,
         identityRegistry,
-        agentId: eventAgentId(args, eventName === "Registered" || eventName === "MetadataSet" || eventName === "URIUpdated" ? "agentId" : "tokenId")
+        agentId: eventAgentId(args, eventAgentIdArgument(eventName))
       } as const;
       const payload = { event: eventName, args } as const;
       switch (eventName) {
@@ -449,7 +462,10 @@ export function createOfficialErc8004RegistryReader(options: OfficialErc8004Regi
   return new JsonRpcRegistryChainReader({
     ...readerOptions,
     ...definitions,
-    logTopics: events.logTopics,
+    // JSON-RPC topic positions are ANDed. Put all reviewed event signatures
+    // in topic0's nested OR list instead of treating them as five positions
+    // (and exceeding the four-position eth_getLogs limit).
+    logTopics: [events.logTopics],
     decodeLog: events.decodeLog
   });
 }

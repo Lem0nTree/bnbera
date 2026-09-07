@@ -13,9 +13,11 @@ import {
   type Erc8004Identity
 } from "@bnbera/domain";
 import {
+  marketplaceActivationOfferSchema,
   marketplaceFreshnessSchema,
   marketplaceListingMetadataSchema,
-  marketplacePricingSchema
+  marketplacePricingSchema,
+  type MarketplaceActivationOffer
 } from "./types.js";
 
 /**
@@ -117,6 +119,12 @@ export type MarketplacePublicationInput = {
   readonly capabilityManifest: unknown;
   /** Public pricing observation. Missing pricing is represented as unavailable. */
   readonly pricingManifest?: Readonly<Record<string, unknown>>;
+  /**
+   * Optional activation observation. The normal ingestion/composition path
+   * leaves this absent; the guarded T5 reference-provider setup supplies the
+   * standards-locked ERC-8183 terms for its owned identity only.
+   */
+  readonly activationOffer?: MarketplaceActivationOffer;
 };
 
 export type MarketplacePublicationServiceOptions = {
@@ -185,6 +193,7 @@ type NormalizedPublicationInput = {
   readonly publicMetadata: Readonly<Record<string, unknown>>;
   readonly capabilityManifest: CapabilityManifest;
   readonly pricingManifest: Readonly<Record<string, unknown>>;
+  readonly activationOffer?: MarketplaceActivationOffer;
 };
 
 type PreparedInputResult = {
@@ -464,7 +473,8 @@ function normalizePublicMetadata(
   input: unknown,
   services: readonly NormalizedService[],
   pricingManifest: Readonly<Record<string, unknown>>,
-  chainId: number
+  chainId: number,
+  activationOffer: MarketplaceActivationOffer | undefined
 ): { readonly value: Readonly<Record<string, unknown>>; readonly diagnostic: PublicationDiagnostic | null } {
   const metadata = safePublicObject(input);
   if (metadata === null) return { value: {}, diagnostic: diagnostic("METADATA_INVALID") };
@@ -513,6 +523,9 @@ function normalizePublicMetadata(
   // introducing a cross-network pricing manifest.
   if (pricingManifest.network !== chainId) {
     return { value: {}, diagnostic: diagnostic("METADATA_INVALID") };
+  }
+  if (activationOffer !== undefined) {
+    result.activationOffer = activationOffer;
   }
   // Service descriptors are observations, not caller claims. Reconstruct a
   // stable descriptor from the persisted observation and exclude probe time,
@@ -856,6 +869,31 @@ export class PostgresMarketplacePublicationService {
       }
     }
     const pricingManifest = normalizePricingManifest(pricing, identity.chainId);
+    let activationOffer: MarketplaceActivationOffer | undefined;
+    if (input.activationOffer !== undefined) {
+      try {
+        assertSafePublicValue(input.activationOffer, "marketplace.activationOffer");
+      } catch {
+        return { input: null, diagnostic: diagnostic("METADATA_INVALID") };
+      }
+      const parsedActivation = marketplaceActivationOfferSchema.safeParse(input.activationOffer);
+      if (!parsedActivation.success) return { input: null, diagnostic: diagnostic("METADATA_INVALID") };
+      const binding = parsedActivation.data.erc8183;
+      if (binding !== undefined) {
+        const fixedPrice = pricingManifest.minAtomic !== null && pricingManifest.minAtomic === pricingManifest.maxAtomic;
+        if (
+          binding.chainId !== identity.chainId ||
+          !fixedPrice ||
+          binding.paymentToken.toLowerCase() !== String(pricingManifest.tokenAddress ?? "").toLowerCase() ||
+          binding.paymentTokenSymbol !== pricingManifest.tokenSymbol ||
+          binding.paymentDecimals !== pricingManifest.decimals ||
+          binding.priceAtomic !== pricingManifest.minAtomic
+        ) {
+          return { input: null, diagnostic: diagnostic("METADATA_INVALID") };
+        }
+      }
+      activationOffer = parsedActivation.data;
+    }
     // Metadata is normalized after persisted services are loaded, so retain
     // only the input object here and validate it inside the transaction.
     return {
@@ -864,7 +902,8 @@ export class PostgresMarketplacePublicationService {
         identityKey,
         publicMetadata: metadata,
         capabilityManifest: capabilityResult.data,
-        pricingManifest
+        pricingManifest,
+        ...(activationOffer === undefined ? {} : { activationOffer })
       },
       diagnostic: diagnostic("METADATA_INVALID")
     };
@@ -966,7 +1005,8 @@ export class PostgresMarketplacePublicationService {
       input.publicMetadata,
       services,
       input.pricingManifest,
-      input.identity.chainId
+      input.identity.chainId,
+      input.activationOffer
     );
     if (metadataResult.diagnostic !== null) {
       return withheld(input.identityKey, [metadataResult.diagnostic], { agentId: identityRow.agent_id, state: baseState });

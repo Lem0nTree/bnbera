@@ -445,6 +445,64 @@ describe("PostgresMarketplacePublicationService", () => {
     expect(database.versions[0]?.public_metadata).not.toHaveProperty("providerNote");
   });
 
+  it("persists an explicit ERC-8183 activation binding without changing generic listings", async () => {
+    const database = new PublicationDb();
+    const service = new PostgresMarketplacePublicationService(database, { now: () => now });
+
+    const generic = await service.publish(publicationInput());
+    const reference = await service.publish({
+      ...publicationInput("Reference provider with a bounded ERC-8183 offer."),
+      pricingManifest: {
+        model: "fixed",
+        network: 97,
+        tokenAddress: "0xdddddddddddddddddddddddddddddddddddddddd",
+        tokenSymbol: "U",
+        decimals: 18,
+        amountAtomic: "1000000000000000",
+        minAtomic: "1000000000000000",
+        maxAtomic: "1000000000000000"
+      },
+      activationOffer: {
+        advertised: true,
+        method: "erc8183",
+        label: "ERC-8183 health-factor hire (chain-97 canary)",
+        erc8183: {
+          chainId: 97,
+          commerceContract: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          routerContract: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          policyContract: "0xcccccccccccccccccccccccccccccccccccccccc",
+          paymentToken: "0xdddddddddddddddddddddddddddddddddddddddd",
+          paymentTokenSymbol: "U",
+          paymentDecimals: 18,
+          providerAddress: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          priceAtomic: "1000000000000000",
+          releaseEnabled: false
+        }
+      }
+    });
+
+    expect(generic.status).toBe("published");
+    expect(database.versions[0]?.public_metadata).not.toHaveProperty("activationOffer");
+    expect(reference.status).toBe("published");
+    expect(database.identity.authority_status).toBe("none");
+    expect(database.versions[1]?.public_metadata).toMatchObject({
+      activationOffer: {
+        advertised: true,
+        method: "erc8183",
+        erc8183: {
+          chainId: 97,
+          commerceContract: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          routerContract: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          policyContract: "0xcccccccccccccccccccccccccccccccccccccccc",
+          paymentToken: "0xdddddddddddddddddddddddddddddddddddddddd",
+          providerAddress: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          priceAtomic: "1000000000000000",
+          releaseEnabled: false
+        }
+      }
+    });
+  });
+
   it("withholds malformed or credential-bearing service observations", async () => {
     const database = new PublicationDb();
     database.serviceRows[0]!.url = "https://agent.example/mcp?api_key=must-not-persist";

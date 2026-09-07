@@ -3,7 +3,8 @@ import {
   capabilityManifestSchema,
   erc8004IdentityKey,
   normalizeEvmAddress,
-  type CapabilityManifest
+  type CapabilityManifest,
+  type Erc8004Identity
 } from "@bnbera/domain";
 import type {
   CapabilityObservation,
@@ -18,6 +19,7 @@ import {
   marketplaceReputationSchema,
   marketplaceReputationViewSchema,
   marketplaceServiceEvidenceSchema,
+  marketplaceVerifiedPurchaseReviewSchema,
   parseMarketplaceListing,
   parseMarketplaceMetadata,
   parseMarketplaceSourceSnapshot,
@@ -28,7 +30,8 @@ import {
   type MarketplaceReputation,
   type MarketplaceReputationView,
   type MarketplaceServiceEvidence,
-  type MarketplaceSourceSnapshot
+  type MarketplaceSourceSnapshot,
+  type MarketplaceVerifiedPurchaseReview
 } from "./types.js";
 
 export interface MarketplaceSource {
@@ -37,6 +40,55 @@ export interface MarketplaceSource {
 
 export interface MarketplaceMetadataSource {
   listMetadata(): Promise<readonly MarketplaceListingMetadata[]>;
+}
+
+/**
+ * Structural read seam for the bounded ERC-8183 commerce projection. The
+ * marketplace package does not depend on the commerce writer, which keeps
+ * canonical chain persistence and the browse read model independently
+ * deployable while allowing the web worker to compose both contracts.
+ */
+export interface MarketplaceCommerceProjection {
+  readForIdentity(input: {
+    readonly identity: Erc8004Identity;
+    readonly agentVersionId?: string;
+    readonly agentVersion?: number;
+    readonly limit?: number;
+  }): Promise<MarketplaceCommerceRead>;
+}
+
+export interface MarketplaceCommerceRead {
+  readonly completedJobs: readonly MarketplaceCommerceCompletedJob[];
+  readonly verifiedReviews: readonly MarketplaceCommerceReview[];
+  readonly observedAtUnix: number | null;
+}
+
+export interface MarketplaceCommerceCompletedJob {
+  readonly settledAtUnix: number;
+  readonly result: {
+    readonly localSha256: string;
+    readonly chainKeccak: string;
+    readonly deliverableUrl: string | null;
+    readonly settlementReceipt: { readonly transactionHash: string };
+  };
+}
+
+export interface MarketplaceCommerceReview {
+  readonly reviewId: string;
+  readonly commerceJobId: string;
+  readonly buyerAddress: string;
+  readonly providerBinding: {
+    readonly identity: Erc8004Identity;
+    readonly agentVersionId: string;
+    readonly agentVersion: number;
+  };
+  readonly resultSha256: string;
+  readonly resultKeccak: string;
+  readonly settlementTransactionHash: string;
+  readonly score: number;
+  readonly comment: string;
+  readonly state: "active" | "superseded" | "revoked";
+  readonly updatedAtUnix: number;
 }
 
 export class InMemoryMarketplaceSource implements MarketplaceSource {
@@ -100,6 +152,8 @@ export type IngestionMarketplaceSourceOptions = {
   readonly warning?: string | null;
   /** Publicly reviewed reviewer/validator identities. Empty means fail closed. */
   readonly recognizedReviewerAddresses?: readonly string[];
+  /** Optional confirmed ERC-8183 result/review projection for T5 reads. */
+  readonly commerceProjection?: MarketplaceCommerceProjection;
 };
 
 const reputationReadUnavailableReason =
@@ -151,6 +205,7 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
     const records: MarketplaceListingInput[] = [];
     let skipped = 0;
     let reputationReadFailures = 0;
+    let commerceReadFailures = 0;
     const now = this.options.now?.() ?? new Date();
     const recognizedReviewerAddresses = this.recognizedReviewerAddresses();
 
@@ -174,6 +229,8 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
       ]);
       const reputationRead = await readReputationFeedback(this.repository, identityRecord.identity);
       if (reputationRead.unavailableReason !== null) reputationReadFailures += 1;
+      const commerceRead = await readCommerceProjection(this.options.commerceProjection, identityRecord.identity);
+      if (commerceRead.unavailableReason !== null) commerceReadFailures += 1;
       // The repository contract is identity-scoped, but retain the check at
       // this public boundary so an adapter bug cannot leak another identity's
       // feedback into a listing.
@@ -202,7 +259,14 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
         const metrics = marketplaceMetricsSchema.parse({
           ...(presentation.metrics ?? unknownMetrics()),
           uptime: probeProjection.uptime,
-          reputation: reputationProjection(feedback, recognizedReviewerAddresses, reputationRead.unavailableReason)
+          reputation: reputationProjection(
+            feedback,
+            recognizedReviewerAddresses,
+            reputationRead.unavailableReason,
+            commerceRead.read?.verifiedReviews ?? [],
+            commerceRead.read !== null
+          ),
+          ...(commerceRead.read === null ? {} : commerceMetrics(commerceRead.read))
         });
         const listing = parseMarketplaceListing({
           ...presentation,
@@ -253,14 +317,18 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
     const reputationWarning = reputationReadFailures > 0
       ? `ERC-8004 reputation was unavailable for ${reputationReadFailures} indexed identity record${reputationReadFailures === 1 ? "" : "s"}; listings remain readable without a reputation claim.`
       : null;
+    const commerceWarning = commerceReadFailures > 0
+      ? `BNBEra completed-job/review projection was unavailable for ${commerceReadFailures} indexed identity record${commerceReadFailures === 1 ? "" : "s"}; no commerce claim is made for those listings.`
+      : null;
     const warning = [this.options.warning, projectionWarning]
       .concat(reputationWarning)
+      .concat(commerceWarning)
       .filter((value): value is string => value !== null && value !== undefined && value.length > 0)
       .join(" ")
       .slice(0, 500) || null;
     return parseMarketplaceSourceSnapshot({
       records,
-      status: this.options.status === "degraded" || skipped > 0 || reputationReadFailures > 0 ? "degraded" : "healthy",
+      status: this.options.status === "degraded" || skipped > 0 || reputationReadFailures > 0 || commerceReadFailures > 0 ? "degraded" : "healthy",
       sourceName: this.options.sourceName ?? "ingestion-read-model",
       warning,
       refreshedAt: now.toISOString()
@@ -270,6 +338,11 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
 
 type ReputationReadResult = {
   readonly feedback: readonly ReputationFeedback[];
+  readonly unavailableReason: string | null;
+};
+
+type CommerceReadResult = {
+  readonly read: MarketplaceCommerceRead | null;
   readonly unavailableReason: string | null;
 };
 
@@ -294,6 +367,33 @@ async function readReputationFeedback(
     // transient query failure must degrade only these views, not hide an
     // otherwise valid listing. Do not expose provider/database details.
     return { feedback: [], unavailableReason: reputationReadUnavailableReason };
+  }
+}
+
+async function readCommerceProjection(
+  projection: MarketplaceCommerceProjection | undefined,
+  identity: Erc8004Identity
+): Promise<CommerceReadResult> {
+  if (projection === undefined) return { read: null, unavailableReason: null };
+  try {
+    const read = await projection.readForIdentity({ identity, limit: 100 });
+    if (!Number.isSafeInteger(read.observedAtUnix) && read.observedAtUnix !== null) {
+      throw new Error("Invalid commerce observation timestamp");
+    }
+    // Validate the public review boundary here so an optional commerce read
+    // cannot make the rest of an otherwise valid listing disappear.
+    for (const review of read.verifiedReviews) {
+      const publicReview = publicVerifiedPurchaseReview(review);
+      if (erc8004IdentityKey(publicReview.identity) !== erc8004IdentityKey(identity)) {
+        throw new Error("Commerce review identity does not match the listing identity");
+      }
+    }
+    return { read, unavailableReason: null };
+  } catch {
+    return {
+      read: null,
+      unavailableReason: "BNBEra completed-job/review projection is unavailable; no commerce claim is made."
+    };
   }
 }
 
@@ -525,7 +625,9 @@ function reputationView(
 function reputationProjection(
   feedback: readonly ReputationFeedback[],
   recognizedReviewers: ReadonlySet<string>,
-  unavailableReason: string | null = null
+  unavailableReason: string | null = null,
+  verifiedReviews: readonly MarketplaceCommerceReview[] = [],
+  commerceAvailable = false
 ): MarketplaceReputation {
   const raw = reputationView(feedback, noCanonicalFeedbackReason, unavailableReason);
   const recognized = recognizedReviewers.size === 0
@@ -541,18 +643,100 @@ function reputationProjection(
         noRecognizedFeedbackReason,
         unavailableReason
       );
+  const verifiedPurchaseView = commerceAvailable
+    ? marketplaceReputationViewSchema.parse({
+        status: "available",
+        count: verifiedReviews.filter((review) => review.state === "active").length,
+        feedback: [],
+        source: "bnbera-erc8183-verified-purchase",
+        observedAt: commerceReviewObservedAt(verifiedReviews),
+        reason: null
+      })
+    : marketplaceReputationViewSchema.parse({
+        status: "unavailable",
+        count: null,
+        feedback: [],
+        source: null,
+        observedAt: null,
+        reason: verifiedPurchaseReason
+      });
   return marketplaceReputationSchema.parse({
     rawPermissionless: raw,
     recognizedReviewers: recognized,
-    verifiedPurchases: {
-      status: "unavailable",
-      count: null,
-      feedback: [],
-      source: null,
-      observedAt: null,
-      reason: verifiedPurchaseReason
-    }
+    verifiedPurchases: verifiedPurchaseView,
+    verifiedReviews: commerceAvailable
+      ? verifiedReviews.filter((review) => review.state === "active").map(publicVerifiedPurchaseReview)
+      : []
   });
+}
+
+function commerceMetrics(read: MarketplaceCommerceRead): Pick<MarketplaceMetrics, "completedJobs" | "lastResult"> {
+  const latest = [...read.completedJobs].sort((left, right) => right.settledAtUnix - left.settledAtUnix)[0];
+  const completedObservedAt = unixSecondsToIso(read.observedAtUnix);
+  if (latest === undefined) {
+    return {
+      completedJobs: {
+        status: "available",
+        completedCount: 0,
+        source: "bnbera-erc8183-settled",
+        observedAt: completedObservedAt
+      },
+      lastResult: {
+        status: "unavailable",
+        summary: null,
+        reference: null,
+        source: "bnbera-erc8183-settled",
+        observedAt: completedObservedAt
+      }
+    };
+  }
+  const observedAt = unixSecondsToIso(latest.settledAtUnix);
+  const digest = latest.result.localSha256.toLowerCase();
+  return {
+    completedJobs: {
+      status: "available",
+      completedCount: read.completedJobs.length,
+      source: "bnbera-erc8183-settled",
+      observedAt: completedObservedAt ?? observedAt
+    },
+    lastResult: {
+      status: "available",
+      summary: `Settled BNBEra result (SHA-256 ${digest}).`,
+      reference: latest.result.deliverableUrl ?? latest.result.settlementReceipt.transactionHash,
+      source: "bnbera-erc8183-settled",
+      observedAt
+    }
+  };
+}
+
+function publicVerifiedPurchaseReview(value: MarketplaceCommerceReview): MarketplaceVerifiedPurchaseReview {
+  return marketplaceVerifiedPurchaseReviewSchema.parse({
+    reviewId: value.reviewId,
+    commerceJobId: value.commerceJobId,
+    reviewerAddress: normalizeEvmAddress(value.buyerAddress),
+    identity: value.providerBinding.identity,
+    agentVersionId: value.providerBinding.agentVersionId,
+    agentVersion: value.providerBinding.agentVersion,
+    resultSha256: value.resultSha256,
+    resultKeccak: value.resultKeccak,
+    settlementTransactionHash: value.settlementTransactionHash,
+    score: value.score,
+    comment: value.comment,
+    observedAt: unixSecondsToIso(value.updatedAtUnix)
+  });
+}
+
+function commerceReviewObservedAt(reviews: readonly MarketplaceCommerceReview[]): string | null {
+  const latest = reviews
+    .map((review) => review.updatedAtUnix)
+    .sort((left, right) => right - left)[0];
+  return unixSecondsToIso(latest ?? null);
+}
+
+function unixSecondsToIso(value: number | null): string | null {
+  if (value === null) return null;
+  if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Invalid Unix timestamp");
+  return new Date(value * 1_000).toISOString();
 }
 
 function publicSkillTerms(value: unknown): readonly string[] {

@@ -9,6 +9,7 @@ import { z } from "zod";
 
 const jobIdSchema = z.string().regex(/^(0|[1-9][0-9]*)$/);
 const operationIdSchema = z.string().uuid();
+const parentJobIdSchema = z.string().uuid();
 
 export async function parseCommerceJson<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
   let body: unknown;
@@ -64,9 +65,24 @@ export function parseCommerceOperationId(value: string): string {
   return parsed.data;
 }
 
+export function parseCommerceParentJobId(value: string): string {
+  const parsed = parentJobIdSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new AppError({
+      code: "COMMERCE_JOB_INVALID",
+      safeMessage: "The parent commerce job identifier is invalid.",
+      requestId: "req_web_commerce_parent_job",
+      nextAction: "check_job_identifier",
+      cause: parsed.error
+    });
+  }
+  return parsed.data;
+}
+
 function statusForCommerceError(error: CommerceError | AppError): number {
   if (error instanceof AppError) {
     if (error.code === "COMMERCE_JOB_INVALID" || error.code === "COMMERCE_OPERATION_INVALID" || error.code === "COMMERCE_REQUEST_INVALID") return 400;
+    if (error.code === "AUTH_REQUIRED" || error.code === "SESSION_COOKIE_INVALID") return 401;
     return 503;
   }
   switch (error.code) {

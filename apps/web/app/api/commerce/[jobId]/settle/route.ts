@@ -24,13 +24,13 @@ export async function POST(
     const input = await parseCommerceJson(request, commerceSettleRequestSchema);
     const composition = await getCommerceComposition();
     const result = await composition.settle(request, jobId, input.idempotencyKey);
-    const job = await composition.readWithoutActor(jobId);
     return commerceHttpJson(commerceActionResponse({
-      status: result.replayed ? "replayed" : "confirmed",
-      jobId,
+      status: result.replayed ? "replayed" : "prepared",
+      jobId: result.operation.jobId ?? jobId,
       operationId: result.operation.operationId,
       operation: toErc8183PublicOperation(result.operation),
-      job
+      job: result.read,
+      dispatch: result.dispatch
     }));
   } catch (error) {
     return commerceHttpError(error);

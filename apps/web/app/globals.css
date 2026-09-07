@@ -1189,6 +1189,53 @@ code {
   margin-top: 1rem;
 }
 
+.commerce-journey__wallet-funding {
+  background: rgb(124 58 237 / 0.07);
+  border: 1px solid rgb(167 139 250 / 0.28);
+  border-radius: 0.8rem;
+  margin-top: 0.85rem;
+  padding: 0.75rem;
+}
+
+.commerce-journey__wallet-funding .eyebrow {
+  margin-bottom: 0.45rem;
+}
+
+.commerce-journey__wallet-address {
+  align-items: stretch;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.commerce-journey__wallet-address input {
+  background: var(--bnbera-background);
+  border: 1px solid var(--bnbera-border);
+  border-radius: 0.65rem;
+  color: var(--bnbera-text);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.72rem;
+  min-width: 0;
+  padding: 0.55rem 0.6rem;
+  width: 100%;
+}
+
+.commerce-journey__wallet-address .button {
+  flex: 0 0 auto;
+}
+
+.commerce-journey__wallet-funding-help,
+.commerce-journey__wallet-copy-status {
+  color: var(--bnbera-muted);
+  font-size: 0.68rem;
+  line-height: 1.45;
+  margin: 0.55rem 0 0;
+}
+
+.commerce-journey__wallet-copy-status {
+  color: #cbbdf0;
+  min-height: 1.05em;
+}
+
 .compare-table-wrap {
   overflow-x: auto;
 }

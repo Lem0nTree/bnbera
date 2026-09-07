@@ -29,6 +29,11 @@ import type { EnabledErc8183DeploymentPin } from "./types.js";
 import type { Erc8183ProviderResult, Erc8183ProviderTask } from "./provider.js";
 import { assertProviderResultMatchesTask } from "./provider.js";
 import type { Erc8183OperationKind, Erc8183OperationExpectation, Erc8183RpcLog, Erc8183RpcReceipt } from "./operations.js";
+import {
+  buildErc8183EoaCall,
+  ERC8183_EOA_CONTRACTS,
+  type Erc8183EoaStep
+} from "./eoa.js";
 
 export type Erc8183AltanaAuthority =
   | { readonly wallet: Wallet; readonly signer: Signer }
@@ -36,6 +41,32 @@ export type Erc8183AltanaAuthority =
 
 export interface Erc8183ReceiptReader {
   getTransactionReceipt(input: { readonly hash: Hex }): Promise<Erc8183RpcReceipt | null>;
+}
+
+/** Public transaction fields used to prove that a browser sent the exact call. */
+export interface Erc8183TransactionReader {
+  getTransaction(input: { readonly hash: Hex }): Promise<{
+    readonly hash: Hex;
+    readonly from: Address;
+    readonly to: Address | null;
+    readonly input: Hex;
+    readonly value: bigint;
+  } | null>;
+}
+
+/** Public EIP-5792 relay status, reduced to the safe recovery states BNBEra uses. */
+export type Erc8183RelayCallStatus = "PENDING" | "CONFIRMED" | "FAILED";
+
+export interface Erc8183RelayStatus {
+  readonly status: Erc8183RelayCallStatus;
+  /** Raw EIP-5792 status code when the relay returned one. */
+  readonly statusCode: number | null;
+  /** The first public transaction hash reported by the relay, if any. */
+  readonly transactionHash: Hex | null;
+}
+
+export interface Erc8183RelayStatusReader {
+  getCallsStatus(input: { readonly callsId: Hex }): Promise<Erc8183RelayStatus>;
 }
 
 /** Read-only seam for the standards-lock deployment gate. */
@@ -180,6 +211,10 @@ export interface Erc8183AltanaAdapterOptions {
   readonly network?: NetworkConfig;
   /** Injected only for deterministic tests or a platform-owned read client. */
   readonly receiptReader?: Erc8183ReceiptReader;
+  /** Injected only for deterministic tests; production reads the public RPC. */
+  readonly transactionReader?: Erc8183TransactionReader;
+  /** Injected only for deterministic tests; production uses the pinned public relay RPC. */
+  readonly relayStatusReader?: Erc8183RelayStatusReader;
   readonly deploymentReader?: Erc8183DeploymentReader;
   /** The checked-in lock is the only supported source for runtime pins in
    * production composition. Explicit verification remains available to
@@ -395,6 +430,18 @@ export const ERC8183_POLICY_EVENTS_ABI = [{
   ]
 }] as const;
 
+/** ERC-20 allowance evidence for the exact commerce spender and amount. */
+export const ERC20_APPROVAL_EVENTS_ABI = [{
+  type: "event",
+  name: "Approval",
+  anonymous: false,
+  inputs: [
+    { indexed: true, name: "owner", type: "address" },
+    { indexed: true, name: "spender", type: "address" },
+    { indexed: false, name: "value", type: "uint256" }
+  ]
+}] as const;
+
 const ERC8183_COMMERCE_LINK_ABI = [{ type: "function", name: "paymentToken", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] }] as const;
 const ERC8183_ROUTER_LINK_ABI = [
   { type: "function", name: "commerce", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] },
@@ -402,7 +449,8 @@ const ERC8183_ROUTER_LINK_ABI = [
 ] as const;
 const ERC8183_POLICY_LINK_ABI = [
   { type: "function", name: "commerce", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] },
-  { type: "function", name: "router", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] }
+  { type: "function", name: "router", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "address" }] },
+  { type: "function", name: "disputeWindow", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint64" }] }
 ] as const;
 const ERC20_METADATA_ABI = [
   { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint8" }] },
@@ -654,6 +702,66 @@ function authorityAddress(authority: Erc8183AltanaAuthority): Address {
   return normalizeAddress("session" in authority ? authority.session.walletAddress : authority.wallet.address, "signer address") as Address;
 }
 
+function relayStatusCode(value: unknown): number | null {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
+  if (typeof value !== "string") return null;
+  if (/^0x[0-9a-f]+$/iu.test(value)) {
+    const parsed = Number.parseInt(value.slice(2), 16);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  if (/^[0-9]+$/u.test(value)) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function relayStatusFromRaw(value: unknown): Erc8183RelayCallStatus {
+  if (typeof value === "string") {
+    const normalized = value.trim().toUpperCase();
+    if (normalized === "CONFIRMED" || normalized === "SUCCESS") return "CONFIRMED";
+    if (normalized === "FAILED" || normalized === "REVERTED") return "FAILED";
+    if (normalized === "PENDING" || normalized === "SUBMITTED") return "PENDING";
+  }
+  const code = relayStatusCode(value);
+  if (code !== null) {
+    if (code >= 200 && code < 300) return "CONFIRMED";
+    if (code >= 300 && code <= 699) return "FAILED";
+    // 1xx is in-flight. Unknown bands intentionally remain pending so an
+    // unrecognized relay response can never trigger a duplicate send.
+    return "PENDING";
+  }
+  return "PENDING";
+}
+
+function createRelayStatusReader(network: NetworkConfig): Erc8183RelayStatusReader {
+  return {
+    getCallsStatus: async ({ callsId }) => {
+      if (network.relayUrl === undefined || network.relayUrl.trim() === "") {
+        throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The pinned Altana network has no public relay status endpoint.", nextAction: "configure_altana_sdk" });
+      }
+      const relay = createPublicClient({ chain: network.chain, transport: http(network.relayUrl) });
+      const raw = await relay.request({ method: "wallet_getCallsStatus", params: [callsId] } as never) as unknown;
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+        throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The Altana relay returned an invalid calls status response.", relayCallsId: callsId, nextAction: "reconcile_transaction" });
+      }
+      const response = raw as Record<string, unknown>;
+      const receipts = Array.isArray(response.receipts) ? response.receipts : [];
+      const firstReceipt = receipts[0];
+      const transactionHash = typeof firstReceipt === "object" && firstReceipt !== null && !Array.isArray(firstReceipt)
+        && typeof (firstReceipt as Record<string, unknown>).transactionHash === "string"
+        && /^0x[0-9a-f]{64}$/iu.test((firstReceipt as Record<string, unknown>).transactionHash as string)
+        ? ((firstReceipt as Record<string, unknown>).transactionHash as string).toLowerCase() as Hex
+        : null;
+      return {
+        status: relayStatusFromRaw(response.status),
+        statusCode: relayStatusCode(response.status),
+        transactionHash
+      };
+    }
+  };
+}
+
 function invokeHire(fn: typeof hireErc8183Agent, authority: Erc8183AltanaAuthority, params: HireAgentParams, opts: { readonly network: NetworkConfig; readonly noWait?: boolean; readonly feeToken?: Address }): ReturnType<typeof hireErc8183Agent> {
   return "session" in authority
     ? fn(authority.session, params, opts)
@@ -702,6 +810,8 @@ export class Erc8183AltanaAdapter {
   public readonly paymentToken: Address;
   private readonly sdk: Erc8183AltanaSdk;
   private readonly receiptReader: Erc8183ReceiptReader;
+  private readonly transactionReader: Erc8183TransactionReader;
+  private readonly relayStatusReader: Erc8183RelayStatusReader;
   private readonly deploymentReader: Erc8183DeploymentReader;
   private readonly deploymentVerification: Erc8183DeploymentVerification | undefined;
   private readonly standardsLockEnabled: boolean | undefined;
@@ -724,6 +834,8 @@ export class Erc8183AltanaAdapter {
       : client.execute({ wallet: authority.wallet, signer: authority.signer, calls, chainId: opts.network.chainId, ...(opts.noWait === undefined ? {} : { noWait: opts.noWait }), ...(opts.feeToken === undefined ? {} : { feeToken: opts.feeToken }) });
     this.sdk = { ...SDK_DEFAULTS, execute: defaultExecute, ...(options.sdk ?? {}) };
     this.receiptReader = options.receiptReader ?? createReceiptReader(this.network);
+    this.transactionReader = options.transactionReader ?? createTransactionReader(this.network);
+    this.relayStatusReader = options.relayStatusReader ?? createRelayStatusReader(this.network);
     this.deploymentReader = options.deploymentReader ?? (publicClient as unknown as Erc8183DeploymentReader);
     const lockConfig = options.standardsLock === undefined ? undefined : resolveErc8183DeploymentVerification(options.standardsLock, this.pin.chainId);
     this.deploymentVerification = lockConfig?.verification ?? options.deploymentVerification;
@@ -816,6 +928,38 @@ export class Erc8183AltanaAdapter {
 
   public async getTransactionReceipt(hash: Hex): Promise<Erc8183RpcReceipt | null> {
     try { return await this.receiptReader.getTransactionReceipt({ hash }); } catch (cause) { throw sdkCallError("receipt read", cause); }
+  }
+
+  public async getTransaction(hash: Hex): Promise<Awaited<ReturnType<Erc8183TransactionReader["getTransaction"]>>> {
+    try { return await this.transactionReader.getTransaction({ hash }); } catch (cause) { throw sdkCallError("transaction read", cause); }
+  }
+
+  /** Read the pinned policy window used to make a create expiry valid. */
+  public async readDisputeWindow(): Promise<number> {
+    try {
+      const value = await this.deploymentReader.readContract({
+        address: this.policyContract,
+        abi: ERC8183_POLICY_LINK_ABI as unknown as Abi,
+        functionName: "disputeWindow"
+      });
+      return asUnix(value, "dispute window");
+    } catch (cause) {
+      if (cause instanceof CommerceError) throw cause;
+      throw sdkCallError("dispute window read", cause);
+    }
+  }
+
+  /**
+   * Read one bounded relay status sample. The caller may invoke this again on
+   * a later reload, but this method never waits or resubmits a calls bundle.
+   */
+  public async getCallsStatus(callsId: Hex): Promise<Erc8183RelayStatus> {
+    try {
+      return await this.relayStatusReader.getCallsStatus({ callsId });
+    } catch (cause) {
+      if (cause instanceof CommerceError && cause.code === "TRANSACTION_UNKNOWN") throw cause;
+      throw new CommerceError({ code: "TRANSACTION_UNKNOWN", message: "The Altana relay status is temporarily unavailable; do not resend the operation.", retriable: true, nextAction: "reconcile_transaction", relayCallsId: callsId, cause });
+    }
   }
 
   public async hire(authority: Erc8183AltanaAuthority, input: Erc8183HireInput): Promise<Erc8183HireResult> {
@@ -1007,6 +1151,121 @@ export class Erc8183AltanaAdapter {
     return { receipt, job };
   }
 
+  /**
+   * Verify one browser-owned EOA transaction. The transaction envelope is
+   * checked in addition to the receipt so a valid event from a different call
+   * cannot advance the persisted sequence. `create` deliberately derives its
+   * job ID only from JobCreated in this receipt.
+   */
+  public async verifyEoaReceipt(input: {
+    readonly transactionHash: Hex;
+    readonly step: Erc8183EoaStep;
+    readonly actorAddress: string;
+    readonly jobId?: string | null;
+    readonly providerAddress?: string;
+    readonly task?: string;
+    readonly budgetAtomic?: string;
+    readonly expiredAtUnix?: number;
+  }): Promise<{
+    readonly receipt: Erc8183RpcReceipt;
+    readonly job: Erc8183OnchainJob;
+    readonly jobId: string;
+    readonly logIndex: number | null;
+  }> {
+    const actor = normalizeAddress(input.actorAddress, "operation signer") as Address;
+    const call = buildErc8183EoaCall({
+      chainId: this.pin.chainId,
+      contracts: {
+        commerceContract: this.pin.commerceContract,
+        routerContract: ERC8183_EOA_CONTRACTS.routerContract,
+        policyContract: ERC8183_EOA_CONTRACTS.policyContract,
+        paymentToken: this.pin.paymentToken
+      },
+      step: input.step,
+      ...(input.providerAddress === undefined ? {} : { providerAddress: input.providerAddress }),
+      ...(input.task === undefined ? {} : { task: input.task }),
+      ...(input.expiredAtUnix === undefined ? {} : { expiredAtUnix: input.expiredAtUnix }),
+      ...(input.budgetAtomic === undefined ? {} : { budgetAtomic: input.budgetAtomic }),
+      ...(input.step === "create" || input.jobId === undefined || input.jobId === null ? {} : { jobId: input.jobId })
+    });
+    const transaction = await this.getTransaction(input.transactionHash);
+    if (transaction === null) throw new CommerceError({ code: "TRANSACTION_UNKNOWN", message: "The browser transaction is not readable yet; do not resend it.", transactionHash: input.transactionHash, nextAction: "reconcile_transaction" });
+    if (transaction.hash.toLowerCase() !== input.transactionHash.toLowerCase() || transaction.from.toLowerCase() !== actor.toLowerCase() || transaction.to === null || transaction.to.toLowerCase() !== call.to.toLowerCase() || transaction.input.toLowerCase() !== call.data.toLowerCase() || transaction.value !== 0n) {
+      throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The browser transaction envelope does not match the persisted actor and exact APEX call.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+    }
+    const receipt = assertReceipt(await this.requireReceipt(input.transactionHash, `EOA ${input.step}`), input.transactionHash, `EOA ${input.step}`);
+    if (input.step === "create") {
+      const created = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobCreated", this.pin.commerceContract as Address, "create");
+      if (eventFromReceipt(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobFunded", this.pin.commerceContract as Address) !== null) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "A create transaction unexpectedly contains funding evidence.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+      const actualJobId = eventBigInt(created.args, "jobId", "create", input.transactionHash).toString(10);
+      if (input.jobId !== undefined && input.jobId !== null && input.jobId !== actualJobId) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted created job ID does not match the JobCreated event.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+      assertEventAddress(eventAddress(created.args, "client", "create", input.transactionHash), actor, "created client", input.transactionHash);
+      if (input.providerAddress !== undefined) assertEventAddress(eventAddress(created.args, "provider", "create", input.transactionHash), normalizeAddress(input.providerAddress, "provider address") as Address, "created provider", input.transactionHash);
+      assertEventAddress(eventAddress(created.args, "evaluator", "create", input.transactionHash), this.routerContract, "created evaluator", input.transactionHash);
+      assertEventAddress(eventAddress(created.args, "hook", "create", input.transactionHash), this.routerContract, "created hook", input.transactionHash);
+      if (input.expiredAtUnix !== undefined) assertEventBigInt(eventBigInt(created.args, "expiredAt", "create", input.transactionHash), BigInt(input.expiredAtUnix), "job expiry", input.transactionHash);
+      const job = await this.readJob(actualJobId);
+      if (job.id !== actualJobId || job.client.toLowerCase() !== actor.toLowerCase() || (input.providerAddress !== undefined && job.provider.toLowerCase() !== input.providerAddress.toLowerCase()) || job.evaluator.toLowerCase() !== this.routerContract.toLowerCase() || job.hook.toLowerCase() !== this.routerContract.toLowerCase() || (input.task !== undefined && job.description !== input.task) || (input.expiredAtUnix !== undefined && job.expiredAtUnix !== input.expiredAtUnix) || job.status !== "OPEN") throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The create receipt and readable job do not match the persisted quote, actor, or open state.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+      return { receipt, job, jobId: actualJobId, logIndex: eventFromReceipt(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobCreated", this.pin.commerceContract as Address)?.logIndex ?? null };
+    }
+
+    const id = requireOperationJobId(input.jobId ?? null, input.transactionHash);
+    let logIndex: number | null = null;
+    if (input.step === "register") {
+      const event = requireReceiptEvent(receipt, ERC8183_ROUTER_EVENTS_ABI, "JobRegistered", this.routerContract, "register");
+      logIndex = event.logIndex;
+      assertEventBigInt(eventBigInt(event.args, "jobId", "register", input.transactionHash), BigInt(id), "registered job ID", input.transactionHash);
+      assertEventAddress(eventAddress(event.args, "policy", "register", input.transactionHash), this.policyContract, "registered policy", input.transactionHash);
+      assertEventAddress(eventAddress(event.args, "client", "register", input.transactionHash), actor, "registered client", input.transactionHash);
+    } else if (input.step === "set_budget") {
+      if (input.budgetAtomic === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The set-budget operation has no persisted amount.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+    } else if (input.step === "approve") {
+      if (input.budgetAtomic === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The approve operation has no persisted amount.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+      const approval = requireReceiptEvent(receipt, ERC20_APPROVAL_EVENTS_ABI, "Approval", this.paymentToken, "approve");
+      logIndex = approval.logIndex;
+      assertEventAddress(eventAddress(approval.args, "owner", "approve", input.transactionHash), actor, "approval owner", input.transactionHash);
+      assertEventAddress(eventAddress(approval.args, "spender", "approve", input.transactionHash), this.pin.commerceContract as Address, "approval spender", input.transactionHash);
+      assertEventBigInt(eventBigInt(approval.args, "value", "approve", input.transactionHash), BigInt(input.budgetAtomic), "approval amount", input.transactionHash);
+    } else if (input.step === "fund") {
+      if (input.budgetAtomic === undefined || input.providerAddress === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The fund operation has incomplete persisted terms.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+      const funded = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobFunded", this.pin.commerceContract as Address, "fund");
+      logIndex = funded.logIndex;
+      assertEventBigInt(eventBigInt(funded.args, "jobId", "fund", input.transactionHash), BigInt(id), "funded job ID", input.transactionHash);
+      assertEventAddress(eventAddress(funded.args, "client", "fund", input.transactionHash), actor, "funded client", input.transactionHash);
+      assertEventAddress(eventAddress(funded.args, "provider", "fund", input.transactionHash), normalizeAddress(input.providerAddress, "provider address") as Address, "funded provider", input.transactionHash);
+      assertEventBigInt(eventBigInt(funded.args, "amount", "fund", input.transactionHash), BigInt(input.budgetAtomic), "funding amount", input.transactionHash);
+    }
+
+    let checked: { readonly receipt: Erc8183RpcReceipt; readonly job: Erc8183OnchainJob | null };
+    if (input.step === "settle" || input.step === "dispute" || input.step === "claim_refund") {
+      checked = await this.verifyReceiptForOperation({
+        transactionHash: input.transactionHash,
+        kind: input.step === "claim_refund" ? "claim_refund" : "settle",
+        jobId: id,
+        signerAddress: actor,
+        ...(input.step === "dispute" ? { action: "dispute" as const } : input.step === "settle" ? { action: "approve" as const } : {})
+      });
+      logIndex = input.step === "dispute"
+        ? eventFromReceipt(receipt, ERC8183_POLICY_EVENTS_ABI, "Disputed", this.policyContract)?.logIndex ?? null
+        : input.step === "claim_refund"
+          ? eventFromReceipt(receipt, ERC8183_COMMERCE_EVENTS_ABI, "Refunded", this.pin.commerceContract as Address)?.logIndex ?? null
+          : eventFromReceipt(receipt, ERC8183_ROUTER_EVENTS_ABI, "JobFinalised", this.routerContract)?.logIndex ?? null;
+    } else {
+      checked = { receipt, job: await this.readJob(id) };
+    }
+    if (checked.job === null) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed browser operation has no readable protocol job.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+    const job = checked.job;
+    if (input.step === "register" || input.step === "set_budget") {
+      if (job.client.toLowerCase() !== actor.toLowerCase() || job.status !== "OPEN") throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: `The ${input.step} receipt did not leave the buyer job open for the next sequential step.`, transactionHash: input.transactionHash, nextAction: "manual_review" });
+      if (input.step === "set_budget" && input.budgetAtomic !== undefined && job.budgetAtomic !== input.budgetAtomic) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The readable budget does not match the persisted exact amount.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+    }
+    if (input.step === "fund") {
+      if (job.client.toLowerCase() !== actor.toLowerCase() || input.budgetAtomic === undefined || job.budgetAtomic !== input.budgetAtomic || !acceptsState(job.status, "FUNDED")) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The funding receipt did not prove the exact amount and funded-or-later job state.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+    }
+    if (input.step === "claim_refund" && job.status !== "EXPIRED") throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The refund receipt did not produce EXPIRED protocol state.", transactionHash: input.transactionHash, nextAction: "manual_review" });
+    return { receipt: checked.receipt, job, jobId: id, logIndex };
+  }
+
   private async requireReceipt(hash: Hex, action: string): Promise<Erc8183RpcReceipt> {
     const receipt = await this.getTransactionReceipt(hash);
     if (receipt === null) throw new CommerceError({ code: "TRANSACTION_UNKNOWN", message: `The ${action} transaction has no receipt yet; do not resend.`, transactionHash: hash, nextAction: "reconcile_transaction" });
@@ -1118,6 +1377,28 @@ function createReceiptReader(network: NetworkConfig): Erc8183ReceiptReader {
       } catch (cause) {
         const message = cause instanceof Error ? cause.message.toLowerCase() : "";
         if (message.includes("could not be found") || message.includes("not found")) return null;
+        throw cause;
+      }
+    }
+  };
+}
+
+function createTransactionReader(network: NetworkConfig): Erc8183TransactionReader {
+  const client = createPublicClient({ chain: network.chain, transport: http(network.publicRpcUrl) });
+  return {
+    async getTransaction({ hash }) {
+      try {
+        const transaction = await client.getTransaction({ hash });
+        return {
+          hash: transaction.hash,
+          from: transaction.from,
+          to: transaction.to,
+          input: transaction.input,
+          value: transaction.value
+        };
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message.toLowerCase() : "";
+        if (/not found|unknown transaction|does not exist|transaction hash/i.test(message)) return null;
         throw cause;
       }
     }

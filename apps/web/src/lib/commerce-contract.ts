@@ -11,6 +11,7 @@ import {
   idempotencyKeySchema,
   decimalUintSchema,
   erc8183PublicOperationSchema,
+  erc8183VerifiedReviewSchema,
   type Erc8183CommerceOperationStatus,
   type Erc8183JobRead,
   type Erc8183PublicOperation
@@ -50,8 +51,6 @@ export const commerceHireRequestSchema = z.object({
   idempotencyKey: idempotencyKeySchema,
   /** Stable persisted commerce_jobs.id; provider identity is never client supplied. */
   commerceJobId: z.string().uuid(),
-  task: z.string().trim().min(1).max(4_096),
-  budgetAtomic: decimalUintSchema,
   deadlineSeconds: z.number().int().positive().max(365 * 24 * 60 * 60).optional()
 }).strict();
 export type CommerceHireRequest = z.infer<typeof commerceHireRequestSchema>;
@@ -93,8 +92,88 @@ export const commerceRefundRequestSchema = z.object({
 }).strict();
 export type CommerceRefundRequest = z.infer<typeof commerceRefundRequestSchema>;
 
+/** Buyer identity is bound by the authenticated server session, never body data. */
+export const commerceReviewRequestSchema = z.object({
+  idempotencyKey: idempotencyKeySchema,
+  score: z.number().int().min(1).max(5),
+  comment: z.string().trim().max(2_000).default("")
+}).strict();
+export type CommerceReviewRequest = z.infer<typeof commerceReviewRequestSchema>;
+
+export const commerceReviewResponseSchema = z.object({
+  contractVersion: z.literal(commerceApiContractVersion),
+  status: z.enum(["created", "replayed"]),
+  review: erc8183VerifiedReviewSchema,
+  error: z.null()
+}).strict();
+export type CommerceReviewResponse = z.infer<typeof commerceReviewResponseSchema>;
+
 export const commerceReconcileRequestSchema = z.object({}).strict();
 export type CommerceReconcileRequest = z.infer<typeof commerceReconcileRequestSchema>;
+
+/**
+ * Public evidence returned by the browser-owned SDK call. The server accepts
+ * only durable operation identity plus relay/chain identifiers; signer,
+ * wallet, session and authority objects are intentionally not representable.
+ */
+export const commerceExternalDispatchRequestSchema = z.object({
+  operationId: z.string().uuid(),
+  /** Legacy relay identifier; EOA WalletConnect sends only transactionHash. */
+  callsId: transactionHashSchema.optional(),
+  transactionHash: transactionHashSchema.optional(),
+  /** Claim an unsigned EOA step immediately before wallet signing. */
+  claim: z.literal(true).optional(),
+  /** Release an in-flight claim only after an explicit wallet rejection. */
+  walletRejected: z.literal(true).optional()
+}).strict().superRefine((value, context) => {
+  if (value.claim === true && (value.walletRejected === true || value.callsId !== undefined || value.transactionHash !== undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["claim"], message: "A dispatch claim cannot include rejection or transaction evidence." });
+  }
+  if (value.walletRejected === true && (value.claim === true || value.callsId !== undefined || value.transactionHash !== undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["walletRejected"], message: "A wallet rejection cannot include a claim or transaction evidence." });
+  }
+});
+export type CommerceExternalDispatchRequest = z.infer<typeof commerceExternalDispatchRequestSchema>;
+
+/** Immutable, safe-to-replay parameters for one browser SDK action. */
+export const commerceBrowserDispatchSchema = z.object({
+  operationId: z.string().uuid(),
+  action: z.enum(["hire", "settle", "dispute", "refund"]),
+  chainId: z.union([z.literal(56), z.literal(97)]),
+  actorAddress: evmAddressSchema,
+  providerAddress: evmAddressSchema.nullable(),
+  task: z.string().trim().min(1).max(4_096).nullable(),
+  budgetAtomic: decimalUintSchema.nullable(),
+  deadlineSeconds: z.number().int().positive().max(365 * 24 * 60 * 60).nullable(),
+  jobId: decimalUintSchema.nullable(),
+  /** Present for the sequential EOA adapter; absent only on legacy SDK rows. */
+  step: z.enum(["create", "register", "set_budget", "approve", "fund", "settle", "dispute", "claim_refund"]).optional(),
+  to: evmAddressSchema.optional(),
+  data: publicHexSchema.optional(),
+  valueAtomic: decimalUintSchema.optional()
+}).strict().superRefine((value, context) => {
+  const step = value.step;
+  if (step !== undefined && (value.to === undefined || value.data === undefined || value.valueAtomic === undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["step"], message: "EOA dispatch requires the exact target, calldata, and zero value." });
+  }
+  if (step === "create") {
+    if (value.providerAddress === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["providerAddress"], message: "Hire dispatch requires a provider address." });
+    if (value.task === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["task"], message: "Hire dispatch requires the persisted task." });
+    if (value.budgetAtomic === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["budgetAtomic"], message: "Hire dispatch requires the persisted budget." });
+    if (value.jobId !== null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["jobId"], message: "Hire dispatch cannot contain a protocol job ID before receipt reconciliation." });
+  } else if (step !== undefined) {
+    if (value.jobId === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["jobId"], message: "Settlement dispatch requires a protocol job ID." });
+  } else if (value.action === "hire") {
+    if (value.providerAddress === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["providerAddress"], message: "Hire dispatch requires a provider address." });
+    if (value.task === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["task"], message: "Hire dispatch requires the persisted task." });
+    if (value.budgetAtomic === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["budgetAtomic"], message: "Hire dispatch requires the persisted budget." });
+    if (value.jobId !== null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["jobId"], message: "Hire dispatch cannot contain a protocol job ID before receipt reconciliation." });
+  } else {
+    if (value.jobId === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["jobId"], message: "Settlement dispatch requires a protocol job ID." });
+    if (value.providerAddress !== null || value.task !== null || value.budgetAtomic !== null || value.deadlineSeconds !== null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["action"], message: "Settlement dispatch cannot carry hire parameters." });
+  }
+});
+export type CommerceBrowserDispatch = z.infer<typeof commerceBrowserDispatchSchema>;
 
 export const commerceStatusResponseSchema = z.object({
   contractVersion: z.literal(commerceApiContractVersion),
@@ -104,13 +183,24 @@ export const commerceStatusResponseSchema = z.object({
 }).strict();
 export type CommerceStatusResponse = z.infer<typeof commerceStatusResponseSchema>;
 
+export const commerceOperationStatusResponseSchema = z.object({
+  contractVersion: z.literal(commerceApiContractVersion),
+  status: z.literal("ready"),
+  operation: erc8183PublicOperationSchema,
+  job: erc8183JobReadSchema.nullable(),
+  dispatch: commerceBrowserDispatchSchema.nullable(),
+  error: z.null()
+}).strict();
+export type CommerceOperationStatusResponse = z.infer<typeof commerceOperationStatusResponseSchema>;
+
 export const commerceActionResponseSchema = z.object({
   contractVersion: z.literal(commerceApiContractVersion),
-  status: z.enum(["confirmed", "replayed", "approved", "reconciled"]),
+  status: z.enum(["prepared", "pending", "confirmed", "replayed", "approved", "reconciled"]),
   jobId: z.string().regex(/^(0|[1-9][0-9]*)$/).nullable(),
   operationId: z.string().uuid().nullable(),
   operation: erc8183PublicOperationSchema.nullable(),
   job: erc8183JobReadSchema.nullable(),
+  dispatch: commerceBrowserDispatchSchema.nullable(),
   error: z.null()
 }).strict();
 export type CommerceActionResponse = z.infer<typeof commerceActionResponseSchema>;
@@ -141,8 +231,34 @@ export function commerceActionResponse(input: {
   readonly operationId: string | null;
   readonly operation: Erc8183PublicOperation | null;
   readonly job: Erc8183JobRead | null;
+  readonly dispatch?: CommerceBrowserDispatch | null;
 }): CommerceActionResponse {
   return commerceActionResponseSchema.parse({
+    contractVersion: commerceApiContractVersion,
+    ...input,
+    dispatch: input.dispatch ?? null,
+    error: null
+  });
+}
+
+export function commerceOperationStatusResponse(input: {
+  readonly operation: Erc8183PublicOperation;
+  readonly job: Erc8183JobRead | null;
+  readonly dispatch: CommerceBrowserDispatch | null;
+}): CommerceOperationStatusResponse {
+  return commerceOperationStatusResponseSchema.parse({
+    contractVersion: commerceApiContractVersion,
+    status: "ready",
+    ...input,
+    error: null
+  });
+}
+
+export function commerceReviewResponse(input: {
+  readonly status: CommerceReviewResponse["status"];
+  readonly review: CommerceReviewResponse["review"];
+}): CommerceReviewResponse {
+  return commerceReviewResponseSchema.parse({
     contractVersion: commerceApiContractVersion,
     ...input,
     error: null
