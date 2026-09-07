@@ -28,6 +28,7 @@ import {
   PASSKEY_BOOTSTRAP_STORAGE_KEY,
   type PasskeyBootstrapRecord
 } from "@/lib/passkey-bootstrap";
+import { PublicWalletFunding, type WalletAddressCopyState } from "./public-wallet-funding";
 
 type BrowserWallet = Wallet & { readonly signer: Signer };
 type BrowserAuthority = { readonly wallet: BrowserWallet; readonly signer: Signer };
@@ -181,6 +182,8 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   const [reviewComment, setReviewComment] = useState("");
   const [reviewSent, setReviewSent] = useState(false);
   const [transactionHashDraft, setTransactionHashDraft] = useState("");
+  const [walletAddressCopyState, setWalletAddressCopyState] = useState<WalletAddressCopyState>("idle");
+  const walletAddressInputRef = useRef<HTMLInputElement | null>(null);
   const authInFlight = useRef(false);
   const activationInFlight = useRef(false);
 
@@ -382,6 +385,38 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
     }
   };
 
+  const walletAddressForFunding = authority?.wallet.address
+    ?? (passkeyBootstrap !== null && passkeyBootstrap.status !== "confirmed" ? passkeyBootstrap.walletAddress : null);
+
+  const copyWalletAddress = async () => {
+    if (walletAddressForFunding === null) return;
+    setWalletAddressCopyState("copying");
+    if (typeof navigator !== "undefined" && typeof navigator.clipboard?.writeText === "function") {
+      try {
+        await navigator.clipboard.writeText(walletAddressForFunding);
+        setWalletAddressCopyState("copied");
+        return;
+      } catch {
+        // Fall through to the legacy/manual path when clipboard permission is
+        // denied or unavailable in this browser context.
+      }
+    }
+    const addressInput = walletAddressInputRef.current;
+    if (addressInput !== null) {
+      addressInput.focus();
+      addressInput.select();
+      try {
+        if (typeof document !== "undefined" && typeof document.execCommand === "function" && document.execCommand("copy")) {
+          setWalletAddressCopyState("copied");
+          return;
+        }
+      } catch {
+        // Manual selection remains the fallback when legacy copy is blocked.
+      }
+    }
+    setWalletAddressCopyState("manual");
+  };
+
   const requestQuote = async () => {
     if (task.trim() === "") { setError("Describe the result you need before requesting a quote."); return; }
     setBusy(true);
@@ -524,6 +559,13 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   return (
     <div className="commerce-journey" data-testid="commerce-journey">
       <div className="commerce-journey__header"><strong>ERC-8183 paid task</strong>{operation !== null && <StatusBadge value={statusLabel(operation.status)} tone={operationStatusTone(operation.status)} />}</div>
+      {walletAddressForFunding !== null && walletNeedsActivation && <PublicWalletFunding
+        identifier={identifier}
+        walletAddress={walletAddressForFunding}
+        copyState={walletAddressCopyState}
+        addressInputRef={walletAddressInputRef}
+        onCopy={() => void copyWalletAddress()}
+      />}
       {authority === null ? <div className="commerce-journey__authority">
         <p className="detail-section__lede">Signing stays in this browser. BNBEra receives only the operation ID and public relay evidence.</p>
         {savedActivationInFlight && <p className="muted-label">Wallet activation is being reconciled from its saved public relay calls ID. No duplicate activation will be sent.</p>}
