@@ -73,11 +73,13 @@ history.
 ## T5 browser commerce — EOA canary
 
 The T5 buyer path does not require an Altana smart wallet, passkey or Altana
-session. Connect one WalletConnect QR/mobile connector; MetaMask and other
-compatible wallets are selected through WalletConnect. The connector must
-resolve to one normalized buyer EOA and one SIWE session bound to BSC testnet
-(chain 97). `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` is public browser runtime
-configuration for this connector; do not put its value in
+session. Configure wagmi with its `walletConnect` connector as the only wallet
+connector, using public `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`. WalletConnect
+may reach compatible extension wallets in a desktop browser and mobile wallets
+through QR/deep links; availability varies, so not every extension is
+guaranteed. Do not add `injected()` or a MetaMask-specific connector. The
+connector must resolve to one normalized buyer EOA and one SIWE session bound to
+BSC testnet (chain 97). Do not put the project ID in
 `config/standards.lock.json`, a server secret store or any application secret
 reference. No supplied project ID belongs in this runbook.
 
