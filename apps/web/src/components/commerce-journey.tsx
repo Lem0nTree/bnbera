@@ -9,7 +9,7 @@ import {
   type Wallet
 } from "@bnbera/agent-commerce/browser";
 import { Callout, StatusBadge } from "@bnbera/ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   CommerceActionResponse,
   CommerceBrowserDispatch,
@@ -17,8 +17,20 @@ import type {
 } from "@/lib/commerce-contract";
 import { commerceQuoteSnapshotSchema, type CommerceQuoteResponse, type CommerceQuoteSnapshot } from "@/lib/commerce-quote-contract";
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
+import {
+  activateFreshPasskeyWallet,
+  createPasskeyBootstrapRelayStatusReader,
+  createUnregisteredPasskeyBootstrapRecord,
+  parsePasskeyBootstrapRecord,
+  reconcilePasskeyBootstrapRecord,
+  serializePasskeyBootstrapRecord,
+  PASSKEY_BOOTSTRAP_CHAIN_ID,
+  PASSKEY_BOOTSTRAP_STORAGE_KEY,
+  type PasskeyBootstrapRecord
+} from "@/lib/passkey-bootstrap";
 
-type BrowserAuthority = { readonly wallet: Wallet; readonly signer: Signer };
+type BrowserWallet = Wallet & { readonly signer: Signer };
+type BrowserAuthority = { readonly wallet: BrowserWallet; readonly signer: Signer };
 type JourneyProps = {
   readonly activation: MarketplaceAgentReadModel["activation"];
   readonly identifier: string;
@@ -153,6 +165,9 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   const storageKey = useMemo(() => publicStorageKey(identifier), [identifier]);
   const quoteKey = useMemo(() => quoteStorageKey(identifier), [identifier]);
   const [authority, setAuthority] = useState<BrowserAuthority | null>(null);
+  const [passkeyBootstrap, setPasskeyBootstrap] = useState<PasskeyBootstrapRecord | null>(null);
+  const [walletNeedsActivation, setWalletNeedsActivation] = useState(false);
+  const [passkeyAuthenticated, setPasskeyAuthenticated] = useState(false);
   const [operationId, setOperationId] = useState<string | null>(null);
   const [operation, setOperation] = useState<CommerceActionResponse["operation"]>(null);
   const [job, setJob] = useState<CommerceActionResponse["job"]>(null);
@@ -166,6 +181,13 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   const [reviewComment, setReviewComment] = useState("");
   const [reviewSent, setReviewSent] = useState(false);
   const [transactionHashDraft, setTransactionHashDraft] = useState("");
+  const authInFlight = useRef(false);
+  const activationInFlight = useRef(false);
+
+  const bootstrapRelayStatusReader = useMemo(() => {
+    if (BNB_TESTNET.chainId !== PASSKEY_BOOTSTRAP_CHAIN_ID || typeof BNB_TESTNET.relayUrl !== "string" || BNB_TESTNET.relayUrl.trim() === "") return null;
+    return createPasskeyBootstrapRelayStatusReader(BNB_TESTNET.relayUrl);
+  }, []);
 
   const rememberOperation = useCallback((nextOperationId: string) => {
     setOperationId(nextOperationId);
@@ -180,6 +202,39 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
     setQuoteConfirmed(true);
   }, [rememberOperation]);
 
+  const rememberPasskeyBootstrap = useCallback((record: PasskeyBootstrapRecord) => {
+    setPasskeyBootstrap(record);
+    window.localStorage.setItem(PASSKEY_BOOTSTRAP_STORAGE_KEY, serializePasskeyBootstrapRecord(record));
+  }, []);
+
+  const authenticateBrowserAuthority = useCallback(async (nextAuthority: BrowserAuthority): Promise<void> => {
+    if (passkeyAuthenticated || authInFlight.current) return;
+    authInFlight.current = true;
+    try {
+      await authenticateBrowserPasskey(nextAuthority.wallet.address, nextAuthority.signer);
+      setAuthority(nextAuthority);
+      setPasskeyAuthenticated(true);
+      setWalletNeedsActivation(false);
+    } finally {
+      authInFlight.current = false;
+    }
+  }, [passkeyAuthenticated]);
+
+  const reconcileSavedPasskeyBootstrap = useCallback(async (record: PasskeyBootstrapRecord): Promise<PasskeyBootstrapRecord> => {
+    if (bootstrapRelayStatusReader === null) throw new Error("The standards-locked Altana relay is unavailable; wallet activation stays disabled.");
+    const result = await reconcilePasskeyBootstrapRecord({
+      record,
+      readStatus: bootstrapRelayStatusReader,
+      persist: rememberPasskeyBootstrap
+    });
+    setWalletNeedsActivation(result.status !== "confirmed");
+    if (result.message !== undefined && result.status !== "confirmed") setError(result.message);
+    if (result.status === "confirmed" && authority !== null) {
+      await authenticateBrowserAuthority(authority);
+    }
+    return result.record;
+  }, [authenticateBrowserAuthority, authority, bootstrapRelayStatusReader, rememberPasskeyBootstrap]);
+
   const loadOperation = useCallback(async (id: string) => {
     const response = await fetch(`/api/commerce/operation/${encodeURIComponent(id)}`, { cache: "no-store" });
     const body = await parseResponse<CommerceOperationStatusResponse>(response);
@@ -189,6 +244,11 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   }, []);
 
   useEffect(() => {
+    const storedBootstrap = parsePasskeyBootstrapRecord(window.localStorage.getItem(PASSKEY_BOOTSTRAP_STORAGE_KEY));
+    if (storedBootstrap !== null) {
+      setPasskeyBootstrap(storedBootstrap);
+      setWalletNeedsActivation(storedBootstrap.status !== "confirmed");
+    }
     const storedQuote = window.localStorage.getItem(quoteKey);
     if (storedQuote !== null) {
       try {
@@ -211,6 +271,23 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   }, [loadOperation, quoteKey, storageKey]);
 
   useEffect(() => {
+    const record = passkeyBootstrap;
+    if (record === null || record.callsId === null || record.status === "confirmed" || record.status === "failed" || bootstrapRelayStatusReader === null) return undefined;
+    let stopped = false;
+    const poll = async () => {
+      if (stopped) return;
+      try {
+        await reconcileSavedPasskeyBootstrap(record);
+      } catch (cause) {
+        if (!stopped) setError(cause instanceof Error ? cause.message : "The saved passkey activation could not be reconciled.");
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), POLL_INTERVAL_MS);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, [bootstrapRelayStatusReader, passkeyBootstrap?.callsId, passkeyBootstrap?.status, reconcileSavedPasskeyBootstrap]);
+
+  useEffect(() => {
     if (operationId === null) return undefined;
     let stopped = false;
     const poll = async () => {
@@ -227,18 +304,74 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
     setBusy(true);
     setError(null);
     try {
+      if (BNB_TESTNET.chainId !== PASSKEY_BOOTSTRAP_CHAIN_ID) throw new Error("The standards-locked passkey bootstrap network is not BNB testnet chain 97.");
+      if (!recover && passkeyBootstrap !== null) throw new Error("A passkey wallet activation already exists. Recover or reconcile it before creating another wallet.");
+      if (recover && passkeyBootstrap !== null && passkeyBootstrap.status !== "confirmed") {
+        if (passkeyBootstrap.callsId === null) throw new Error("This passkey wallet has not started activation yet. Finish activation in the original browser tab; no second wallet will be created.");
+        const reconciled = await reconcileSavedPasskeyBootstrap(passkeyBootstrap);
+        if (reconciled.status !== "confirmed") return;
+      }
       const client = createClient({ chains: [BNB_TESTNET], defaultChainId: BNB_TESTNET.chainId });
       const result = recover
         ? await client.recoverFromPasskey({ chainId: BNB_TESTNET.chainId })
         : await client.createPasskeyWallet({ name: "BNBEra commerce" });
-      await authenticateBrowserPasskey(result.address, result.signer);
-      setAuthority({ wallet: result, signer: result.signer });
+      const nextAuthority: BrowserAuthority = { wallet: result, signer: result.signer };
+      if (recover) {
+        await authenticateBrowserAuthority(nextAuthority);
+      } else {
+        const initial = createUnregisteredPasskeyBootstrapRecord(result.address);
+        rememberPasskeyBootstrap(initial);
+        setAuthority(nextAuthority);
+        setPasskeyAuthenticated(false);
+        setWalletNeedsActivation(true);
+      }
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "The browser passkey authority could not be prepared.";
       setError(recover && /has no keys registered|never executed a transaction/iu.test(message)
         ? "This passkey wallet has not completed its first on-chain registration yet. Recovery and server sign-in stay unavailable until an authorized first on-chain action registers its admin key; creating the passkey alone does not bootstrap that registration."
         : message);
     } finally { setBusy(false); }
+  };
+
+  const activateWallet = async () => {
+    if (authority === null) { setError("Create a passkey wallet before activating it."); return; }
+    if (BNB_TESTNET.chainId !== PASSKEY_BOOTSTRAP_CHAIN_ID) { setError("The standards-locked passkey bootstrap network is not BNB testnet chain 97."); return; }
+    if (bootstrapRelayStatusReader === null) { setError("The standards-locked Altana relay is unavailable; wallet activation stays disabled."); return; }
+    if (activationInFlight.current) return;
+    activationInFlight.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      const client = createClient({ chains: [BNB_TESTNET], defaultChainId: PASSKEY_BOOTSTRAP_CHAIN_ID });
+      const outcome = await activateFreshPasskeyWallet({
+        walletAddress: authority.wallet.address,
+        walletState: walletNeedsActivation ? "new_unregistered" : "already_registered",
+        record: passkeyBootstrap,
+        // The SDK's admin execute inspects KeyStore and prepends its
+        // initialRegisterKey call when this user-call list is empty. That
+        // first registration stays in the browser-owned signer boundary.
+        execute: async () => client.execute({
+          wallet: authority.wallet,
+          signer: authority.wallet.signer,
+          chainId: PASSKEY_BOOTSTRAP_CHAIN_ID,
+          calls: [],
+          noWait: true
+        }),
+        readStatus: bootstrapRelayStatusReader,
+        persist: rememberPasskeyBootstrap
+      });
+      if (outcome.shouldAuthenticate) {
+        await authenticateBrowserAuthority(authority);
+      } else if (outcome.message !== undefined) {
+        setError(outcome.message);
+      }
+      setWalletNeedsActivation(outcome.status !== "confirmed" && outcome.status !== "already_registered");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Wallet activation could not be completed.");
+    } finally {
+      activationInFlight.current = false;
+      setBusy(false);
+    }
   };
 
   const requestQuote = async () => {
@@ -374,16 +507,29 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   const completed = job?.job.state === "completed";
   const submission = job?.submission ?? null;
   const submitted = job !== null && job.job.state === "submitted" && submission !== null;
+  const savedActivationInFlight = passkeyBootstrap !== null
+    && passkeyBootstrap.callsId !== null
+    && passkeyBootstrap.status !== "confirmed"
+    && passkeyBootstrap.status !== "failed";
+  const activationButtonLabel = savedActivationInFlight ? "Check wallet activation" : "Activate wallet";
 
   return (
     <div className="commerce-journey" data-testid="commerce-journey">
       <div className="commerce-journey__header"><strong>ERC-8183 paid task</strong>{operation !== null && <StatusBadge value={statusLabel(operation.status)} tone={operationStatusTone(operation.status)} />}</div>
       {authority === null ? <div className="commerce-journey__authority">
         <p className="detail-section__lede">Signing stays in this browser. BNBEra receives only the operation ID and public relay evidence.</p>
+        {savedActivationInFlight && <p className="muted-label">Wallet activation is being reconciled from its saved public relay calls ID. No duplicate activation will be sent.</p>}
         <div className="detail-actions">
-          <button className="button button--ghost button--small" type="button" disabled={busy} onClick={() => void connectPasskey(true)}>Recover passkey wallet</button>
-          <button className="button button--ghost button--small" type="button" disabled={busy} onClick={() => void connectPasskey(false)}>Create passkey wallet</button>
+          <button className="button button--ghost button--small" type="button" disabled={busy || savedActivationInFlight} onClick={() => void connectPasskey(true)}>Recover passkey wallet</button>
+          <button className="button button--ghost button--small" type="button" disabled={busy || passkeyBootstrap !== null} onClick={() => void connectPasskey(false)}>Create passkey wallet</button>
+          {savedActivationInFlight && <button className="button button--ghost button--small" type="button" disabled={busy} onClick={() => { if (passkeyBootstrap !== null) void reconcileSavedPasskeyBootstrap(passkeyBootstrap); }}>{activationButtonLabel}</button>}
         </div>
+      </div> : walletNeedsActivation ? <div className="commerce-journey__authority">
+        <p className="detail-section__lede">Passkey wallet created. Activate it once to register its admin key on BNB testnet, then BNBEra will run the existing WebAuthn sign-in check.</p>
+        <p className="muted-label">Activation uses the SDK&apos;s native KeyStore registration and Altana relay fee; fund the wallet with enough BNB testnet gas first.</p>
+        {passkeyBootstrap?.status === "pending" && <p className="muted-label">Activation is pending; its public relay calls ID is saved and will not be submitted again.</p>}
+        {passkeyBootstrap?.status === "unknown" && <p className="muted-label">Activation outcome is unknown; the saved calls ID must reconcile before another attempt.</p>}
+        <button className="button button--primary" type="button" disabled={busy} onClick={() => void activateWallet()}>{activationButtonLabel}</button>
       </div> : <p className="muted-label">Browser wallet ready · signer remains in memory only</p>}
       {error !== null && <Callout title="Commerce action stopped" tone="warning" icon="!">{error}</Callout>}
       {operationId === null && quote === null && <div className="commerce-journey__quote">
