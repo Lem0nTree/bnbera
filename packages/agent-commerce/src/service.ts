@@ -21,7 +21,7 @@ import {
   type Erc8183ConfirmedOperation,
   type Erc8183RpcReceipt
 } from "./operations.js";
-import { normalizeAddress } from "./validation.js";
+import { assertBudgetMatchesPin, normalizeAddress } from "./validation.js";
 import {
   erc8183DeploymentPinDigest,
   erc8183JobRecordSchema,
@@ -88,13 +88,13 @@ function contextValue(parameters: Readonly<Record<string, unknown>> | undefined,
 }
 
 function operationContext(input: {
-  readonly authority: Erc8183AltanaAuthority;
+  readonly signerAddress: string;
   readonly action: "hire" | "submit" | "settle" | "dispute" | "claim_refund";
   readonly parameters: Readonly<Record<string, unknown>>;
   readonly expectation?: Erc8183OperationExpectation | null;
 }): NonNullable<Erc8183PreparedOperation["context"]> {
   return {
-    signerAddress: authorityAddress(input.authority),
+    signerAddress: normalizeAddress(input.signerAddress, "signer address"),
     sdkAction: input.action,
     parameters: input.parameters,
     expectation: input.expectation ?? null
@@ -191,6 +191,93 @@ export class Erc8183OperationCoordinator {
     }
   }
 
+  /**
+   * Reserve a browser-owned SDK intent without executing it on the server.
+   * A replay is returned to the caller so a reload can inspect the existing
+   * operation; only an awaiting-signature row is dispatchable. Unknown and
+   * submitted rows are deliberately never made dispatchable again.
+   */
+  public async reserveExternal(input: {
+    readonly operation: Erc8183PreparedOperation;
+    readonly idempotencyKey: string;
+  }): Promise<{
+    readonly operation: Erc8183OperationRecord;
+    readonly replayed: boolean;
+    readonly dispatchable: boolean;
+  }> {
+    if (input.operation.kind === "settle" && input.operation.context?.sdkAction !== "dispute") {
+      if (input.operation.jobId === null || this.approvals === undefined) {
+        throw new CommerceError({ code: "RECONCILIATION_REQUIRED", message: "Settlement is disabled until persisted buyer approval is available.", nextAction: "approve_result" });
+      }
+      await this.approvals.assertBuyerApproval({
+        chainId: input.operation.chainId,
+        commerceContract: this.adapter.pin.commerceContract,
+        jobId: input.operation.jobId
+      });
+    }
+    const reservation = await this.operations.reserve({
+      idempotencyKey: input.idempotencyKey,
+      requestDigest: input.operation.requestDigest,
+      chainId: input.operation.chainId,
+      commerceContract: input.operation.commerceContract,
+      jobId: input.operation.jobId,
+      kind: input.operation.kind,
+      signerRole: input.operation.signerRole,
+      context: input.operation.context ?? null
+    });
+    return {
+      operation: reservation.operation,
+      replayed: reservation.replayed,
+      dispatchable: reservation.operation.status === "awaiting_signature"
+    };
+  }
+
+  /**
+   * Attach only public SDK relay evidence reported by the browser. This does
+   * not accept a signer/session/authority object and never submits a call.
+   * A pending report becomes unknown, while a later transaction hash may be
+   * attached to that same operation for bounded receipt recovery.
+   */
+  public async attachExternalExecution(input: {
+    readonly operationId: string;
+    readonly callsId: string;
+    readonly transactionHash?: string | undefined;
+  }): Promise<Erc8183OperationCoordinatorResult<Erc8183ConfirmedOperation | null>> {
+    const current = await this.operations.get(input.operationId);
+    if (current === null) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The requested commerce operation does not exist." });
+    if (["confirmed", "reverted", "reconciled"].includes(current.status)) {
+      return { operation: current, result: null, replayed: true };
+    }
+
+    await this.operations.attachCallsId({ operationId: input.operationId, callsId: input.callsId });
+    if (input.transactionHash === undefined) {
+      const latest = await this.operations.get(input.operationId);
+      if (latest === null) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The commerce operation disappeared during evidence attachment." });
+      if (latest.status === "awaiting_signature" || latest.status === "submitted") {
+        await this.operations.markUnknown({ operationId: input.operationId, failureCode: "BROWSER_RELAY_PENDING" });
+      }
+      const operation = await this.operations.get(input.operationId);
+      if (operation === null) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The commerce operation disappeared during pending-state recording." });
+      return { operation, result: null, replayed: false };
+    }
+
+    await this.operations.markSubmitted({ operationId: input.operationId, transactionHash: input.transactionHash });
+    try {
+      return await this.reconcile(input.operationId);
+    } catch (cause) {
+      if (cause instanceof CommerceError && cause.code === "TRANSACTION_UNKNOWN") {
+        const latest = await this.operations.get(input.operationId);
+        if (latest !== null && (latest.status === "submitted" || latest.status === "awaiting_signature")) {
+          await this.operations.markUnknown({ operationId: input.operationId, failureCode: "RECEIPT_PENDING" });
+        }
+        const operation = await this.operations.get(input.operationId);
+        if (operation === null) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The commerce operation disappeared during receipt recovery." });
+        return { operation, result: null, replayed: false };
+      }
+      throw cause;
+    }
+  }
+
   /** Backward-compatible generic entry point for SDK-backed callers. */
   public async execute<T extends AdapterExecution>(input: {
     readonly operation: Erc8183PreparedOperation;
@@ -232,6 +319,13 @@ export class Erc8183OperationCoordinator {
       const reconciled = await this.operations.reconcile({ operationId, status: "reconciled" });
       return { operation: reconciled, result: { operation: this.operationFromRecord(reconciled), transactionHash: checked.receipt.transactionHash, receipt: checked.receipt, jobId: checked.job?.id ?? reconciled.jobId }, replayed: false };
     } catch (cause) {
+      // A missing receipt is an expected bounded recovery state, not proof of
+      // a malformed receipt. Keep the operation unknown so a later browser or
+      // reconciler report can attach the same transaction without a re-send.
+      if (cause instanceof CommerceError && cause.code === "TRANSACTION_UNKNOWN") {
+        try { await this.operations.markUnknown({ operationId, failureCode: "RECEIPT_PENDING" }); } catch { /* preserve original action */ }
+        throw cause;
+      }
       try { await this.operations.markManualReview({ operationId, failureCode: "RECEIPT_VALIDATION_FAILED" }); } catch { /* preserve original action */ }
       if (cause instanceof CommerceError) throw cause;
       throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted receipt could not be validated; manual review is required.", transactionHash: existing.transactionHash, nextAction: "manual_review", cause });
@@ -507,6 +601,29 @@ export interface Erc8183HireServiceInput extends Erc8183HireInput {
   readonly requesterAddress?: string;
 }
 
+/**
+ * Browser-owned hire preparation. The server validates and persists this
+ * immutable intent, but deliberately receives no wallet, signer, session or
+ * authority object. The browser later executes the matching SDK action.
+ */
+export interface Erc8183HireIntentInput {
+  readonly idempotencyKey: string;
+  readonly providerAddress: string;
+  readonly task: string;
+  readonly budgetAtomic: string;
+  readonly providerBinding: Erc8183ProviderBinding;
+  readonly commerceJobId?: string;
+  readonly deadlineSeconds?: number;
+  readonly requesterAddress: string;
+}
+
+export interface Erc8183SettleIntentInput {
+  readonly idempotencyKey: string;
+  readonly jobId: string;
+  readonly action?: "approve" | "dispute";
+  readonly requesterAddress: string;
+}
+
 export interface Erc8183SubmitServiceInput extends Erc8183SubmitInput {
   readonly idempotencyKey: string;
   readonly providerBinding?: Erc8183ProviderBinding;
@@ -529,16 +646,103 @@ export class Erc8183CommerceService {
     return persisted;
   }
 
-  public async hire(input: Erc8183HireServiceInput): Promise<Erc8183OperationCoordinatorResult<Erc8183HireResult>> {
-    const actor = assertAuthenticatedRequester(input.requesterAddress, input.authority);
+  private prepareHireOperation(input: {
+    readonly providerAddress: string;
+    readonly task: string;
+    readonly budgetAtomic: string;
+    readonly providerBinding: Erc8183ProviderBinding;
+    readonly commerceJobId?: string;
+    readonly deadlineSeconds?: number;
+    readonly requesterAddress: string;
+  }): Erc8183PreparedOperation {
+    const actor = normalizeAddress(input.requesterAddress, "authenticated requester");
     if (this.options.jobs !== undefined && (input.commerceJobId === undefined || input.commerceJobId.trim() === "")) throw new CommerceError({ code: "INVALID_JOB", message: "Canonical ERC-8183 persistence requires the owning commerce job ID.", nextAction: "configure_job_repository" });
+    if (input.task.trim() === "" || new TextEncoder().encode(input.task).byteLength > 4_096) throw new CommerceError({ code: "INVALID_JOB", message: "The ERC-8183 task must contain between 1 and 4096 UTF-8 bytes." });
+    assertBudgetMatchesPin(input.budgetAtomic, this.options.adapter.pin);
     const binding = erc8183ProviderBindingSchema.parse(input.providerBinding);
     if (binding.identity.chainId !== this.options.adapter.pin.chainId) throw new CommerceError({ code: "INVALID_CHAIN", message: "Provider identity chain must match the pinned ERC-8183 chain." });
     const commerceContract = normalizeAddress(this.options.adapter.pin.commerceContract, "commerce contract");
+    const providerAddress = normalizeAddress(input.providerAddress, "provider address");
     const taskDigest = PostgresErc8183OperationRepository.requestDigest(input.task);
-    const requestDigest = PostgresErc8183OperationRepository.requestDigest({ operation: "hire", chainId: this.options.adapter.pin.chainId, commerceContract, actorAddress: actor, providerAddress: input.providerAddress.toLowerCase(), taskDigest, budgetAtomic: input.budgetAtomic, providerBinding: binding, commerceJobId: input.commerceJobId ?? null, deadlineSeconds: input.deadlineSeconds ?? null });
-    const expectation: Erc8183OperationExpectation = { providerAddress: normalizeAddress(input.providerAddress), amountAtomic: input.budgetAtomic, expectedState: "FUNDED" };
-    const operation = preparedOperation({ kind: "create", signerRole: "client", chainId: this.options.adapter.pin.chainId, commerceContract, jobId: null, requestDigest, context: operationContext({ authority: input.authority, action: "hire", parameters: { taskDigest, providerBinding: binding, budgetAtomic: input.budgetAtomic, commerceJobId: input.commerceJobId ?? null, deadlineSeconds: input.deadlineSeconds ?? null }, expectation }), expectation });
+    const requestDigest = PostgresErc8183OperationRepository.requestDigest({ operation: "hire", chainId: this.options.adapter.pin.chainId, commerceContract, actorAddress: actor, providerAddress: providerAddress.toLowerCase(), taskDigest, budgetAtomic: input.budgetAtomic, providerBinding: binding, commerceJobId: input.commerceJobId ?? null, deadlineSeconds: input.deadlineSeconds ?? null });
+    const expectation: Erc8183OperationExpectation = { providerAddress, amountAtomic: input.budgetAtomic, expectedState: "FUNDED" };
+    return preparedOperation({
+      kind: "create",
+      signerRole: "client",
+      chainId: this.options.adapter.pin.chainId,
+      commerceContract,
+      jobId: null,
+      requestDigest,
+      context: operationContext({
+        signerAddress: actor,
+        action: "hire",
+        parameters: {
+          task: input.task,
+          taskDigest,
+          providerAddress,
+          providerBinding: binding,
+          budgetAtomic: input.budgetAtomic,
+          commerceJobId: input.commerceJobId ?? null,
+          deadlineSeconds: input.deadlineSeconds ?? null
+        },
+        expectation
+      }),
+      expectation
+    });
+  }
+
+  private async prepareSettleOperation(input: Erc8183SettleIntentInput): Promise<Erc8183PreparedOperation> {
+    const actor = normalizeAddress(input.requesterAddress, "authenticated requester");
+    await this.assertPersistedActor(input.jobId, actor, "client");
+    const action = input.action ?? "approve";
+    if (action === "approve") {
+      if (this.options.approvals === undefined) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "Buyer approval persistence is not configured.", nextAction: "configure_job_repository" });
+      await this.options.approvals.assertBuyerApproval({ chainId: this.options.adapter.pin.chainId, commerceContract: this.options.adapter.pin.commerceContract, jobId: input.jobId });
+    }
+    const commerceContract = normalizeAddress(this.options.adapter.pin.commerceContract, "commerce contract");
+    const requestDigest = PostgresErc8183OperationRepository.requestDigest({ operation: "settle", chainId: this.options.adapter.pin.chainId, commerceContract, jobId: input.jobId, actorAddress: actor, action });
+    const expectation: Erc8183OperationExpectation = action === "dispute" ? {} : { expectedState: "COMPLETED" };
+    return preparedOperation({
+      kind: "settle",
+      signerRole: "client",
+      chainId: this.options.adapter.pin.chainId,
+      commerceContract,
+      jobId: input.jobId,
+      requestDigest,
+      context: operationContext({ signerAddress: actor, action: action === "dispute" ? "dispute" : "settle", parameters: { action }, expectation }),
+      expectation
+    });
+  }
+
+  /** Prepare and validate an immutable hire intent without invoking the SDK. */
+  public prepareHireIntent(input: Erc8183HireIntentInput): Erc8183PreparedOperation {
+    return this.prepareHireOperation(input);
+  }
+
+  /** Prepare a buyer settlement/dispute intent without invoking the SDK. */
+  public prepareSettleIntent(input: Erc8183SettleIntentInput): Promise<Erc8183PreparedOperation> {
+    return this.prepareSettleOperation(input);
+  }
+
+  public reserveExternal(input: { readonly operation: Erc8183PreparedOperation; readonly idempotencyKey: string }): ReturnType<Erc8183OperationCoordinator["reserveExternal"]> {
+    return this.coordinator.reserveExternal(input);
+  }
+
+  public attachExternalExecution(input: { readonly operationId: string; readonly callsId: string; readonly transactionHash?: string }): ReturnType<Erc8183OperationCoordinator["attachExternalExecution"]> {
+    return this.coordinator.attachExternalExecution(input);
+  }
+
+  public async hire(input: Erc8183HireServiceInput): Promise<Erc8183OperationCoordinatorResult<Erc8183HireResult>> {
+    const actor = assertAuthenticatedRequester(input.requesterAddress, input.authority);
+    const operation = this.prepareHireOperation({
+      providerAddress: input.providerAddress,
+      task: input.task,
+      budgetAtomic: input.budgetAtomic,
+      providerBinding: input.providerBinding,
+      requesterAddress: actor,
+      ...(input.commerceJobId === undefined ? {} : { commerceJobId: input.commerceJobId }),
+      ...(input.deadlineSeconds === undefined ? {} : { deadlineSeconds: input.deadlineSeconds })
+    });
     return this.coordinator.executeSdk({ operation, idempotencyKey: input.idempotencyKey, authority: input.authority, run: () => this.options.adapter.hire(input.authority, input) });
   }
 
@@ -565,7 +769,7 @@ export class Erc8183CommerceService {
     const commerceContract = normalizeAddress(this.options.adapter.pin.commerceContract, "commerce contract");
     const requestDigest = PostgresErc8183OperationRepository.requestDigest({ operation: "submit", chainId: this.options.adapter.pin.chainId, commerceContract, jobId: input.jobId, actorAddress: actor, resultDigest: input.resultDigest.toLowerCase(), chainDeliverable: chainDeliverable.toLowerCase(), manifest: input.manifest ?? null, deliverableUrl: input.deliverableUrl ?? input.result?.deliverableUrl ?? null, result: input.result ?? null, optParams: input.optParams ?? null, providerBinding });
     const expectation: Erc8183OperationExpectation = { digest: chainDeliverable.toLowerCase() as `0x${string}`, expectedState: "SUBMITTED" };
-    const operation = preparedOperation({ kind: "submit", signerRole: "provider", chainId: this.options.adapter.pin.chainId, commerceContract, jobId: input.jobId, requestDigest, context: operationContext({ authority: input.authority, action: "submit", parameters: { resultDigest: input.resultDigest.toLowerCase(), chainDeliverable: chainDeliverable.toLowerCase(), deliverableUrl: input.deliverableUrl ?? input.result?.deliverableUrl ?? null, manifest: input.manifest ?? null, result: input.result ?? null, providerBinding }, expectation }), expectation });
+    const operation = preparedOperation({ kind: "submit", signerRole: "provider", chainId: this.options.adapter.pin.chainId, commerceContract, jobId: input.jobId, requestDigest, context: operationContext({ signerAddress: actor, action: "submit", parameters: { resultDigest: input.resultDigest.toLowerCase(), chainDeliverable: chainDeliverable.toLowerCase(), deliverableUrl: input.deliverableUrl ?? input.result?.deliverableUrl ?? null, manifest: input.manifest ?? null, result: input.result ?? null, providerBinding }, expectation }), expectation });
     return this.coordinator.executeSdk({ operation, idempotencyKey: input.idempotencyKey, authority: input.authority, run: () => this.options.adapter.submit(input) });
   }
 
@@ -577,12 +781,7 @@ export class Erc8183CommerceService {
 
   public async settle(input: { readonly idempotencyKey: string; readonly authority: Erc8183AltanaAuthority; readonly requesterAddress?: string; readonly jobId: string; readonly action?: "approve" | "dispute"; readonly executeOptions?: { readonly noWait?: boolean } }): Promise<Erc8183OperationCoordinatorResult<Erc8183SettleResult>> {
     const actor = assertAuthenticatedRequester(input.requesterAddress, input.authority);
-    await this.assertPersistedActor(input.jobId, actor, "client");
-    const action = input.action ?? "approve";
-    const commerceContract = normalizeAddress(this.options.adapter.pin.commerceContract, "commerce contract");
-    const requestDigest = PostgresErc8183OperationRepository.requestDigest({ operation: "settle", chainId: this.options.adapter.pin.chainId, commerceContract, jobId: input.jobId, actorAddress: actor, action });
-    const expectation: Erc8183OperationExpectation = action === "dispute" ? {} : { expectedState: "COMPLETED" };
-    const operation = preparedOperation({ kind: "settle", signerRole: "client", chainId: this.options.adapter.pin.chainId, commerceContract, jobId: input.jobId, requestDigest, context: operationContext({ authority: input.authority, action: action === "dispute" ? "dispute" : "settle", parameters: { action }, expectation }), expectation });
+    const operation = await this.prepareSettleOperation({ idempotencyKey: input.idempotencyKey, jobId: input.jobId, requesterAddress: actor, ...(input.action === undefined ? {} : { action: input.action }) });
     return this.coordinator.executeSdk({ operation, idempotencyKey: input.idempotencyKey, authority: input.authority, run: () => this.options.adapter.settle(input.authority, input) });
   }
 
@@ -592,7 +791,7 @@ export class Erc8183CommerceService {
     const commerceContract = normalizeAddress(this.options.adapter.pin.commerceContract, "commerce contract");
     const requestDigest = PostgresErc8183OperationRepository.requestDigest({ operation: "claim_refund", chainId: this.options.adapter.pin.chainId, commerceContract, jobId: input.jobId, actorAddress: actor });
     const expectation: Erc8183OperationExpectation = { expectedState: "EXPIRED" };
-    const operation = preparedOperation({ kind: "claim_refund", signerRole: "client", chainId: this.options.adapter.pin.chainId, commerceContract, jobId: input.jobId, requestDigest, context: operationContext({ authority: input.authority, action: "claim_refund", parameters: {}, expectation }), expectation });
+    const operation = preparedOperation({ kind: "claim_refund", signerRole: "client", chainId: this.options.adapter.pin.chainId, commerceContract, jobId: input.jobId, requestDigest, context: operationContext({ signerAddress: actor, action: "claim_refund", parameters: {}, expectation }), expectation });
     return this.coordinator.executeSdk({ operation, idempotencyKey: input.idempotencyKey, authority: input.authority, run: () => this.options.adapter.claimRefund(input.authority, input) });
   }
 

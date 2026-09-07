@@ -366,7 +366,11 @@ export class PostgresErc8183OperationRepository {
     const nowUnix = assertNow(input.nowUnix);
     const result = await this.pool.query<OperationRow>(`
       UPDATE erc8183_operations SET status = 'submitted', transaction_hash = $2, updated_at_unix = $3
-      WHERE id = $1 AND status = 'awaiting_signature'
+      WHERE id = $1
+        AND (
+          status = 'awaiting_signature'
+          OR (status = 'unknown' AND (transaction_hash IS NULL OR transaction_hash = $2))
+        )
       RETURNING id, idempotency_key, request_digest, chain_id, commerce_contract, erc8183_job_id, operation_kind, signer_role, status, transaction_hash, block_number, block_hash, log_index, failure_code, operation_context, created_at_unix, updated_at_unix
     `, [input.operationId, hash, nowUnix]);
     if (result.rows[0] !== undefined) return parseOperationRow(result.rows[0]);

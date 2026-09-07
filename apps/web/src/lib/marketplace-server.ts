@@ -30,6 +30,7 @@ import {
   type AgentCategory,
   type Erc8004Identity
 } from "@bnbera/domain";
+import { PostgresErc8183MarketplaceProjection } from "@bnbera/agent-commerce";
 import {
   marketplaceActivationOfferSchema,
   marketplaceAuthoritySchema,
@@ -804,6 +805,7 @@ async function createLiveReadService(): Promise<MarketplaceReadService> {
   const pool = getPool(runtime.databaseUrl, runtime.databaseSsl);
   const repository: IngestionRepository = new PostgresIngestionRepository(pool, { ssl: runtime.databaseSsl });
   const metadataSource = new PostgresMarketplaceMetadataSource(pool);
+  const commerceProjection = new PostgresErc8183MarketplaceProjection(pool);
   const recognizedReviewerAddresses = (process.env.ERC8004_RECOGNIZED_REVIEWER_ADDRESSES ?? "")
     .split(",")
     .map((value) => value.trim())
@@ -811,6 +813,7 @@ async function createLiveReadService(): Promise<MarketplaceReadService> {
   const source = new IngestionMarketplaceSource(repository, metadataSource, {
     sourceName: "postgres-ingestion-read-model",
     recognizedReviewerAddresses,
+    commerceProjection,
     ...(runtime.erc8004IngestionEnabled
       ? {}
       : {

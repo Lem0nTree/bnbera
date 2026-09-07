@@ -9,6 +9,7 @@ import { z } from "zod";
 
 const jobIdSchema = z.string().regex(/^(0|[1-9][0-9]*)$/);
 const operationIdSchema = z.string().uuid();
+const parentJobIdSchema = z.string().uuid();
 
 export async function parseCommerceJson<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
   let body: unknown;
@@ -58,6 +59,20 @@ export function parseCommerceOperationId(value: string): string {
       safeMessage: "The commerce operation identifier is invalid.",
       requestId: "req_web_commerce_operation",
       nextAction: "check_operation_identifier",
+      cause: parsed.error
+    });
+  }
+  return parsed.data;
+}
+
+export function parseCommerceParentJobId(value: string): string {
+  const parsed = parentJobIdSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new AppError({
+      code: "COMMERCE_JOB_INVALID",
+      safeMessage: "The parent commerce job identifier is invalid.",
+      requestId: "req_web_commerce_parent_job",
+      nextAction: "check_job_identifier",
       cause: parsed.error
     });
   }

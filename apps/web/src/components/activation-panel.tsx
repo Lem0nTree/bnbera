@@ -1,15 +1,20 @@
 import { Callout, StatusBadge } from "@bnbera/ui";
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
 import { statusTone } from "@/lib/presentation";
+import { CommerceJourney } from "./commerce-journey";
 
 export function ActivationPanel({
   activation,
   detail = false,
-  identifier = "agent"
+  identifier = "agent",
+  commerceJobId = null,
+  budgetAtomic = null
 }: {
   readonly activation: MarketplaceAgentReadModel["activation"];
   readonly detail?: boolean;
   readonly identifier?: string;
+  readonly commerceJobId?: string | null;
+  readonly budgetAtomic?: string | null;
 }) {
   const reasonId = `activation-reason-${identifier}`;
   const content = (
@@ -33,8 +38,9 @@ export function ActivationPanel({
         {activation.enabled ? "Continue to activation" : "Activation unavailable"}
       </button>
       <p className="activation-panel__footnote">
-        {activation.nextAction} · No transaction, payment, wallet, or service request is simulated here.
+        {activation.nextAction} · Browser signing is user-controlled; the server stores only public operation evidence.
       </p>
+      <CommerceJourney activation={activation} identifier={identifier} commerceJobId={commerceJobId} budgetAtomic={budgetAtomic} />
     </div>
   );
 

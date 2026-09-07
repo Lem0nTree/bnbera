@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   commerceApprovalOrDisputeRequestSchema,
+  commerceBrowserDispatchSchema,
+  commerceExternalDispatchRequestSchema,
   commerceHireRequestSchema,
+  commerceReviewRequestSchema,
   commerceSubmitRequestSchema
 } from "./commerce-contract";
 
@@ -60,5 +63,40 @@ describe("commerce API contract", () => {
     });
     expect(parsed.resultDigest).toBe(LOCAL_SHA256);
     expect(parsed.chainDeliverable).toBe(CHAIN_KECCAK);
+  });
+
+  it("accepts only public browser evidence and binds dispatch to the reviewed actor", () => {
+    const operationId = "00000000-0000-4000-8000-000000000008";
+    const actorAddress = "0x5555555555555555555555555555555555555555";
+    const callsId = `0x${"a".repeat(64)}`;
+    expect(commerceExternalDispatchRequestSchema.safeParse({ operationId, callsId, signer: { address: actorAddress } }).success).toBe(false);
+    expect(commerceExternalDispatchRequestSchema.parse({ operationId, callsId })).toEqual({ operationId, callsId });
+    expect(commerceBrowserDispatchSchema.parse({
+      operationId,
+      action: "hire",
+      chainId: 97,
+      actorAddress,
+      providerAddress: "0x6666666666666666666666666666666666666666",
+      task: "health factor",
+      budgetAtomic: "1000",
+      deadlineSeconds: null,
+      jobId: null
+    }).actorAddress).toBe(actorAddress);
+  });
+
+  it("binds review identity to the authenticated server boundary", () => {
+    const result = commerceReviewRequestSchema.safeParse({
+      idempotencyKey: "review-with-client-identity",
+      score: 5,
+      comment: "exact result",
+      buyerUserId: "00000000-0000-4000-8000-000000000009",
+      buyerAddress: "0x5555555555555555555555555555555555555555"
+    });
+    expect(result.success).toBe(false);
+    expect(commerceReviewRequestSchema.parse({
+      idempotencyKey: "review-server-identity",
+      score: 5,
+      comment: "exact result"
+    })).toEqual({ idempotencyKey: "review-server-identity", score: 5, comment: "exact result" });
   });
 });

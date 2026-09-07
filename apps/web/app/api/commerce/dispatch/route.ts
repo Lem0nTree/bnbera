@@ -1,12 +1,11 @@
 import { toErc8183PublicOperation } from "@bnbera/agent-commerce";
 import {
   commerceActionResponse,
-  commerceSettleRequestSchema
+  commerceExternalDispatchRequestSchema
 } from "@/lib/commerce-contract";
 import {
   commerceHttpError,
   commerceHttpJson,
-  parseCommerceJobId,
   parseCommerceJson
 } from "@/lib/commerce-http";
 import { getCommerceComposition } from "@/lib/commerce-server";
@@ -14,19 +13,15 @@ import { getCommerceComposition } from "@/lib/commerce-server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function POST(
-  request: Request,
-  { params }: { readonly params: Promise<{ readonly jobId: string }> }
-): Promise<Response> {
+/** Attach browser-observed relay/receipt identifiers; never dispatch server-side. */
+export async function POST(request: Request): Promise<Response> {
   try {
-    const { jobId: rawJobId } = await params;
-    const jobId = parseCommerceJobId(rawJobId);
-    const input = await parseCommerceJson(request, commerceSettleRequestSchema);
+    const input = await parseCommerceJson(request, commerceExternalDispatchRequestSchema);
     const composition = await getCommerceComposition();
-    const result = await composition.settle(request, jobId, input.idempotencyKey);
+    const result = await composition.attachExternalExecution(request, input);
     return commerceHttpJson(commerceActionResponse({
-      status: result.replayed ? "replayed" : "prepared",
-      jobId: result.operation.jobId ?? jobId,
+      status: result.operation.status === "reconciled" || result.operation.status === "confirmed" ? "confirmed" : "pending",
+      jobId: result.operation.jobId,
       operationId: result.operation.operationId,
       operation: toErc8183PublicOperation(result.operation),
       job: result.read,

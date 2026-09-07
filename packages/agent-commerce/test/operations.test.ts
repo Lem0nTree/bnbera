@@ -37,7 +37,7 @@ class FakeOperationPool implements Erc8183OperationQueryPool {
         if (context.callsId !== undefined && context.callsId !== null) return { rows: [] };
         this.row.operation_context = { ...context, callsId: values[1] };
       } else if (text.includes("SET status = 'submitted'")) {
-        if (this.row.status !== "awaiting_signature") return { rows: [] };
+        if (!(this.row.status === "awaiting_signature" || (this.row.status === "unknown" && (this.row.transaction_hash === null || this.row.transaction_hash === values[1])))) return { rows: [] };
         this.row.status = "submitted";
         this.row.transaction_hash = values[1];
         this.row.updated_at_unix = values[2];
@@ -138,5 +138,24 @@ describe("ERC-8183 operation persistence", () => {
     await repository.reserve(input);
     await expect(repository.reserve({ ...input, context: { ...input.context, signerAddress: "0x5555555555555555555555555555555555555555" } })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
     await expect(repository.reserve({ ...input, jobId: "8" })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+  });
+
+  it("attaches a late transaction hash to the same unknown operation without reopening dispatch", async () => {
+    const repository = new PostgresErc8183OperationRepository(new FakeOperationPool());
+    const input = {
+      idempotencyKey: "late-browser-evidence",
+      requestDigest: "e".repeat(64),
+      chainId: 97 as const,
+      commerceContract: "0x1111111111111111111111111111111111111111",
+      kind: "create" as const,
+      signerRole: "client" as const,
+      nowUnix: 2_000_000,
+      context: { signerAddress: "0x5555555555555555555555555555555555555555", sdkAction: "hire" as const, parameters: { budgetAtomic: "1000" } }
+    };
+    const reserved = await repository.reserve(input);
+    await repository.markUnknown({ operationId: reserved.operation.operationId, failureCode: "BROWSER_RELAY_PENDING", nowUnix: 2_000_001 });
+    const submitted = await repository.markSubmitted({ operationId: reserved.operation.operationId, transactionHash: HASH, nowUnix: 2_000_002 });
+    expect(submitted.status).toBe("submitted");
+    expect(submitted.transactionHash).toBe(HASH);
   });
 });

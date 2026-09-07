@@ -1,12 +1,10 @@
 import { toErc8183PublicOperation } from "@bnbera/agent-commerce";
 import {
-  commerceActionResponse,
-  commerceReconcileRequestSchema
+  commerceOperationStatusResponse
 } from "@/lib/commerce-contract";
 import {
   commerceHttpError,
   commerceHttpJson,
-  parseCommerceJson,
   parseCommerceOperationId
 } from "@/lib/commerce-http";
 import { getCommerceComposition } from "@/lib/commerce-server";
@@ -14,25 +12,20 @@ import { getCommerceComposition } from "@/lib/commerce-server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function POST(
+/** Reload a browser operation by durable ID; response is actor-bound server state. */
+export async function GET(
   request: Request,
   { params }: { readonly params: Promise<{ readonly operationId: string }> }
 ): Promise<Response> {
   try {
     const { operationId: rawOperationId } = await params;
     const operationId = parseCommerceOperationId(rawOperationId);
-    await parseCommerceJson(request, commerceReconcileRequestSchema);
     const composition = await getCommerceComposition();
-    const result = await composition.reconcile(request, operationId);
-    const jobId = result.operation.jobId;
-    const job = jobId === null ? null : await composition.readWithoutActor(jobId);
-    return commerceHttpJson(commerceActionResponse({
-      status: "reconciled",
-      jobId,
-      operationId: result.operation.operationId,
+    const result = await composition.operationStatus(request, operationId);
+    return commerceHttpJson(commerceOperationStatusResponse({
       operation: toErc8183PublicOperation(result.operation),
-      job,
-      dispatch: null
+      job: result.read,
+      dispatch: result.dispatch
     }));
   } catch (error) {
     return commerceHttpError(error);
