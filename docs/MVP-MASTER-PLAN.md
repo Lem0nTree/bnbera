@@ -1,8 +1,8 @@
 # BNBEra MVP master plan
 
-Status: active scope, following the user's simplified MVP direction. Updated: 2026-09-06.
-Implementation baseline: `9af240b7840211ccfccf987d0eda10b2ad43cf3f`, GitHub `main`.
-This plan supersedes the archived plans. It defines the intended MVP; unchecked gates below are not implementation claims. The source-of-truth interpretation of the competition rubric is [HACKATHON-REQUIREMENTS.md](HACKATHON-REQUIREMENTS.md).
+Status: active scope, following the user's simplified MVP direction. Updated: 2026-09-07.
+Implementation baselines: merged GitHub `main` at `41f9d4521ca4391b9fdfe9fe1d949d5652ceb3b5`; the local retained `main` checkout also contains follow-up reputation projection fix `84c2c6a` (not treated as a GitHub merge claim); current unmerged T5 checkout `task/t5-browser-commerce` at `df92d4931de6197f0fbaef64c1e97486e1775b5c`.
+This plan supersedes the archived plans. It defines the intended MVP; branch-only implementation and unit tests are not gate acceptance. The source-of-truth interpretation of the competition rubric is [HACKATHON-REQUIREMENTS.md](HACKATHON-REQUIREMENTS.md).
 
 ## Product and delivery order
 
@@ -17,24 +17,49 @@ Use the existing Next.js UI, PostgreSQL/pgvector Docker database and packages. U
 
 The main-track product goal remains four useful categories: rebalancing, grid trading, yield optimisation and health-factor monitoring. Start each integration with one real agent, then apply the same flow across the four categories. One-agent technical acceptance does not claim full category coverage. The published hackathon rubric prioritizes category discovery, useful current data and activation; the final demo must be public. [Official requirements](https://www.bnbchain.org/en/hackathons/smart-money-era?tab=tracks).
 
+## Gate status at this reconciliation
+
+| Gate | Status | Tasks | Evidence and blocker |
+| --- | --- | --- | --- |
+| G1 | Completed (accepted demonstrated scope) | T1–T3 | T1/T2/T3 retained/local acceptance is complete. Stable public HTTPS/deployed-browser alignment remains a final public-preview follow-up and is not claimed here. |
+| G2 | Pending; live tunnel acceptance required | T4–T5 | T4 backend and authorized chain-97 canary are accepted on merged `main`. T5 browser/result/review code is present in the unmerged branch, but no accepted browser-to-chain useful-result, settlement and review run exists yet. |
+| G3 | Planned | T6–T7 | Passkey bootstrap is a T5 authentication prerequisite; no Altana grant/revoke or Agent Studio creation flow is accepted. |
+| G4 | Planned | T8–T9 | Greenfield pins, upload/readback evidence and final public walkthrough remain open. |
+
+### Task status checklist
+
+| Task | Status | Evidence | Missing acceptance or follow-up |
+| --- | --- | --- | --- |
+| T1 | Completed (retained scope) | Locked discovery/health jobs, durable cursor/retry state, bounded restart-safe work and freshness expiry are accepted. | Reinstall from the immutable public-preview checkout for final-host alignment. |
+| T2 | Completed (retained scope) | Enrichment, evidence-backed categories, vectors, deterministic fallback, marketplace projections and three provenance-separated reputation views are accepted. | Grow qualified four-category supply; semantic release remains blocked by the candidate standards lock. |
+| T3 | Completed (retained/local scope) | Production build/read model, local API/SSR routes, restart persistence, stale-health and fallback checks are accepted for the demonstrated scope. | Stable authorized HTTPS/deployed-browser evidence is still required before a final public-preview claim. |
+| T4 | Completed (backend/canary scope) | Merged ERC-8183 boundary and authorized chain-97 hire -> submit -> explicit approval -> settlement canary passed, with reload/duplicate/unknown-outcome safeguards. | T5 must prove useful work from a callable marketplace agent; `releaseEnabled=false` remains. |
+| T5 | Pending (branch implementation; live acceptance) | Browser quote/fund/result/settle/review composition, root-backed WebAuthn, fresh passkey bootstrap/recovery, exact registry fixes, guarded 2206 registration, reference provider and disabled worker are implemented and focused-tested. | 2206 needs an authorized HTTPS tunnel/card and finalized reingestion, followed by the browser-to-chain useful-result, settlement, review and Agent Advantage evidence. |
+| T6 | Planned | Altana/Creator boundaries and candidate pins only. | Implement and live-test grant/status/revoke, expiry and cap behavior. |
+| T7 | Planned | No accepted no-code Creator flow. | Ship one audited Agent Studio template with idempotent register/list/hire. |
+| T8 | Planned | Publisher abstractions only. | Pin Greenfield provider/SDK and verify profile/result seal/readback hashes. |
+| T9 | Planned | Requirements and gate structure only. | Complete public walkthrough, current evidence and submission package. |
+
 ## Current implementation — what we can rely on
 
 | Area | Current evidence | Remaining MVP work |
 | --- | --- | --- |
-| Frontend | Browse, four category routes, detail, search/filter and compare already exist | Bind missing metrics and real activation/results; no redesign |
-| Discovery/publication | 8004scan transport and bounded composition runner; registration service mapping fixed in HEAD; a live candidate reached publication | Persistent scheduling, fair batching, retry/restart and live data refresh |
-| Retained database | September 5 audit: 25 identities, one published chain-97 health-factor agent, two versions and two embeddings | More useful supply and fresh observations |
+| Frontend | Browse, four category routes, detail, search/filter and compare already exist. The unmerged T5 branch adds authenticated browser commerce with root-backed WebAuthn, fresh passkey `execute([])` activation whose SDK supplies `initialRegisterKey`, reload/recovery, quote/fund/result/approval/review controls. | Live activation/results remain unproven; no redesign |
+| Discovery/publication | 8004scan transport and bounded composition runner; T1/T2 are merged. The T5 branch fixes exact ERC-8004 registry-log decoding and identity upsert ordering, and adds a guarded owner-authorized reference-registration harness for the chain-97 reference identity 2206. | A public card/service URI is still required for 2206: its current `http://localhost` URI is rejected by safe ingestion. Reingestion/publication and live data refresh remain pending. |
+| Retained database | September 6 retained snapshot: 2,120 identities/agents, 25 published listings, 39 versions, 29 locked 1536-dimensional vectors, zero reputation events and one durable reputation checkpoint | More useful supply and fresh observations |
 | Categories/vectors | Deterministic classifier, provider adapter and 1536-dimensional pgvector storage | API lock enforcement, a real semantic query and four-category supply checks |
-| Health | Last successful recorded probe at `2026-09-05T15:49:29.586Z`; stale by the later audit | Scheduled measurements, honest uptime and freshness |
+| Health | The retained status record reports 14,216 service probes (13,216 healthy) and 39/39 healthy services at its snapshot; public-preview alignment and a current deployed run remain unaccepted | Scheduled measurements, honest uptime and freshness |
 | A2A | Valid card fields and skill descriptions are parsed | Card availability is not tested skill execution; retain callable endpoint and verify the real result |
 | Direct events | Reader/reorg/checkpoint components exist; audit found no retained checkpoint | Reuse only after missing probe/category wiring and bounded handoff are fixed; not a separate platform project |
-| Hiring | Merged ERC-8183 SDK boundary, PostgreSQL lifecycle/reconciliation, safe APIs and a confirmed chain-97 operator canary | Authenticated browser authority, useful callable-agent result, completed-job/review projection and release decision |
-| Altana/Creator | Policy and handoff primitives; live bootstrap unproved | One real bounded grant/action/revoke path, then one Creator template |
+| Hiring | Merged ERC-8183 SDK boundary, PostgreSQL lifecycle/reconciliation, safe APIs and a confirmed chain-97 operator canary. The T5 branch adds quote reservations, browser-owned SDK signing/reload recovery, persisted result/review projection and a disabled-by-default reference-provider worker. | A live tunnel run must show authenticated browser authority, useful callable-agent work, exact result evidence, confirmed settlement and a verified-purchase review. `releaseEnabled` remains false. |
+| Altana/Creator | T5 adds browser passkey bootstrap/reconciliation and a server WebAuthn session boundary; this is not Creator acceptance. | One real bounded Altana grant/action/revoke path, then one Creator template |
 | Greenfield | Publisher abstractions and integrity tests | Pin SDK/provider and publish/read back two real artifacts |
 
-Focused baseline tests passed: 96 ingestion, 32 marketplace, 6 web. They do not prove live paid execution, custody, uptime or public deployment. The old complete-pipeline artifact remains false; new gate evidence must be captured at the implementation SHA.
+Focused T5 checkout tests passed: `@bnbera/agent-commerce` 54/54, `@bnbera/web` 55/55, `@bnbera/agent-ingestion` 115/115, and the reference-registration/worker scripts 12/12. These are implementation evidence only; they do not prove live paid execution, custody, uptime or public deployment. The old complete-pipeline artifact remains false; new gate evidence must be captured at the accepted implementation SHA.
 
 ## G1 — Persistent discovery and enriched marketplace
+
+Status: Completed for the previously accepted retained/local scope. Stable public HTTPS/deployed-browser alignment remains an explicit final-preview follow-up; the T5 pipeline fixes are not a replacement for that follow-up.
 
 Run discovery about every five minutes and health refresh every minute as independent, locked cron jobs. Persist progress, per-identity retry/next-attempt and failure reasons in PostgreSQL. Twenty candidates is a batch size; later runs must progress through the remaining candidates rather than repeat the same twenty. A vendor timeout must not block health refresh or serving.
 
@@ -68,9 +93,13 @@ Permissionless feedback is Sybil-prone. The UI may show its raw count and distri
 
 ## G2 — Hire, escrow, result, settlement
 
+Status: T4 backend/canary complete; T5 implementation is present in the unmerged checkout; G2 remains pending. Do not mark G2 complete until an authorized HTTPS tunnel run drives agent 2206 from the browser through escrow, a useful callable result, exact result verification, confirmed settlement and one authenticated verified-purchase review, with reload/duplicate and unknown-outcome evidence.
+
 Implement **one ERC-8183 rail** using the pinned `@altananetwork/sdk@0.9.0` against the reviewed APEX deployment. The policy-address conflict is resolved at the source level: the APEX `scripts/addresses.ts` file at the standards-lock commit and the installed SDK agree on chain-97 Commerce `0xa206c0517b6371c6638cd9e4a42cc9f02a33b0de`, Router `0xd7d36d66d2f1b608a0f943f722d27e3744f66f25`, OptimisticPolicy `0xd6a4217588f6b1f5657a92a3e94e6422ad771cea` and payment token `0xc70B8741B8B07A6d61E54fd4B20f22Fa648E5565`. Bytecode, proxy/linkage, policy allowlisting and token metadata are runtime-verified; the authorized canary passed. Release remains disabled pending T5 browser/useful-result acceptance. Do not add x402/B402 to this MVP.
 
 T4 backend acceptance is complete on merged PR #18 (`7a0a480`): the deployment checks, canonical persistence, operation-specific reconciliation, explicit buyer decision and one distinct-actor chain-97 hire -> submit -> settle canary passed, including database reload and no-rebroadcast guards. This is backend evidence only. Its deterministic health-factor fixture does not prove that a discovered marketplace agent performed useful work, and the web authority boundary intentionally remains closed. T5 owns that browser-to-useful-result proof; `releaseEnabled` remains false until it passes.
+
+The unmerged T5 checkout now supplies the browser-owned composition around that boundary: a server-created quote/reservation, explicit buyer funding, root-backed WebAuthn session, fresh passkey activation through browser-owned SDK `execute([])` (with SDK-supplied `initialRegisterKey`), persisted pre-send relay intent and read-only reload/recovery, exact result and receipt projection, buyer approval/dispute, settlement and one-per-job verified-purchase review. It also supplies a guarded registration harness and reference-provider worker for the health-factor reference identity. These features have focused tests but no live gate evidence yet. Agent 2206's current `http://localhost` registration URI is intentionally rejected by the safe ingestion path; a temporary authorized HTTPS card/tunnel and a fresh finalized ingest are prerequisites to the canary.
 
 Use the Altana SDK directly in application code. `hireErc8183Agent` performs the atomic buyer batch; `submitErc8183Deliverable` canonicalizes and submits the provider result; `settleErc8183Job` approves or disputes; `buildClaimRefundCall` handles the expiry refund; and `getErc8183Job` supplies the chain read model. The Altana MCP exposes the same capabilities to AI chat hosts and is not an application dependency or a second integration path. Do not maintain a duplicate direct transaction writer.
 
@@ -86,6 +115,8 @@ Handle cancel/expiry/refund or rejection according to the pinned deployment, and
 
 ## G3 — No-code creation with Altana
 
+Status: planned (T6–T7). The T5 browser passkey bootstrap is only an authenticated commerce prerequisite; it does not prove an Altana grant, revocation/deny path or Agent Studio deployment.
+
 Altana is required for this created-agent custody path, not for external agent discovery or ordinary marketplace use. It also governs the created agent after setup: current session checks, renewal, expiry and revocation. Externally discovered Altana agents may show verified authority without being redeployed.
 
 First prove the pinned browser-controlled wallet -> bounded session -> Studio/runtime handoff -> one permitted testnet action -> user revoke -> next equivalent action denied. Resolve the existing Altana address/runtime pins and use supported SDK APIs. The user keeps administrative control; the platform receives only the bounded session through the secret channel.
@@ -95,6 +126,8 @@ Then ship one audited template: choose template -> enter validated parameters ->
 **Gate G3:** a user creates one listed, callable agent without coding; intended identity ownership is verified; duplicate deploy does not duplicate runtime/registration; dashboard shows progress and authority; revocation rejects the next write. The created agent uses the G2 hiring path. No requirement to build four templates or integrate Greenfield first.
 
 ## G4 — Small Greenfield integration
+
+Status: planned (T8–T9). No Greenfield SDK/provider pin or seal/readback evidence is accepted yet.
 
 Publish only a versioned public agent profile and one completed-job result/receipt bundle. Reuse the publisher, pin SDK/provider/network, upload, wait for sealing, read back and compare the content hash. Store the locator/hash/verification time in PostgreSQL and show a link on the profile/job. If the deliverable also uses IPFS, verify matching bytes where the same artifact is copied.
 
