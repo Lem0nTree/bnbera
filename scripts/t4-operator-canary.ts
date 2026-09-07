@@ -377,7 +377,7 @@ async function seedParent(input: {
   await input.pool.query(`
     INSERT INTO commerce_jobs (id, erc8183_job_id, buyer_user_id, provider_agent_id, quote, price, task_input_digest, status, "createdAt", "updatedAt")
     VALUES ($1, $2, NULL, $3, $4, $5, $6, 'draft', $7, $7)
-  `, [commerceJobId, `t4-canary-pending-${input.runId}`, agentRecordId, {
+  `, [commerceJobId, `draft:${input.runId}`, agentRecordId, {
     protocol: "erc8183",
     chainId: CHAIN_ID,
     commerceContract: input.pin.commerceContract,
