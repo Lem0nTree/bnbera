@@ -154,7 +154,17 @@ async function makeLegacyShape(connectionString: string): Promise<void> {
         DROP COLUMN IF EXISTS "buyer_approval_result_digest" CASCADE,
         DROP COLUMN IF EXISTS "buyer_approved_at" CASCADE;
 
-      -- 0002 through 0007 are deliberately rewound below. Remove the tables
+      -- The journal rewind includes 0009, which adds the wallet-bound
+      -- passkey session columns. Remove that later surface as well so the
+      -- replay models a database from before the migration being replayed.
+      ALTER TABLE "auth_sessions"
+        DROP CONSTRAINT IF EXISTS "auth_sessions_wallet_binding_check";
+      DROP INDEX IF EXISTS "auth_sessions_wallet_context_idx";
+      ALTER TABLE "auth_sessions"
+        DROP COLUMN IF EXISTS "wallet_address",
+        DROP COLUMN IF EXISTS "chain_id";
+
+      -- 0002 through 0009 are deliberately rewound below. Remove the tables
       -- introduced by the replayed migrations so their CREATE statements do
       -- not collide with the original disposable shape.
       DROP TABLE IF EXISTS "marketplace_ingestion_retries" CASCADE;
@@ -170,7 +180,7 @@ async function makeLegacyShape(connectionString: string): Promise<void> {
          SELECT id
            FROM drizzle.__drizzle_migrations
           ORDER BY id DESC
-          LIMIT 7
+          LIMIT 8
        );
     `);
   } catch {
@@ -232,7 +242,7 @@ async function verifyLegacyRepair(connectionString: string): Promise<void> {
     const journal = await pool.query<{ readonly count: string }>(`
       SELECT count(*)::text AS count FROM drizzle.__drizzle_migrations
     `);
-    assertCondition(journal.rows[0]?.count === "9", "MIGRATION_JOURNAL_INCOMPLETE");
+    assertCondition(journal.rows[0]?.count === "10", "MIGRATION_JOURNAL_INCOMPLETE");
   } catch (error) {
     if (error instanceof MigrationSmokeError) throw error;
     throw new MigrationSmokeError("LEGACY_REPAIR_VERIFICATION_FAILED");
