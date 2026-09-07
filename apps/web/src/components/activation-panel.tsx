@@ -7,14 +7,12 @@ export function ActivationPanel({
   activation,
   detail = false,
   identifier = "agent",
-  commerceJobId = null,
-  budgetAtomic = null
+  commerceJobId = null
 }: {
   readonly activation: MarketplaceAgentReadModel["activation"];
   readonly detail?: boolean;
   readonly identifier?: string;
   readonly commerceJobId?: string | null;
-  readonly budgetAtomic?: string | null;
 }) {
   const reasonId = `activation-reason-${identifier}`;
   const content = (
@@ -40,7 +38,7 @@ export function ActivationPanel({
       <p className="activation-panel__footnote">
         {activation.nextAction} · Browser signing is user-controlled; the server stores only public operation evidence.
       </p>
-      <CommerceJourney activation={activation} identifier={identifier} commerceJobId={commerceJobId} budgetAtomic={budgetAtomic} />
+      <CommerceJourney activation={activation} identifier={identifier} commerceJobId={commerceJobId} />
     </div>
   );
 

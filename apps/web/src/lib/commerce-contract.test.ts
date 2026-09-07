@@ -25,16 +25,18 @@ describe("commerce API contract", () => {
     });
 
     expect(result.success).toBe(false);
+    expect(commerceHireRequestSchema.safeParse({
+      idempotencyKey: "hire-parent-only",
+      commerceJobId: "00000000-0000-4000-8000-000000000007",
+      task: "health factor",
+      budgetAtomic: "1000"
+    }).success).toBe(false);
     expect(commerceHireRequestSchema.parse({
-      idempotencyKey: "hire-parent-only",
-      commerceJobId: "00000000-0000-4000-8000-000000000007",
-      task: "health factor",
-      budgetAtomic: "1000"
+      idempotencyKey: "hire-quote-only",
+      commerceJobId: "00000000-0000-4000-8000-000000000007"
     })).toEqual({
-      idempotencyKey: "hire-parent-only",
-      commerceJobId: "00000000-0000-4000-8000-000000000007",
-      task: "health factor",
-      budgetAtomic: "1000"
+      idempotencyKey: "hire-quote-only",
+      commerceJobId: "00000000-0000-4000-8000-000000000007"
     });
   });
 

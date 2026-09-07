@@ -36,6 +36,10 @@ import {
 } from "@bnbera/agent-commerce";
 import type { Erc8183SubmitInput } from "@bnbera/agent-commerce";
 import { commerceBrowserDispatchSchema, type CommerceBrowserDispatch } from "./commerce-contract";
+import {
+  PostgresCommerceReservationStore,
+  type CommerceQuoteSnapshot
+} from "./commerce-reservations";
 
 /** Stable blocker exposed by the current app until an auth/authority adapter exists. */
 export const T4_AUTHORITY_BOUNDARY_BLOCKER = "T4_AUTHENTICATED_ALTANA_AUTHORITY_BOUNDARY_UNAVAILABLE" as const;
@@ -78,8 +82,10 @@ export interface CommerceParentHireResolutionInput {
   /** Stable persisted `commerce_jobs.id`, not the protocol job ID. */
   readonly commerceJobId: string;
   readonly buyerUserId: string;
-  readonly task: string;
-  readonly budgetAtomic: string;
+  /** Optional legacy assertion. Production T5 resolves both from the quote snapshot. */
+  readonly task?: string;
+  /** Optional legacy assertion. Production T5 resolves both from the quote snapshot. */
+  readonly budgetAtomic?: string;
   readonly chainId: 56 | 97;
   readonly commerceContract: string;
   readonly paymentToken: string;
@@ -117,6 +123,8 @@ export interface CommerceParentHireRecord {
   readonly buyerUserId: string | null;
   readonly status: CommerceJobStatus;
   readonly priceAtomic: string;
+  /** Exact task persisted in the buyer-owned quote snapshot. */
+  readonly task: string;
   readonly taskInputDigest: string;
   readonly fundingTransactionHash: string | null;
   readonly fulfillmentTransactionHash: string | null;
@@ -147,7 +155,7 @@ export interface Erc8183CommerceCompositionOptions {
   readonly identityResolver: CommerceIdentityResolver;
   /** Mutation-only Altana authority. Status reads do not require this value. */
   readonly authorityResolver?: CommerceAuthorityResolver;
-  /** Persistent parent/listing resolver; required before any hire write. */
+  /** Optional override for tests or a later marketplace repository. */
   readonly parentHireResolver?: CommerceParentHireResolver;
   /** Explicit constructor-only development/test canary opt-in. */
   readonly developmentCanaryEnabled?: boolean;
@@ -233,7 +241,7 @@ function sameProviderBinding(a: Erc8183ProviderBinding, b: Erc8183ProviderBindin
 
 function assertParentHireAuthorization(
   parent: CommerceParentHireRecord | null,
-  input: { readonly commerceJobId: string; readonly task: string; readonly budgetAtomic: string },
+  input: { readonly commerceJobId: string; readonly task?: string; readonly budgetAtomic?: string },
   identity: AuthenticatedCommerceIdentity,
   pin: EnabledErc8183DeploymentPin
 ): CommerceParentHireRecord {
@@ -253,11 +261,17 @@ function assertParentHireAuthorization(
   if (!(parent.status === "draft" || parent.status === "negotiating") || parent.fundingTransactionHash !== null || parent.fulfillmentTransactionHash !== null || parent.disputeTransactionHash !== null || parent.settlementTransactionHash !== null) {
     throw new CommerceError({ code: "STALE_JOB", message: "The parent commerce reservation is no longer unpaid and reservable.", nextAction: "reload_quote" });
   }
-  if (parent.priceAtomic !== input.budgetAtomic) {
+  if (input.budgetAtomic !== undefined && parent.priceAtomic !== input.budgetAtomic) {
     throw new CommerceError({ code: "INVALID_QUOTE", message: "The requested budget does not match the persisted parent quote.", nextAction: "reload_quote" });
   }
-  if (parent.taskInputDigest.toLowerCase() !== taskDigest(input.task)) {
+  if (input.task !== undefined && parent.taskInputDigest.toLowerCase() !== taskDigest(input.task)) {
     throw new CommerceError({ code: "INVALID_QUOTE", message: "The requested task does not match the persisted parent reservation.", nextAction: "reload_quote" });
+  }
+  if (parent.task !== undefined && (parent.task.trim() === "" || parent.taskInputDigest.toLowerCase() !== taskDigest(parent.task))) {
+    throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted parent task snapshot does not match its digest.", nextAction: "manual_review" });
+  }
+  if (input.task === undefined && parent.task === undefined) {
+    throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted parent reservation has no exact task snapshot.", nextAction: "manual_review" });
   }
 
   const listing = parent.listing;
@@ -389,7 +403,8 @@ export class Erc8183CommerceComposition {
   public readonly marketplace: PostgresErc8183MarketplaceProjection;
   private readonly identityResolver: CommerceIdentityResolver;
   private readonly authorityResolver: CommerceAuthorityResolver | undefined;
-  private readonly parentHireResolver: CommerceParentHireResolver | undefined;
+  private readonly parentHireResolver: CommerceParentHireResolver;
+  private readonly reservationResolver: PostgresCommerceReservationStore | undefined;
 
   public constructor(options: Erc8183CommerceCompositionOptions) {
     if (options.standardsLock === undefined || options.standardsLock === null) {
@@ -401,7 +416,6 @@ export class Erc8183CommerceComposition {
     }
     this.identityResolver = options.identityResolver;
     this.authorityResolver = options.authorityResolver;
-    this.parentHireResolver = options.parentHireResolver;
     this.adapter = new Erc8183AltanaAdapter({
       pin: options.pin,
       standardsLock: options.standardsLock,
@@ -411,6 +425,10 @@ export class Erc8183CommerceComposition {
     this.operations = new PostgresErc8183OperationRepository(options.pool);
     this.jobs = new PostgresErc8183JobRepository(options.pool);
     this.marketplace = new PostgresErc8183MarketplaceProjection(options.pool);
+    this.reservationResolver = options.parentHireResolver instanceof PostgresCommerceReservationStore
+      ? options.parentHireResolver
+      : new PostgresCommerceReservationStore(options.pool, options.pin);
+    this.parentHireResolver = options.parentHireResolver ?? this.reservationResolver;
     const serviceOptions: Erc8183CommerceServiceOptions = {
       adapter: this.adapter,
       operations: this.operations,
@@ -466,23 +484,29 @@ export class Erc8183CommerceComposition {
 
   private async resolveParentHire(identity: AuthenticatedCommerceIdentity, input: {
     readonly commerceJobId: string;
-    readonly task: string;
-    readonly budgetAtomic: string;
+    readonly task?: string;
+    readonly budgetAtomic?: string;
   }): Promise<CommerceParentHireRecord> {
     if (this.parentHireResolver === undefined || typeof this.parentHireResolver.resolve !== "function") {
-      throw invalidComposition("T4 hire requires a persistent parent-hire/listing resolver before any SDK write.", "configure_parent_hire_repository");
+      throw invalidComposition(
+        "T4 production composition requires a persistent parent-hire resolver before an ERC-8183 write can be prepared.",
+        "configure_parent_hire_repository"
+      );
     }
     let parent: CommerceParentHireRecord | null;
     try {
-      parent = await this.parentHireResolver.resolve({
+      const resolverInput: CommerceParentHireResolutionInput = {
         commerceJobId: input.commerceJobId,
         buyerUserId: identity.userId,
-        task: input.task,
-        budgetAtomic: input.budgetAtomic,
         chainId: this.adapter.pin.chainId,
         commerceContract: this.adapter.pin.commerceContract,
         paymentToken: this.adapter.pin.paymentToken,
         paymentDecimals: this.adapter.pin.paymentDecimals
+      };
+      parent = await this.parentHireResolver.resolve({
+        ...resolverInput,
+        ...(input.task === undefined ? {} : { task: input.task }),
+        ...(input.budgetAtomic === undefined ? {} : { budgetAtomic: input.budgetAtomic })
       });
     } catch (cause) {
       if (cause instanceof CommerceError) throw cause;
@@ -496,6 +520,19 @@ export class Erc8183CommerceComposition {
     return assertParentHireAuthorization(parent, input, identity, this.adapter.pin);
   }
 
+  /** Create a buyer-scoped quote/reservation without invoking a chain SDK. */
+  public async createQuote(request: Request, input: { readonly agentIdentifier: string; readonly task: string }): Promise<CommerceQuoteSnapshot> {
+    const identity = await this.identity(request);
+    if (this.reservationResolver === undefined) {
+      throw invalidComposition("T5 quote reservations require the persistent marketplace reservation store.", "configure_parent_hire_repository");
+    }
+    return this.reservationResolver.quote({
+      buyerUserId: identity.userId,
+      agentIdentifier: input.agentIdentifier,
+      task: input.task
+    });
+  }
+
   public async status(request: Request, jobId: string): Promise<Erc8183JobRead> {
     const identity = await this.identity(request);
     const read = await this.reads.get(jobKeyFor(this.adapter, jobId));
@@ -506,19 +543,23 @@ export class Erc8183CommerceComposition {
   public async hire(request: Request, input: {
     readonly idempotencyKey: string;
     readonly commerceJobId: string;
-    readonly task: string;
-    readonly budgetAtomic: string;
+    /** Deprecated server-to-server assertion; browser requests omit it. */
+    readonly task?: string;
+    /** Deprecated server-to-server assertion; browser requests omit it. */
+    readonly budgetAtomic?: string;
     readonly deadlineSeconds?: number | undefined;
   }): Promise<CommerceHireCompositionResult> {
     const identity = await this.identity(request);
     const parent = await this.resolveParentHire(identity, input);
     const authority = await this.authority(request, identity);
+    const task = parent.task;
+    if (task === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted quote has no task snapshot.", nextAction: "manual_review" });
     return this.service.hire({
       idempotencyKey: input.idempotencyKey,
       commerceJobId: input.commerceJobId,
       providerAddress: parent.providerAddress,
-      task: input.task,
-      budgetAtomic: input.budgetAtomic,
+      task,
+      budgetAtomic: parent.priceAtomic,
       providerBinding: parent.providerBinding,
       authority,
       requesterAddress: identity.requesterAddress,
@@ -533,18 +574,22 @@ export class Erc8183CommerceComposition {
   public async prepareHireIntent(request: Request, input: {
     readonly idempotencyKey: string;
     readonly commerceJobId: string;
-    readonly task: string;
-    readonly budgetAtomic: string;
+    /** Deprecated server-to-server assertion; browser requests omit it. */
+    readonly task?: string;
+    /** Deprecated server-to-server assertion; browser requests omit it. */
+    readonly budgetAtomic?: string;
     readonly deadlineSeconds?: number | undefined;
   }): Promise<CommerceBrowserIntentResult> {
     const identity = await this.identity(request);
     const parent = await this.resolveParentHire(identity, input);
+    const task = parent.task;
+    if (task === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted quote has no task snapshot.", nextAction: "manual_review" });
     const prepared = this.service.prepareHireIntent({
       idempotencyKey: input.idempotencyKey,
       commerceJobId: input.commerceJobId,
       providerAddress: parent.providerAddress,
-      task: input.task,
-      budgetAtomic: input.budgetAtomic,
+      task,
+      budgetAtomic: parent.priceAtomic,
       providerBinding: parent.providerBinding,
       requesterAddress: identity.requesterAddress,
       ...(input.deadlineSeconds === undefined ? {} : { deadlineSeconds: input.deadlineSeconds })
@@ -703,9 +748,6 @@ export class Erc8183CommerceComposition {
  * writer.
  */
 export function createProductionCommerceComposition(options: Erc8183CommerceCompositionOptions): Erc8183CommerceComposition {
-  if (options.parentHireResolver === undefined || typeof options.parentHireResolver.resolve !== "function") {
-    throw invalidComposition("T4 production composition requires a persistent parent-hire/listing resolver before any SDK write.", "configure_parent_hire_repository");
-  }
   return new Erc8183CommerceComposition(options);
 }
 

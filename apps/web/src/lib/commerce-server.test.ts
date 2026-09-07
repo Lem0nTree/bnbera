@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { PostgresErc8183OperationRepository } from "@bnbera/agent-commerce";
 import {
@@ -40,6 +42,7 @@ const PERSISTENT_POOL = {
   query: async () => ({ rows: [] }),
   connect: async () => ({ query: async () => ({ rows: [] }), release: () => undefined })
 };
+const STANDARDS_LOCK = JSON.parse(readFileSync(fileURLToPath(new URL("../../../../config/standards.lock.json", import.meta.url)), "utf8")) as Record<string, unknown>;
 
 const identity: AuthenticatedCommerceIdentity = {
   authenticated: true,
@@ -61,6 +64,7 @@ function parent(overrides: Partial<CommerceParentHireRecord> = {}): CommercePare
     buyerUserId: identity.userId,
     status: "negotiating",
     priceAtomic: "1000",
+    task: "health factor",
     taskInputDigest: PostgresErc8183OperationRepository.requestDigest("health factor"),
     fundingTransactionHash: null,
     fulfillmentTransactionHash: null,
@@ -128,7 +132,7 @@ describe("T4 commerce server composition", () => {
 
   it("requires a read identity before constructing a composition", () => {
     expect(() => createProductionCommerceComposition({
-      standardsLock: {},
+      standardsLock: STANDARDS_LOCK,
       pin: {} as never,
       pool: PERSISTENT_POOL as never,
       identityResolver: undefined as never,
@@ -136,13 +140,13 @@ describe("T4 commerce server composition", () => {
     })).toThrowError(/read identity resolver/i);
   });
 
-  it("requires the persistent parent resolver for the production writer entry point", () => {
+  it("composes the persistent quote reservation as the default parent resolver", () => {
     expect(() => createProductionCommerceComposition({
-      standardsLock: {},
-      pin: {} as never,
+      standardsLock: STANDARDS_LOCK,
+      pin: PIN,
       pool: PERSISTENT_POOL as never,
       identityResolver
-    })).toThrowError(/parent-hire\/listing resolver/i);
+    })).not.toThrow();
   });
 
   it("fails closed before an SDK hire when the persistent parent seam is absent", async () => {

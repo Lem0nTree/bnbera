@@ -15,6 +15,7 @@ import type {
   CommerceBrowserDispatch,
   CommerceOperationStatusResponse
 } from "@/lib/commerce-contract";
+import { commerceQuoteSnapshotSchema, type CommerceQuoteResponse, type CommerceQuoteSnapshot } from "@/lib/commerce-quote-contract";
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
 
 type BrowserAuthority = { readonly wallet: Wallet; readonly signer: Signer };
@@ -23,13 +24,16 @@ type JourneyProps = {
   readonly identifier: string;
   /** A server-created parent quote/reservation. Never generated client-side. */
   readonly commerceJobId?: string | null;
-  readonly budgetAtomic?: string | null;
 };
 
 const POLL_INTERVAL_MS = 4_000;
 
 function publicStorageKey(identifier: string): string {
   return `bnbera:commerce:operation:${identifier}`;
+}
+
+function quoteStorageKey(identifier: string): string {
+  return `bnbera:commerce:quote:${identifier}`;
 }
 
 function makeIdempotencyKey(prefix: string): string {
@@ -53,15 +57,16 @@ function operationStatusTone(status: string): "success" | "warning" | "danger" |
   return "neutral";
 }
 
-export function CommerceJourney({ activation, identifier, commerceJobId = null, budgetAtomic = null }: JourneyProps) {
+export function CommerceJourney({ activation, identifier, commerceJobId = null }: JourneyProps) {
   const storageKey = useMemo(() => publicStorageKey(identifier), [identifier]);
+  const quoteKey = useMemo(() => quoteStorageKey(identifier), [identifier]);
   const [authority, setAuthority] = useState<BrowserAuthority | null>(null);
   const [operationId, setOperationId] = useState<string | null>(null);
   const [operation, setOperation] = useState<CommerceActionResponse["operation"]>(null);
   const [job, setJob] = useState<CommerceActionResponse["job"]>(null);
   const [dispatch, setDispatch] = useState<CommerceBrowserDispatch | null>(null);
   const [task, setTask] = useState("");
-  const [budget, setBudget] = useState(budgetAtomic ?? "");
+  const [quote, setQuote] = useState<CommerceQuoteSnapshot | null>(null);
   const [quoteConfirmed, setQuoteConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,12 +96,26 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null, 
   }, []);
 
   useEffect(() => {
+    const storedQuote = window.localStorage.getItem(quoteKey);
+    if (storedQuote !== null) {
+      try {
+        const parsed = commerceQuoteSnapshotSchema.safeParse(JSON.parse(storedQuote) as unknown);
+        if (parsed.success) {
+          setQuote(parsed.data);
+          setTask(parsed.data.task);
+        } else {
+          window.localStorage.removeItem(quoteKey);
+        }
+      } catch {
+        window.localStorage.removeItem(quoteKey);
+      }
+    }
     const stored = window.localStorage.getItem(storageKey);
     if (stored !== null && stored.length > 0) {
       setOperationId(stored);
       void loadOperation(stored).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "The saved commerce operation could not be reloaded."));
     }
-  }, [loadOperation, storageKey]);
+  }, [loadOperation, quoteKey, storageKey]);
 
   useEffect(() => {
     if (operationId === null) return undefined;
@@ -125,20 +144,41 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null, 
     } finally { setBusy(false); }
   };
 
+  const requestQuote = async () => {
+    if (task.trim() === "") { setError("Describe the result you need before requesting a quote."); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/commerce/quote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentIdentifier: identifier, task: task.trim() })
+      });
+      const body = await parseResponse<CommerceQuoteResponse>(response);
+      const parsed = commerceQuoteSnapshotSchema.parse(body.quote);
+      setQuote(parsed);
+      setTask(parsed.task);
+      setQuoteConfirmed(false);
+      window.localStorage.setItem(quoteKey, JSON.stringify(parsed));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The server quote could not be prepared.");
+    } finally { setBusy(false); }
+  };
+
   const prepareHire = async () => {
-    if (commerceJobId === null || commerceJobId === undefined) { setError("No server-created quote is available for this listing."); return; }
-    if (task.trim() === "" || budget.trim() === "") { setError("Enter the task and review the quoted budget before funding."); return; }
+    const reservationId = quote?.quoteId ?? commerceJobId;
+    if (reservationId === null || reservationId === undefined) { setError("No server-created quote is available for this listing."); return; }
     setBusy(true);
     setError(null);
     try {
       const response = await fetch("/api/commerce/hire", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idempotencyKey: makeIdempotencyKey("hire"), commerceJobId, task: task.trim(), budgetAtomic: budget.trim() })
+        body: JSON.stringify({ idempotencyKey: makeIdempotencyKey("hire"), commerceJobId: reservationId })
       });
       applyAction(await parseResponse<CommerceActionResponse>(response));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "The quote could not be prepared.");
+      setError(cause instanceof Error ? cause.message : "The funding intent could not be prepared.");
     } finally { setBusy(false); }
   };
 
@@ -188,11 +228,12 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null, 
   };
 
   const createReview = async () => {
-    if (commerceJobId === null || commerceJobId === undefined) return;
+    const reservationId = quote?.quoteId ?? commerceJobId;
+    if (reservationId === null || reservationId === undefined) return;
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`/api/commerce/review/${encodeURIComponent(commerceJobId)}`, {
+      const response = await fetch(`/api/commerce/review/${encodeURIComponent(reservationId)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ idempotencyKey: makeIdempotencyKey("review"), score: Number(reviewScore), comment: reviewComment })
@@ -223,13 +264,21 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null, 
         </div>
       </div> : <p className="muted-label">Browser wallet ready · signer remains in memory only</p>}
       {error !== null && <Callout title="Commerce action stopped" tone="warning" icon="!">{error}</Callout>}
-      {operationId === null && <div className="commerce-journey__quote">
+      {operationId === null && quote === null && <div className="commerce-journey__quote">
         <label htmlFor={`${identifier}-task`}>Task</label>
         <textarea id={`${identifier}-task`} value={task} maxLength={4_096} onChange={(event) => setTask(event.target.value)} placeholder="Describe the result you need" />
-        <label htmlFor={`${identifier}-budget`}>Quoted budget (atomic units)</label>
-        <input id={`${identifier}-budget`} inputMode="numeric" value={budget} onChange={(event) => setBudget(event.target.value)} />
-        {commerceJobId === null || commerceJobId === undefined ? <p className="muted-label">A server-authenticated quote/reservation is required before funding.</p> : <label className="detail-actions"><input type="checkbox" checked={quoteConfirmed} onChange={(event) => setQuoteConfirmed(event.target.checked)} /> I reviewed this exact task and budget.</label>}
-        <button className="button button--primary" type="button" disabled={busy || !quoteConfirmed || commerceJobId === null || commerceJobId === undefined} onClick={() => void prepareHire()}>Prepare quote and funding</button>
+        <p className="muted-label">Price, provider, identity and payment terms are resolved from the current published listing on the server.</p>
+        <button className="button button--primary" type="button" disabled={busy || task.trim() === ""} onClick={() => void requestQuote()}>Request server quote</button>
+      </div>}
+      {operationId === null && quote !== null && <div className="commerce-journey__quote">
+        <p className="eyebrow">Server quote</p>
+        <div className="detail-kv"><span>Task</span><span>{quote.task}</span></div>
+        <div className="detail-kv"><span>Price</span><span>{quote.priceAtomic} atomic units{quote.tokenSymbol === null ? "" : ` · ${quote.tokenSymbol}`}</span></div>
+        <div className="detail-kv"><span>Provider</span><code>{quote.providerAddress}</code></div>
+        <div className="detail-kv"><span>Quote expires</span><span>{new Date(quote.expiresAt).toLocaleString()}</span></div>
+        <label className="detail-actions"><input type="checkbox" checked={quoteConfirmed} onChange={(event) => setQuoteConfirmed(event.target.checked)} /> I reviewed this exact task and quote.</label>
+        <button className="button button--primary" type="button" disabled={busy || !quoteConfirmed} onClick={() => void prepareHire()}>Prepare explicit funding</button>
+        <button className="button button--ghost button--small" type="button" disabled={busy} onClick={() => { setQuote(null); setQuoteConfirmed(false); window.localStorage.removeItem(quoteKey); }}>Request a fresh quote</button>
       </div>}
       {canDispatch && <button className="button button--primary" type="button" disabled={busy || authority === null} onClick={() => void dispatchBrowser(dispatch)}>Explicitly fund / sign</button>}
       {pending && operation?.status !== "awaiting_signature" && <p className="muted-label">This operation is pending or ambiguous. It will not be resent. Reload or attach the same public transaction hash when available.</p>}
@@ -251,7 +300,7 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null, 
         <p className="eyebrow">Verified-purchase review</p>
         <select value={reviewScore} onChange={(event) => setReviewScore(event.target.value)} aria-label="Review score"><option value="5">5 · Excellent</option><option value="4">4 · Good</option><option value="3">3 · Mixed</option><option value="2">2 · Poor</option><option value="1">1 · Failed</option></select>
         <textarea value={reviewComment} maxLength={2_000} onChange={(event) => setReviewComment(event.target.value)} placeholder="Optional buyer note" aria-label="Review comment" />
-        <button className="button button--ghost button--small" type="button" disabled={busy || commerceJobId === null || commerceJobId === undefined} onClick={() => void createReview()}>Save verified review</button>
+        <button className="button button--ghost button--small" type="button" disabled={busy || (quote?.quoteId ?? commerceJobId) === null || (quote?.quoteId ?? commerceJobId) === undefined} onClick={() => void createReview()}>Save verified review</button>
       </div>}
       {completed && reviewSent && <p className="muted-label">Verified-purchase review saved for this completed job.</p>}
     </div>
