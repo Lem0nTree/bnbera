@@ -21,7 +21,7 @@ import {
   PostgresErc8183OperationRepository,
   erc8183JobKeySchema,
   erc8183ProviderBindingSchema,
-  referenceProviderRunnerConfigFromEnvironment,
+  referenceProviderReadinessConfigFromEnvironment,
   referenceProviderSecretReferenceSchema,
   type Erc8183AltanaAuthority,
   type Erc8183CommerceServiceOptions,
@@ -1186,24 +1186,23 @@ function referenceProviderReadinessFromEnvironment(
   pin: EnabledErc8183DeploymentPin,
   env: Readonly<Record<string, string | undefined>>
 ): CommerceProviderReadinessResolver | undefined {
-  const config = referenceProviderRunnerConfigFromEnvironment(env);
+  const config = referenceProviderReadinessConfigFromEnvironment(env);
   if (!config.enabled) return undefined;
   const identity = config.identity;
-  const jobKey = config.jobKey;
+  const commerceContract = config.commerceContract;
   const expectedOwnerAddress = config.expectedOwnerAddress;
   const providerAddress = config.providerAddress;
   const providerEndpoint = config.providerEndpoint;
   const authoritySecretReference = config.authoritySecretReference;
   if (
     identity === undefined ||
-    jobKey === undefined ||
+    commerceContract === undefined ||
     expectedOwnerAddress === undefined ||
     providerAddress === undefined ||
     providerEndpoint === undefined ||
     authoritySecretReference === undefined ||
     config.chainId !== 97 ||
-    jobKey.chainId !== pin.chainId ||
-    jobKey.commerceContract.toLowerCase() !== pin.commerceContract.toLowerCase()
+    commerceContract.toLowerCase() !== pin.commerceContract.toLowerCase()
   ) {
     throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The configured reference provider does not match the standards-locked ERC-8183 deployment.", nextAction: "verify_standards_lock" });
   }

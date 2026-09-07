@@ -72,6 +72,22 @@ describe("T5 reference-provider worker runtime", () => {
     expect(compose).not.toHaveBeenCalled();
   });
 
+  it("keeps the worker job-bound even when readiness fields are otherwise configured", async () => {
+    const readinessEnvironment = Object.fromEntries(
+      Object.entries(enabledEnvironment()).filter(([name]) => name !== "T5_REFERENCE_PROVIDER_JOB_ID")
+    );
+    const createDatabase = vi.fn();
+
+    await expect(runReferenceProviderWorker({
+      env: readinessEnvironment,
+      dependencies: { createDatabase } as unknown as ReferenceProviderWorkerDependencies
+    })).rejects.toMatchObject({
+      code: "COMMERCE_DISABLED",
+      message: expect.stringContaining("T5_REFERENCE_PROVIDER_JOB_ID")
+    });
+    expect(createDatabase).not.toHaveBeenCalled();
+  });
+
   it("composes one configured identity/job and invokes the runner once with sanitized evidence", async () => {
     const run = vi.fn(async () => ({
       status: "replayed" as const,

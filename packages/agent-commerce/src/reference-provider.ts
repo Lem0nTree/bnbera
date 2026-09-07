@@ -72,7 +72,7 @@ export function referenceProviderIdempotencyKey(jobKey: Erc8183JobKey): string {
   return `${REFERENCE_PROVIDER_IDEMPOTENCY_PREFIX}:${parsed.chainId}:${parsed.commerceContract.toLowerCase()}:${parsed.jobId}`;
 }
 
-export const referenceProviderRunnerConfigSchema = z.object({
+const referenceProviderConfigBaseSchema = z.object({
   /** Defaults off. Enabling requires every local testnet guard below. */
   enabled: z.boolean().default(false),
   runtimeEnvironment: z.enum(["development", "test", "production"]).default("production"),
@@ -81,7 +81,8 @@ export const referenceProviderRunnerConfigSchema = z.object({
   releaseEnabled: z.literal(false).default(false),
   chainId: z.literal(97).default(97),
   identity: erc8004IdentitySchema.optional(),
-  jobKey: erc8183JobKeySchema.optional(),
+  /** The commerce contract pin is needed before a protocol job exists. */
+  commerceContract: nonZeroAddressSchema.optional(),
   /** The ERC-721 owner is independent from the provider execution wallet. */
   expectedOwnerAddress: nonZeroAddressSchema.optional(),
   providerAddress: nonZeroAddressSchema.optional(),
@@ -90,7 +91,11 @@ export const referenceProviderRunnerConfigSchema = z.object({
   routerContract: nonZeroAddressSchema.optional(),
   policyContract: nonZeroAddressSchema.optional(),
   maxBudgetAtomic: positiveDecimalUintSchema.default(REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC)
-}).strict().superRefine((value, ctx) => {
+}).strict();
+
+type ReferenceProviderConfigBase = z.infer<typeof referenceProviderConfigBaseSchema>;
+
+function refineReferenceProviderConfig(value: ReferenceProviderConfigBase, ctx: z.RefinementCtx, requireCommerceContract: boolean): void {
   if (BigInt(value.maxBudgetAtomic) > BigInt(REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["maxBudgetAtomic"], message: "The reference provider cap cannot exceed 0.01 U." });
   }
@@ -99,7 +104,7 @@ export const referenceProviderRunnerConfigSchema = z.object({
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["developmentCanaryEnabled"], message: "The reference provider is local-development-only and requires the explicit testnet canary flag." });
   }
   if (value.identity === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["identity"], message: "An enabled reference provider requires one configured ERC-8004 identity." });
-  if (value.jobKey === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["jobKey"], message: "An enabled reference provider requires one configured ERC-8183 job." });
+  if (requireCommerceContract && value.commerceContract === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["commerceContract"], message: "An enabled reference provider requires the standards-locked commerce contract." });
   if (value.expectedOwnerAddress === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["expectedOwnerAddress"], message: "An enabled reference provider requires the expected ERC-8004 owner address." });
   if (value.providerAddress === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["providerAddress"], message: "An enabled reference provider requires one configured provider wallet." });
   if (value.providerEndpoint === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["providerEndpoint"], message: "An enabled reference provider requires its existing health-factor endpoint." });
@@ -107,7 +112,30 @@ export const referenceProviderRunnerConfigSchema = z.object({
   if (value.routerContract === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routerContract"], message: "An enabled reference provider requires the existing router contract seam." });
   if (value.policyContract === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["policyContract"], message: "An enabled reference provider requires the existing policy contract seam." });
   if (value.identity !== undefined && value.identity.chainId !== 97) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["identity", "chainId"], message: "The reference identity must be on BSC testnet." });
+}
+
+/**
+ * Job-independent public configuration used while composing commerce
+ * readiness. A quote may be the operation that creates the protocol job, so
+ * this parser deliberately has no job ID or task input. It still requires the
+ * same identity, owner, provider, endpoint, secret-reference, deployment and
+ * bounded-budget fields as the worker configuration.
+ */
+export const referenceProviderReadinessConfigSchema = referenceProviderConfigBaseSchema.superRefine((value, ctx) => refineReferenceProviderConfig(value, ctx, true));
+export type ReferenceProviderReadinessConfig = z.infer<typeof referenceProviderReadinessConfigSchema>;
+
+/**
+ * The worker configuration remains job-bound. Do not replace this with the
+ * readiness schema: a provider submit must select one confirmed persisted
+ * ERC-8183 job before it can invoke the endpoint or authority.
+ */
+export const referenceProviderRunnerConfigSchema = referenceProviderConfigBaseSchema.extend({
+  jobKey: erc8183JobKeySchema.optional()
+}).strict().superRefine((value, ctx) => {
+  refineReferenceProviderConfig(value, ctx, false);
+  if (value.enabled && value.jobKey === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["jobKey"], message: "An enabled reference provider requires one configured ERC-8183 job." });
   if (value.jobKey !== undefined && value.jobKey.chainId !== 97) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["jobKey", "chainId"], message: "The reference job must be on BSC testnet." });
+  if (value.commerceContract !== undefined && value.jobKey !== undefined && value.commerceContract.toLowerCase() !== value.jobKey.commerceContract.toLowerCase()) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["commerceContract"], message: "The reference commerce contract must match the configured ERC-8183 job." });
 });
 export type ReferenceProviderRunnerConfig = z.infer<typeof referenceProviderRunnerConfigSchema>;
 
@@ -126,20 +154,14 @@ function requiredReferenceProviderEnvironmentAny(env: Readonly<Record<string, st
   throw new CommerceError({ code: "COMMERCE_DISABLED", message: `The enabled reference provider is missing ${first}.`, nextAction: "configure_reference_provider" });
 }
 
-/**
- * Parse only public worker configuration and secret references from the
- * existing environment boundary. Raw private keys are deliberately not read.
- * An absent enable flag produces a disabled config without requiring any other
- * environment value.
- */
-export function referenceProviderRunnerConfigFromEnvironment(env: Readonly<Record<string, string | undefined>>): ReferenceProviderRunnerConfig {
-  if (env.T5_REFERENCE_PROVIDER_WORKER_ENABLED !== "true") return referenceProviderRunnerConfigSchema.parse({ enabled: false });
+function referenceProviderEnvironmentFields(env: Readonly<Record<string, string | undefined>>): ReferenceProviderConfigBase {
   const chainIdText = env.T5_REFERENCE_PROVIDER_CHAIN_ID?.trim() || "97";
-  const chainId = Number(chainIdText);
+  // The schema below performs the runtime validation; this assertion keeps
+  // the shared config projection aligned with its testnet-only literal type.
+  const chainId = Number(chainIdText) as 97;
   const identityRegistry = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_IDENTITY_REGISTRY");
   const agentId = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_AGENT_ID");
   const commerceContract = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_COMMERCE_CONTRACT");
-  const jobId = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_JOB_ID");
   const expectedOwnerAddress = requiredReferenceProviderEnvironmentAny(env, [
     "T5_REFERENCE_PROVIDER_EXPECTED_OWNER_ADDRESS",
     "T5_REFERENCE_PROVIDER_OWNER_ADDRESS",
@@ -151,21 +173,48 @@ export function referenceProviderRunnerConfigFromEnvironment(env: Readonly<Recor
   const routerContract = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_ROUTER_CONTRACT");
   const policyContract = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_POLICY_CONTRACT");
   const authoritySecretReference = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_SECRET_REFERENCE");
-  return referenceProviderRunnerConfigSchema.parse({
+  return {
     enabled: true,
     runtimeEnvironment: env.NODE_ENV === "test" ? "test" : env.NODE_ENV === "development" ? "development" : "production",
     developmentCanaryEnabled: env.T5_REFERENCE_PROVIDER_LOCAL_TESTNET === "true",
     releaseEnabled: false,
     chainId,
     identity: { namespace: "eip155", chainId, identityRegistry, agentId },
-    jobKey: { chainId, commerceContract, jobId },
+    commerceContract,
     expectedOwnerAddress,
     providerAddress,
     providerEndpoint,
     authoritySecretReference,
     routerContract,
     policyContract,
-    ...(env.T5_REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC === undefined ? {} : { maxBudgetAtomic: env.T5_REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC })
+    maxBudgetAtomic: env.T5_REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC ?? REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC
+  };
+}
+
+/**
+ * Parse the public provider configuration needed before a quote creates a
+ * protocol job. Raw private keys are deliberately not read, and an absent
+ * enable flag stays disabled without requiring any other environment value.
+ */
+export function referenceProviderReadinessConfigFromEnvironment(env: Readonly<Record<string, string | undefined>>): ReferenceProviderReadinessConfig {
+  if (env.T5_REFERENCE_PROVIDER_WORKER_ENABLED !== "true") return referenceProviderReadinessConfigSchema.parse({ enabled: false });
+  return referenceProviderReadinessConfigSchema.parse(referenceProviderEnvironmentFields(env));
+}
+
+/**
+ * Parse only public worker configuration and secret references from the
+ * existing environment boundary. Raw private keys are deliberately not read.
+ * An absent enable flag produces a disabled config without requiring any other
+ * environment value.
+ */
+export function referenceProviderRunnerConfigFromEnvironment(env: Readonly<Record<string, string | undefined>>): ReferenceProviderRunnerConfig {
+  if (env.T5_REFERENCE_PROVIDER_WORKER_ENABLED !== "true") return referenceProviderRunnerConfigSchema.parse({ enabled: false });
+  const fields = referenceProviderEnvironmentFields(env);
+  const jobId = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_JOB_ID");
+  const { commerceContract, ...runnerFields } = fields;
+  return referenceProviderRunnerConfigSchema.parse({
+    ...runnerFields,
+    jobKey: { chainId: fields.chainId, commerceContract, jobId }
   });
 }
 
