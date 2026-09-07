@@ -1,6 +1,7 @@
 import { canonicalSha256Hex } from "@bnbera/domain";
 import { CommerceError } from "./errors.js";
 import { approveErc8183Result } from "./lifecycle.js";
+import { persistMarketplaceSettlementProjection, persistMarketplaceSubmissionProjection } from "./marketplace-projection.js";
 import type { Erc8183OperationQueryPool } from "./operations.js";
 import {
   erc8183JobEventSchema,
@@ -66,7 +67,7 @@ type JobRow = {
   readonly updated_at: Date | string;
 };
 
-type JobIdRow = { readonly id: string };
+type JobIdRow = { readonly id: string; readonly commerce_job_id?: string };
 
 type EventRow = {
   readonly chain_id: number;
@@ -414,7 +415,7 @@ export class PostgresErc8183JobRepository {
           completion_transaction_hash = $14, rejection_transaction_hash = $15,
           refund_transaction_hash = $16, last_observed_block = $17,
           last_observed_block_hash = $18, last_observed_at = $19, "updatedAt" = $20
-        WHERE chain_id = $1 AND commerce_contract = $2 AND erc8183_job_id = $3 AND state = $21 RETURNING id
+        WHERE chain_id = $1 AND commerce_contract = $2 AND erc8183_job_id = $3 AND state = $21 RETURNING id, commerce_job_id
       `, [job.jobKey.chainId, job.jobKey.commerceContract, job.jobKey.jobId, job.terms.providerAddress, job.terms.budgetAtomic, job.state, job.deliverableDigest, job.providerBinding ?? null, job.buyerApproval?.buyerAddress ?? null, job.buyerApproval?.resultDigest ?? null, job.buyerApproval === null ? null : new Date(job.buyerApproval.approvedAtUnix * 1_000), job.fundingTransactionHash, job.submissionTransactionHash, job.completionTransactionHash, job.rejectionTransactionHash, job.refundTransactionHash, job.lastObservedBlock, job.lastObservedBlockHash, job.lastObservedAtUnix === null ? null : new Date(job.lastObservedAtUnix * 1_000), new Date(job.updatedAtUnix * 1_000), input.previousState]);
       const protocolRow = updated.rows[0];
       if (protocolRow === undefined) throw new CommerceError({ code: "STALE_JOB", message: "The persisted ERC-8183 job is not in the expected state.", retriable: true, nextAction: "reconcile_job" });
@@ -424,7 +425,14 @@ export class PostgresErc8183JobRepository {
           actor_address, transaction_hash, block_number, block_hash, log_index,
           confirmation_state, payload_digest, payload, correlation_id, observed_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15)
-      `, eventValues(event, protocolRow.id));
+        `, eventValues(event, protocolRow.id));
+      if (event.eventType === "job_submitted") {
+        if (protocolRow.commerce_job_id === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted ERC-8183 job has no BNBEra commerce job binding." });
+        await persistMarketplaceSubmissionProjection(client, { jobRecordId: protocolRow.id, commerceJobId: protocolRow.commerce_job_id, job, event });
+      } else if (event.eventType === "job_completed") {
+        if (protocolRow.commerce_job_id === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted ERC-8183 job has no BNBEra commerce job binding." });
+        await persistMarketplaceSettlementProjection(client, { jobRecordId: protocolRow.id, commerceJobId: protocolRow.commerce_job_id, job, event });
+      }
       await client.query("COMMIT");
     } catch (cause) {
       try { await client.query("ROLLBACK"); } catch { /* retain original error */ }

@@ -6,6 +6,7 @@ export * from "./operations.js";
 export * from "./provider.js";
 export * from "./api.js";
 export * from "./postgres-jobs.js";
+export * from "./marketplace-projection.js";
 export * from "./service.js";
 export * from "./repository.js";
 export * from "./types.js";

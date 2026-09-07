@@ -219,6 +219,29 @@ export const marketplaceReputationFeedbackSchema = z.object({
 
 export type MarketplaceReputationFeedback = z.infer<typeof marketplaceReputationFeedbackSchema>;
 
+/**
+ * A BNBEra verified-purchase review is a local commerce projection. It is
+ * intentionally separate from ERC-8004 Reputation Registry feedback while
+ * retaining the full identity/version and settled-result provenance needed to
+ * explain why the review is shown.
+ */
+export const marketplaceVerifiedPurchaseReviewSchema = z.object({
+  reviewId: z.string().uuid(),
+  commerceJobId: z.string().uuid(),
+  reviewerAddress: evmAddressSchema,
+  identity: erc8004IdentitySchema,
+  agentVersionId: z.string().uuid(),
+  agentVersion: z.number().int().positive(),
+  resultSha256: digestSchema,
+  resultKeccak: z.string().regex(/^0x[0-9a-fA-F]{64}$/u),
+  settlementTransactionHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/u),
+  score: z.number().int().min(1).max(5),
+  comment: z.string().trim().max(2_000),
+  observedAt: isoDateSchema
+}).strict();
+
+export type MarketplaceVerifiedPurchaseReview = z.infer<typeof marketplaceVerifiedPurchaseReviewSchema>;
+
 export const marketplaceReputationViewSchema = z.object({
   status: marketplaceMetricStatusSchema,
   count: z.number().int().nonnegative().nullable(),
@@ -236,7 +259,9 @@ export type MarketplaceReputationView = z.infer<typeof marketplaceReputationView
 export const marketplaceReputationSchema = z.object({
   rawPermissionless: marketplaceReputationViewSchema,
   recognizedReviewers: marketplaceReputationViewSchema,
-  verifiedPurchases: marketplaceReputationViewSchema
+  verifiedPurchases: marketplaceReputationViewSchema,
+  /** Bounded BNBEra commerce reviews; never populated from raw ERC-8004 feedback. */
+  verifiedReviews: z.array(marketplaceVerifiedPurchaseReviewSchema).max(64).default([])
 });
 
 export type MarketplaceReputation = z.infer<typeof marketplaceReputationSchema>;
@@ -270,7 +295,8 @@ const defaultMarketplaceReputation: MarketplaceReputation = {
     source: null,
     observedAt: null,
     reason: "BNBEra verified-purchase reviews are enabled by G2."
-  }
+  },
+  verifiedReviews: []
 };
 
 export const marketplaceJobMetricsSchema = z.object({

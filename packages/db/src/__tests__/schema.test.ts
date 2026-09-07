@@ -13,6 +13,8 @@ import {
   agents,
   authSessions,
   chainIngestionCheckpoints,
+  commerceJobReviews,
+  commerceJobResults,
   commerceJobs,
   erc8004ChainObservations,
   erc8004Identities,
@@ -140,6 +142,22 @@ describe("combined Wave 1 database schema", () => {
     expect(Object.keys(erc8183Jobs)).toEqual(
       expect.arrayContaining(["chainId", "commerceContract", "erc8183JobId", "deploymentPinDigest", "state"])
     );
+    expect(Object.keys(commerceJobResults)).toEqual(
+      expect.arrayContaining([
+        "commerceJobId", "erc8183JobRecordId", "identityNamespace", "identityChainId",
+        "identityRegistry", "identityAgentId", "agentVersionId", "agentVersion",
+        "resultSha256", "resultKeccak", "submissionTransactionHash", "settlementTransactionHash",
+        "state", "settledAt"
+      ])
+    );
+    expect(Object.keys(commerceJobReviews)).toEqual(
+      expect.arrayContaining([
+        "commerceJobResultId", "commerceJobId", "buyerUserId", "identityNamespace",
+        "identityRegistry", "identityAgentId", "agentVersionId", "agentVersion",
+        "resultSha256", "resultKeccak", "settlementTransactionHash", "reviewState",
+        "revision", "activeReviewKey", "supersedesReviewId"
+      ])
+    );
     expect(Object.keys(paymentAttempts)).toEqual(
       expect.arrayContaining([
         "challengeDigest",
@@ -201,7 +219,8 @@ describe("combined Wave 1 database schema", () => {
       "0004_swift_silverclaw.sql",
       "0005_outgoing_ezekiel.sql",
       "0006_reputation_replacement_log.sql",
-      "0007_calm_riptide.sql"
+      "0007_calm_riptide.sql",
+      "0008_t5_marketplace_results_reviews.sql"
     ]);
     expect(wave1Files).toEqual(["0001_wave1_combined.sql"]);
 
@@ -225,5 +244,10 @@ describe("combined Wave 1 database schema", () => {
     const replacementLog = readFileSync(join(migrationsPath, "0006_reputation_replacement_log.sql"), "utf8");
     expect(replacementLog).toContain('DROP INDEX IF EXISTS "erc8004_reputation_event_log_unique"');
     expect(replacementLog).toContain('"transaction_hash","log_index","block_hash"');
+    const commerceProjection = readFileSync(join(migrationsPath, "0008_t5_marketplace_results_reviews.sql"), "utf8");
+    expect(commerceProjection).toContain('CREATE TABLE "commerce_job_results"');
+    expect(commerceProjection).toContain('CREATE TABLE "commerce_job_reviews"');
+    expect(commerceProjection).toContain('commerce_job_review_active_unique');
+    expect(commerceProjection).toContain('commerce_job_result_settled_state_check');
   });
 });
