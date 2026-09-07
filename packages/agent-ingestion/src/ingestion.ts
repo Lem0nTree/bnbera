@@ -252,14 +252,18 @@ export class AgentIngestionService {
         observation.transactionHash,
         observation.logIndex
       );
-      const stored = await repository.appendObservation(observation);
-      if (previous !== null) {
-        duplicateCount += 1;
-      }
+      // The observation has a foreign key to the identity row. PostgreSQL
+      // correctly rejects a first-seen registry event if the observation is
+      // appended before its identity is upserted; the in-memory adapter did
+      // not enforce that relationship and masked the ordering bug.
       await repository.upsertIdentity({
         identity: observation.identity,
         originType: "discovered"
       });
+      const stored = await repository.appendObservation(observation);
+      if (previous !== null) {
+        duplicateCount += 1;
+      }
       await repository.recordSource({
         identityKey: observation.identityKey,
         source: "registry_event",

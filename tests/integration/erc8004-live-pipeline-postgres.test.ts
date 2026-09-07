@@ -8,9 +8,11 @@ import {
   PgCategoryPredictionSink,
   PgVectorSemanticRepository,
   PostgresIngestionRepository,
+  AgentIngestionService,
   type EmbeddingProvider,
   type MarketplaceCompositionPublicationResult,
-  type ServiceProbeTransport
+  type ServiceProbeTransport,
+  type RegistryEvent
 } from "../../packages/agent-ingestion/src/index.js";
 import {
   PostgresMarketplacePublicationService,
@@ -48,6 +50,80 @@ function metadataUri(capabilityManifest: unknown): string {
 }
 
 describe("disposable PostgreSQL ERC-8004 publication pipeline fixture", () => {
+  it("upserts an identity before persisting its first registry observation", async () => {
+    if (requireDatabaseTests) expect(databaseUrl).not.toBeNull();
+    if (databaseUrl === null) return;
+
+    await migrateDb(databaseUrl);
+    const { pool } = createDb(databaseUrl);
+    pools.push(pool);
+    const now = new Date("2026-09-07T00:00:00.000Z");
+    const repository = new PostgresIngestionRepository(pool, { now: () => now });
+    const identity: Erc8004Identity = {
+      namespace: "eip155",
+      chainId: 97,
+      identityRegistry: "0x1111111111111111111111111111111111111111",
+      agentId: `${Date.now()}${Math.floor(Math.random() * 1_000_000)}`
+    };
+    const transactionHash = `0x${Date.now().toString(16).padStart(64, "0")}`;
+    const event: RegistryEvent = {
+      identity,
+      eventType: "Registered",
+      transactionHash,
+      logIndex: 0,
+      blockNumber: 100,
+      blockHash: `0x${"ab".repeat(32)}`,
+      ownerAddress: "0x2222222222222222222222222222222222222222",
+      agentUri: "https://agent.example/first-observation.json",
+      changedFields: ["ownerAddress", "agentUri"],
+      observedAt: now,
+      payload: { event: "Registered" }
+    };
+    const ingestion = new AgentIngestionService(repository, { now: () => now });
+
+    try {
+      const first = await ingestion.ingestRegistryEvents([event], {
+        chainId: identity.chainId,
+        identityRegistry: identity.identityRegistry
+      });
+      expect(first.duplicateCount).toBe(0);
+      expect(await repository.findIdentity(identity)).not.toBeNull();
+      expect(await repository.listObservations({
+        chainId: identity.chainId,
+        identityRegistry: identity.identityRegistry
+      })).toHaveLength(1);
+
+      const replay = await ingestion.ingestRegistryEvents([event], {
+        chainId: identity.chainId,
+        identityRegistry: identity.identityRegistry
+      });
+      expect(replay.duplicateCount).toBe(1);
+      expect(await repository.listObservations({
+        chainId: identity.chainId,
+        identityRegistry: identity.identityRegistry
+      })).toHaveLength(1);
+    } finally {
+      const cleanup = await pool.connect();
+      try {
+        await cleanup.query("BEGIN");
+        await cleanup.query(
+          "DELETE FROM agents WHERE identity_id = (SELECT id FROM erc8004_identities WHERE namespace = $1 AND chain_id = $2 AND identity_registry = $3 AND agent_id = $4)",
+          [identity.namespace, identity.chainId, identity.identityRegistry, identity.agentId]
+        );
+        await cleanup.query(
+          "DELETE FROM erc8004_identities WHERE namespace = $1 AND chain_id = $2 AND identity_registry = $3 AND agent_id = $4",
+          [identity.namespace, identity.chainId, identity.identityRegistry, identity.agentId]
+        );
+        await cleanup.query("COMMIT");
+      } catch (error) {
+        await cleanup.query("ROLLBACK");
+        throw error;
+      } finally {
+        cleanup.release();
+      }
+    }
+  });
+
   it("covers discovery, enrichment, category, embedding, version, publication, and read API seams", async () => {
     if (requireDatabaseTests) expect(databaseUrl).not.toBeNull();
     if (databaseUrl === null) return;
