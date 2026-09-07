@@ -27,7 +27,8 @@ import { EoaWalletProvider, walletConnectProjectConfigured } from "./eoa-wallet-
 type BrowserAuthority = { readonly address: string; readonly chainId: number; readonly walletClient: WalletClient };
 type JourneyProps = {
   readonly activation: MarketplaceAgentReadModel["activation"];
-  readonly identifier: string;
+  /** Canonical ERC-8004 identity key; slugs remain presentation-only. */
+  readonly identityKey: string;
   /** A server-created parent quote/reservation. Never generated client-side. */
   readonly commerceJobId?: string | null;
 };
@@ -90,9 +91,9 @@ export function CommerceJourney(props: JourneyProps) {
   );
 }
 
-function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: JourneyProps) {
-  const storageKey = useMemo(() => publicStorageKey(identifier), [identifier]);
-  const quoteKey = useMemo(() => quoteStorageKey(identifier), [identifier]);
+function CommerceJourneyInner({ activation, identityKey, commerceJobId = null }: JourneyProps) {
+  const storageKey = useMemo(() => publicStorageKey(identityKey), [identityKey]);
+  const quoteKey = useMemo(() => quoteStorageKey(identityKey), [identityKey]);
   const [authority, setAuthority] = useState<BrowserAuthority | null>(null);
   const [walletAuthenticated, setWalletAuthenticated] = useState(false);
   const [operationId, setOperationId] = useState<string | null>(null);
@@ -343,7 +344,7 @@ function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: 
       const response = await fetch("/api/commerce/quote", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentIdentifier: identifier, task: task.trim() })
+        body: JSON.stringify({ agentIdentifier: identityKey, task: task.trim() })
       });
       const body = await parseResponse<CommerceQuoteResponse>(response);
       const parsed = commerceQuoteSnapshotSchema.parse(body.quote);
@@ -602,8 +603,8 @@ function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: 
       </div>
       {error !== null && <Callout title="Commerce action stopped" tone="warning" icon="!">{error}</Callout>}
       {operationId === null && quote === null && <div className="commerce-journey__quote">
-        <label htmlFor={`${identifier}-task`}>Task</label>
-        <textarea id={`${identifier}-task`} value={task} maxLength={4_096} onChange={(event) => setTask(event.target.value)} placeholder="Describe the result you need" />
+        <label htmlFor={`${identityKey}-task`}>Task</label>
+        <textarea id={`${identityKey}-task`} value={task} maxLength={4_096} onChange={(event) => setTask(event.target.value)} placeholder="Describe the result you need" />
         <p className="muted-label">Price, provider, identity and payment terms are resolved from the current published listing on the server.</p>
         <button className="button button--primary" type="button" disabled={busy || task.trim() === ""} onClick={() => void requestQuote()}>Request server quote</button>
       </div>}
@@ -620,8 +621,8 @@ function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: 
       {canDispatch && <button className="button button--primary" type="button" disabled={busy || authority === null || !walletAuthenticated || chainId !== EOA_BUYER_CHAIN_ID} onClick={() => void dispatchBrowser(dispatch)}>Explicitly fund / sign</button>}
       {pending && operation?.status !== "awaiting_signature" && <p className="muted-label">This operation is pending or ambiguous. It will not be resent. Reload or attach the same public transaction hash when available.</p>}
       {pending && operation?.status !== "awaiting_signature" && <div className="commerce-journey__recovery">
-        <label htmlFor={`${identifier}-transaction-hash`}>Public transaction hash (optional recovery)</label>
-        <input id={`${identifier}-transaction-hash`} value={transactionHashDraft} onChange={(event) => setTransactionHashDraft(event.target.value)} placeholder="0x…" inputMode="text" autoComplete="off" />
+        <label htmlFor={`${identityKey}-transaction-hash`}>Public transaction hash (optional recovery)</label>
+        <input id={`${identityKey}-transaction-hash`} value={transactionHashDraft} onChange={(event) => setTransactionHashDraft(event.target.value)} placeholder="0x…" inputMode="text" autoComplete="off" />
         <button className="button button--ghost button--small" type="button" disabled={busy || transactionHashDraft.trim() === ""} onClick={() => void attachTransactionHash()}>Attach and reconcile</button>
       </div>}
       {submission !== null && <div className="commerce-journey__result">

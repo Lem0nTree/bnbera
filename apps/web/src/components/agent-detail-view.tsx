@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Callout, DataModeBadge, StateAxisGrid, StatusBadge } from "@bnbera/ui";
+import { erc8004IdentityKey } from "@bnbera/domain";
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
 import { categoryLabel, compactAddress, formatObservedAt, joinOrFallback, statusTone, titleCase } from "@/lib/presentation";
 import { ActivationPanel } from "./activation-panel";
@@ -309,7 +310,7 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
             <div className="detail-kv"><span>Pricing</span><span>{agent.pricing.label}</span></div>
             <div className="detail-kv"><span>Method</span><span>{titleCase(agent.pricing.activationMethod)}</span></div>
             <p className="detail-section__lede">{agent.pricing.explanation}</p>
-            <ActivationPanel activation={agent.activation} detail identifier={agent.slug} />
+            <ActivationPanel activation={agent.activation} detail identityKey={erc8004IdentityKey(agent.identity)} />
           </div>
         </section>
 

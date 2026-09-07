@@ -6,15 +6,16 @@ import { CommerceJourney } from "./commerce-journey";
 export function ActivationPanel({
   activation,
   detail = false,
-  identifier = "agent",
+  identityKey = "agent",
   commerceJobId = null
 }: {
   readonly activation: MarketplaceAgentReadModel["activation"];
   readonly detail?: boolean;
-  readonly identifier?: string;
+  /** Canonical ERC-8004 identity key; slugs are presentation-only. */
+  readonly identityKey?: string;
   readonly commerceJobId?: string | null;
 }) {
-  const reasonId = `activation-reason-${identifier}`;
+  const reasonId = `activation-reason-${identityKey}`;
   const content = (
     <div className={`activation-panel${detail ? " activation-panel--detail" : ""}`}>
       <div className="activation-panel__header">
@@ -38,7 +39,7 @@ export function ActivationPanel({
       <p className="activation-panel__footnote">
         {activation.nextAction} · Browser signing is user-controlled; the server stores only public operation evidence.
       </p>
-      <CommerceJourney activation={activation} identifier={identifier} commerceJobId={commerceJobId} />
+      <CommerceJourney activation={activation} identityKey={identityKey} commerceJobId={commerceJobId} />
     </div>
   );
 

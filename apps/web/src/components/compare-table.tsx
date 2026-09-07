@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { CSSProperties } from "react";
 import { DataModeBadge, EmptyState, StateAxisGrid, StatusBadge } from "@bnbera/ui";
+import { erc8004IdentityKey } from "@bnbera/domain";
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
 import { categoryLabel, compactAddress, formatObservedAt, joinOrFallback, statusTone, titleCase } from "@/lib/presentation";
 import { ActivationPanel } from "./activation-panel";
@@ -71,7 +72,7 @@ export function CompareTable({ agents }: { readonly agents: readonly Marketplace
               <StatusBadge label="Endpoint" value={titleCase(agent.health.endpointStatus)} tone={statusTone(agent.health.endpointStatus)} />
               <p>{agent.evidence.summary}</p>
             </div>
-            <ActivationPanel activation={agent.activation} detail identifier={agent.slug} />
+            <ActivationPanel activation={agent.activation} detail identityKey={erc8004IdentityKey(agent.identity)} />
           </article>
         ))}
       </div>

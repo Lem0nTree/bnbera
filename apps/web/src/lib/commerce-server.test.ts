@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { buildErc8183EoaCall, PostgresErc8183OperationRepository } from "@bnbera/agent-commerce";
+import { buildErc8183EoaCall, CommerceError, PostgresErc8183OperationRepository } from "@bnbera/agent-commerce";
 import {
   commerceAuthorityBoundaryError,
   createProductionCommerceComposition,
@@ -13,6 +13,7 @@ import {
   type CommerceParentHireRecord,
   Erc8183CommerceComposition
 } from "./commerce-server";
+import type { CommerceProviderReadinessInput, CommerceProviderReadinessResolver } from "./commerce-reservations";
 import { closeCommerceAuthDatabaseForTests } from "./commerce-auth";
 import { GET as statusRoute } from "../../app/api/commerce/[jobId]/route";
 
@@ -51,6 +52,32 @@ const identity: AuthenticatedCommerceIdentity = {
   authenticated: true,
   userId: "buyer-user",
   requesterAddress: BUYER
+};
+
+const EXTERNAL_READINESS: CommerceProviderReadinessInput = {
+  identity: IDENTITY,
+  ownerAddress: BUYER,
+  ownerObservedBlock: 123,
+  agentWallet: OTHER,
+  agentWalletObservedBlock: 123,
+  identityObservedBlock: 123,
+  identityObservedBlockHash: `0x${"a".repeat(64)}`,
+  identityReadConsistency: "finalized",
+  providerAddress: OTHER,
+  service: {
+    kind: "a2a",
+    url: "https://provider.example/a2a",
+    protocolVersion: "1.0",
+    observedAt: "2026-09-07T00:00:00.000Z",
+    probeObservedAt: new Date().toISOString()
+  },
+  chainId: 97,
+  commerceContract: COMMERCE,
+  paymentToken: TOKEN,
+  paymentDecimals: 18,
+  priceAtomic: "1000",
+  authorityStatus: "none",
+  version: { id: VERSION_ID, number: 1 }
 };
 
 const identityResolver: CommerceIdentityResolver = {
@@ -170,9 +197,43 @@ describe("T5 commerce server composition", () => {
     vi.stubEnv("T5_WALLETCONNECT_AUTH_ENABLED", "true");
     vi.stubEnv("T5_COMMERCE_LOCAL_ACTIVATION", "true");
     vi.stubEnv("T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED", "true");
+    vi.stubEnv("T5_REFERENCE_PROVIDER_WORKER_ENABLED", "false");
     vi.stubEnv("DATABASE_URL", "postgresql://localhost/bnbera");
     try {
-      await expect(getCommerceComposition()).resolves.toBeInstanceOf(Erc8183CommerceComposition);
+      const composition = await getCommerceComposition();
+      expect(composition).toBeInstanceOf(Erc8183CommerceComposition);
+      expect((composition as unknown as { readonly providerReadinessResolver?: CommerceProviderReadinessResolver }).providerReadinessResolver).toBeUndefined();
+    } finally {
+      await closeCommerceAuthDatabaseForTests();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("injects the configured reference readiness resolver while keeping unresolved secrets closed", async () => {
+    vi.stubEnv("NODE_ENV", "test");
+    vi.stubEnv("T5_ALTANA_AUTH_ENABLED", "false");
+    vi.stubEnv("T5_WALLETCONNECT_AUTH_ENABLED", "true");
+    vi.stubEnv("T5_COMMERCE_LOCAL_ACTIVATION", "true");
+    vi.stubEnv("T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED", "true");
+    vi.stubEnv("T5_REFERENCE_PROVIDER_WORKER_ENABLED", "true");
+    vi.stubEnv("T5_REFERENCE_PROVIDER_LOCAL_TESTNET", "true");
+    vi.stubEnv("T5_REFERENCE_PROVIDER_IDENTITY_REGISTRY", IDENTITY.identityRegistry);
+    vi.stubEnv("T5_REFERENCE_PROVIDER_AGENT_ID", IDENTITY.agentId);
+    vi.stubEnv("T5_REFERENCE_PROVIDER_COMMERCE_CONTRACT", COMMERCE);
+    vi.stubEnv("T5_REFERENCE_PROVIDER_JOB_ID", "7");
+    vi.stubEnv("T5_REFERENCE_PROVIDER_EXPECTED_OWNER_ADDRESS", BUYER);
+    vi.stubEnv("T5_REFERENCE_PROVIDER_ADDRESS", OTHER);
+    vi.stubEnv("T5_REFERENCE_PROVIDER_SERVICE_URL", "https://provider.example/a2a");
+    vi.stubEnv("T5_REFERENCE_PROVIDER_ROUTER_CONTRACT", ROUTER);
+    vi.stubEnv("T5_REFERENCE_PROVIDER_POLICY_CONTRACT", POLICY);
+    vi.stubEnv("T5_REFERENCE_PROVIDER_SECRET_REFERENCE", "env://T5_REFERENCE_PROVIDER_PRIVATE_KEY");
+    vi.stubEnv("DATABASE_URL", "postgresql://localhost/bnbera");
+    try {
+      const composition = await getCommerceComposition();
+      const resolver = (composition as unknown as { readonly providerReadinessResolver?: CommerceProviderReadinessResolver }).providerReadinessResolver;
+      expect(resolver).toEqual({ resolve: expect.any(Function) });
+      if (resolver === undefined) throw new Error("configured provider readiness resolver was not injected");
+      await expect(resolver.resolve(EXTERNAL_READINESS)).rejects.toMatchObject({ code: "COMMERCE_DISABLED", nextAction: "configure_secret_reference" });
     } finally {
       await closeCommerceAuthDatabaseForTests();
       vi.unstubAllEnvs();
@@ -330,6 +391,54 @@ describe("T5 commerce server composition", () => {
     expect(prepareHireIntent).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: `t5-hire:${PARENT_ID}` }));
     expect(reserveExternal).toHaveBeenNthCalledWith(1, expect.objectContaining({ idempotencyKey: `t5-hire:${PARENT_ID}` }));
     expect(reserveExternal).toHaveBeenNthCalledWith(2, expect.objectContaining({ idempotencyKey: `t5-hire:${PARENT_ID}` }));
+  });
+
+  it("allows an external ERC-8004 hire with provider readiness and no Altana buyer authority", async () => {
+    const authority = vi.fn();
+    const resolveReadiness = vi.fn(async (input: CommerceProviderReadinessInput) => ({
+      status: "ready" as const,
+      identity: input.identity,
+      providerAddress: input.providerAddress,
+      endpoint: input.service.url,
+      authoritySecretReference: "env://T5_REFERENCE_PROVIDER_PRIVATE_KEY",
+      observedAt: new Date().toISOString()
+    }));
+    const prepareHireIntent = vi.fn(() => ({}) as never);
+    const reserveExternal = vi.fn(async () => ({
+      operation: eoaOperation("create", "awaiting_signature", null) as never,
+      replayed: false,
+      dispatchable: false
+    }));
+    const composition = testComposition({
+      authorityResolver: { resolve: authority },
+      parentHireResolver: { resolve: async () => parent({ listing: { ...parent().listing, authorityStatus: "none", readiness: EXTERNAL_READINESS } }) },
+      providerReadinessResolver: { resolve: resolveReadiness },
+      service: { prepareHireIntent, reserveExternal }
+    });
+    const result = await composition.prepareHireIntent(new Request("http://localhost"), {
+      idempotencyKey: "client-random-key",
+      commerceJobId: PARENT_ID
+    });
+    expect(result.operation.kind).toBe("create");
+    expect(resolveReadiness).toHaveBeenCalledOnce();
+    expect(authority).not.toHaveBeenCalled();
+    expect(prepareHireIntent).toHaveBeenCalledOnce();
+  });
+
+  it("rechecks external provider readiness before handing the fund step to WalletConnect", async () => {
+    const existing = eoaOperation("fund", "awaiting_signature", "7");
+    const resolveReadiness = vi.fn(async () => {
+      throw new CommerceError({ code: "STALE_JOB", message: "The provider readiness changed before funding.", nextAction: "reload_listing" });
+    });
+    const claimExternalDispatch = vi.fn();
+    const composition = testComposition({
+      parentHireResolver: { resolve: async () => parent({ listing: { ...parent().listing, authorityStatus: "none", readiness: EXTERNAL_READINESS } }) },
+      providerReadinessResolver: { resolve: resolveReadiness },
+      operations: { get: vi.fn(async () => existing), claimExternalDispatch }
+    });
+    await expect(composition.claimExternalDispatch(new Request("http://localhost"), existing.operationId as string)).rejects.toMatchObject({ code: "STALE_JOB" });
+    expect(resolveReadiness).toHaveBeenCalledOnce();
+    expect(claimExternalDispatch).not.toHaveBeenCalled();
   });
 
   it("reuses the persisted EOA intent and expiry on repeated prepare", async () => {
