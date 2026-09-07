@@ -180,6 +180,9 @@ export const authSessions = pgTable(
       .notNull()
       .references(() => authUsers.id, { onDelete: "cascade" }),
     tokenDigest: varchar("token_digest", { length: 128 }).notNull(),
+    /** Nullable only for legacy rows; new sessions must bind both fields. */
+    walletAddress: varchar("wallet_address", { length: 42 }),
+    chainId: integer("chain_id"),
     issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
@@ -187,7 +190,12 @@ export const authSessions = pgTable(
   },
   (table) => [
     uniqueIndex("auth_sessions_token_digest_unique").on(table.tokenDigest),
-    index("auth_sessions_user_idx").on(table.userId)
+    index("auth_sessions_user_idx").on(table.userId),
+    index("auth_sessions_wallet_context_idx").on(table.walletAddress, table.chainId),
+    check(
+      "auth_sessions_wallet_binding_check",
+      sql`(${table.walletAddress} IS NULL AND ${table.chainId} IS NULL) OR (${table.walletAddress} IS NOT NULL AND ${table.chainId} IN (56, 97))`
+    )
   ]
 );
 

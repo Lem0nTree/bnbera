@@ -89,6 +89,7 @@ describe("combined Wave 1 database schema", () => {
 
   it("keeps sessions to a digest and exports the discovery and vector tables", () => {
     expect(Object.keys(authSessions)).toContain("tokenDigest");
+    expect(Object.keys(authSessions)).toEqual(expect.arrayContaining(["walletAddress", "chainId"]));
     expect(Object.keys(authSessions)).not.toContain("token");
     expect(Object.keys(agentListingEmbeddings)).toEqual(
       expect.arrayContaining(["embedding", "provider", "model", "dimension", "sourceTextDigest"])
@@ -220,7 +221,8 @@ describe("combined Wave 1 database schema", () => {
       "0005_outgoing_ezekiel.sql",
       "0006_reputation_replacement_log.sql",
       "0007_calm_riptide.sql",
-      "0008_t5_marketplace_results_reviews.sql"
+      "0008_t5_marketplace_results_reviews.sql",
+      "0009_cold_white_queen.sql"
     ]);
     expect(wave1Files).toEqual(["0001_wave1_combined.sql"]);
 
@@ -249,5 +251,9 @@ describe("combined Wave 1 database schema", () => {
     expect(commerceProjection).toContain('CREATE TABLE "commerce_job_reviews"');
     expect(commerceProjection).toContain('commerce_job_review_active_unique');
     expect(commerceProjection).toContain('commerce_job_result_settled_state_check');
+    const passkeyAuth = readFileSync(join(migrationsPath, "0009_cold_white_queen.sql"), "utf8");
+    expect(passkeyAuth).toContain('ADD COLUMN "wallet_address" varchar(42)');
+    expect(passkeyAuth).toContain('ADD COLUMN "chain_id" integer');
+    expect(passkeyAuth).toContain('auth_sessions_wallet_binding_check');
   });
 });

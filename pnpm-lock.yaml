@@ -13,7 +13,7 @@ importers:
     devDependencies:
       '@altananetwork/sdk':
         specifier: 0.9.0
-        version: 0.9.0(@types/react@19.2.2)(react@19.2.0)(typescript@5.7.2)(zod@4.5.4)
+        version: 0.9.0(react@19.2.0)(typescript@5.7.2)(zod@4.5.4)
       '@types/node':
         specifier: 22.10.2
         version: 22.10.2
@@ -47,12 +47,18 @@ importers:
 
   apps/web:
     dependencies:
+      '@altananetwork/sdk':
+        specifier: 0.9.0
+        version: 0.9.0(@types/react@19.2.2)(react@19.2.0)(typescript@5.7.2)(zod@3.24.1)
       '@bnbera/agent-commerce':
         specifier: workspace:*
         version: link:../../packages/agent-commerce
       '@bnbera/agent-ingestion':
         specifier: workspace:*
         version: link:../../packages/agent-ingestion
+      '@bnbera/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
       '@bnbera/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -101,7 +107,7 @@ importers:
     dependencies:
       '@altananetwork/sdk':
         specifier: 0.9.0
-        version: 0.9.0(@types/react@19.2.2)(react@19.2.0)(typescript@5.9.3)(zod@3.24.1)
+        version: 0.9.0(react@19.2.0)(typescript@5.9.3)(zod@3.24.1)
       '@bnbera/domain':
         specifier: workspace:*
         version: link:../domain
@@ -134,7 +140,7 @@ importers:
     dependencies:
       '@altananetwork/sdk':
         specifier: 0.9.0
-        version: 0.9.0(@types/react@19.2.2)(react@19.2.0)(typescript@5.9.3)(zod@4.5.4)
+        version: 0.9.0(react@19.2.0)(typescript@5.9.3)(zod@4.5.4)
       viem:
         specifier: 2.56.3
         version: 2.56.3(typescript@5.9.3)(zod@4.5.4)
@@ -147,12 +153,18 @@ importers:
       '@bnbera/domain':
         specifier: workspace:*
         version: link:../domain
+      '@simplewebauthn/server':
+        specifier: 13.3.3
+        version: 13.3.3
       better-auth:
         specifier: 1.2.7
         version: 1.2.7
       siwe:
         specifier: 3.0.0
         version: 3.0.0
+      viem:
+        specifier: 2.56.3
+        version: 2.56.3(typescript@5.9.3)(zod@3.24.1)
       zod:
         specifier: 3.24.1
         version: 3.24.1
@@ -2454,10 +2466,32 @@ snapshots:
 
   '@adraffy/ens-normalize@1.11.1': {}
 
-  '@altananetwork/sdk@0.9.0(@types/react@19.2.2)(react@19.2.0)(typescript@5.7.2)(zod@4.5.4)':
+  '@altananetwork/sdk@0.9.0(@types/react@19.2.2)(react@19.2.0)(typescript@5.7.2)(zod@3.24.1)':
+    dependencies:
+      ox: 0.14.44(typescript@5.7.2)(zod@3.24.1)
+      porto: 0.2.37(@types/react@19.2.2)(react@19.2.0)(typescript@5.7.2)(viem@2.56.3(typescript@5.7.2)(zod@4.5.4))
+      viem: 2.56.3(typescript@5.7.2)(zod@3.24.1)
+    transitivePeerDependencies:
+      - '@tanstack/react-query'
+      - '@types/react'
+      - '@wagmi/core'
+      - bufferutil
+      - expo-auth-session
+      - expo-crypto
+      - expo-web-browser
+      - immer
+      - react
+      - react-native
+      - typescript
+      - use-sync-external-store
+      - utf-8-validate
+      - wagmi
+      - zod
+
+  '@altananetwork/sdk@0.9.0(react@19.2.0)(typescript@5.7.2)(zod@4.5.4)':
     dependencies:
       ox: 0.14.44(typescript@5.7.2)(zod@4.5.4)
-      porto: 0.2.37(@types/react@19.2.2)(react@19.2.0)(typescript@5.7.2)(viem@2.56.3(typescript@5.7.2)(zod@4.5.4))
+      porto: 0.2.37(react@19.2.0)(typescript@5.7.2)(viem@2.56.3(typescript@5.7.2)(zod@4.5.4))
       viem: 2.56.3(typescript@5.7.2)(zod@4.5.4)
     transitivePeerDependencies:
       - '@tanstack/react-query'
@@ -2476,10 +2510,10 @@ snapshots:
       - wagmi
       - zod
 
-  '@altananetwork/sdk@0.9.0(@types/react@19.2.2)(react@19.2.0)(typescript@5.9.3)(zod@3.24.1)':
+  '@altananetwork/sdk@0.9.0(react@19.2.0)(typescript@5.9.3)(zod@3.24.1)':
     dependencies:
       ox: 0.14.44(typescript@5.9.3)(zod@3.24.1)
-      porto: 0.2.37(@types/react@19.2.2)(react@19.2.0)(typescript@5.9.3)(viem@2.56.3(typescript@5.9.3)(zod@3.24.1))
+      porto: 0.2.37(react@19.2.0)(typescript@5.9.3)(viem@2.56.3(typescript@5.9.3)(zod@3.24.1))
       viem: 2.56.3(typescript@5.9.3)(zod@3.24.1)
     transitivePeerDependencies:
       - '@tanstack/react-query'
@@ -2498,10 +2532,10 @@ snapshots:
       - wagmi
       - zod
 
-  '@altananetwork/sdk@0.9.0(@types/react@19.2.2)(react@19.2.0)(typescript@5.9.3)(zod@4.5.4)':
+  '@altananetwork/sdk@0.9.0(react@19.2.0)(typescript@5.9.3)(zod@4.5.4)':
     dependencies:
       ox: 0.14.44(typescript@5.9.3)(zod@4.5.4)
-      porto: 0.2.37(@types/react@19.2.2)(react@19.2.0)(typescript@5.9.3)(viem@2.56.3(typescript@5.9.3)(zod@4.5.4))
+      porto: 0.2.37(react@19.2.0)(typescript@5.9.3)(viem@2.56.3(typescript@5.9.3)(zod@4.5.4))
       viem: 2.56.3(typescript@5.9.3)(zod@4.5.4)
     transitivePeerDependencies:
       - '@tanstack/react-query'
@@ -3408,6 +3442,11 @@ snapshots:
       loupe: 3.2.1
       tinyrainbow: 1.2.0
 
+  abitype@1.2.3(typescript@5.7.2)(zod@3.24.1):
+    optionalDependencies:
+      typescript: 5.7.2
+      zod: 3.24.1
+
   abitype@1.2.3(typescript@5.7.2)(zod@4.5.4):
     optionalDependencies:
       typescript: 5.7.2
@@ -3422,6 +3461,11 @@ snapshots:
     optionalDependencies:
       typescript: 5.9.3
       zod: 4.5.4
+
+  abitype@1.3.0(typescript@5.7.2)(zod@3.24.1):
+    optionalDependencies:
+      typescript: 5.7.2
+      zod: 3.24.1
 
   abitype@1.3.0(typescript@5.7.2)(zod@4.5.4):
     optionalDependencies:
@@ -3952,6 +3996,21 @@ snapshots:
       type-check: 0.4.0
       word-wrap: 1.2.5
 
+  ox@0.14.44(typescript@5.7.2)(zod@3.24.1):
+    dependencies:
+      '@adraffy/ens-normalize': 1.11.1
+      '@noble/ciphers': 1.3.0
+      '@noble/curves': 1.9.1
+      '@noble/hashes': 1.8.0
+      '@scure/bip32': 1.7.0
+      '@scure/bip39': 1.6.0
+      abitype: 1.3.0(typescript@5.7.2)(zod@3.24.1)
+      eventemitter3: 5.0.1
+    optionalDependencies:
+      typescript: 5.7.2
+    transitivePeerDependencies:
+      - zod
+
   ox@0.14.44(typescript@5.7.2)(zod@4.5.4):
     dependencies:
       '@adraffy/ens-normalize': 1.11.1
@@ -4113,7 +4172,24 @@ snapshots:
       - immer
       - use-sync-external-store
 
-  porto@0.2.37(@types/react@19.2.2)(react@19.2.0)(typescript@5.9.3)(viem@2.56.3(typescript@5.9.3)(zod@3.24.1)):
+  porto@0.2.37(react@19.2.0)(typescript@5.7.2)(viem@2.56.3(typescript@5.7.2)(zod@4.5.4)):
+    dependencies:
+      hono: 4.13.5
+      idb-keyval: 6.3.0
+      mipd: 0.0.7(typescript@5.7.2)
+      ox: 0.9.17(typescript@5.7.2)(zod@4.5.4)
+      viem: 2.56.3(typescript@5.7.2)(zod@4.5.4)
+      zod: 4.5.4
+      zustand: 5.0.15(@types/react@19.2.2)(react@19.2.0)
+    optionalDependencies:
+      react: 19.2.0
+      typescript: 5.7.2
+    transitivePeerDependencies:
+      - '@types/react'
+      - immer
+      - use-sync-external-store
+
+  porto@0.2.37(react@19.2.0)(typescript@5.9.3)(viem@2.56.3(typescript@5.9.3)(zod@3.24.1)):
     dependencies:
       hono: 4.13.5
       idb-keyval: 6.3.0
@@ -4130,7 +4206,7 @@ snapshots:
       - immer
       - use-sync-external-store
 
-  porto@0.2.37(@types/react@19.2.2)(react@19.2.0)(typescript@5.9.3)(viem@2.56.3(typescript@5.9.3)(zod@4.5.4)):
+  porto@0.2.37(react@19.2.0)(typescript@5.9.3)(viem@2.56.3(typescript@5.9.3)(zod@4.5.4)):
     dependencies:
       hono: 4.13.5
       idb-keyval: 6.3.0
@@ -4369,6 +4445,23 @@ snapshots:
   uri-js@4.4.1:
     dependencies:
       punycode: 2.3.1
+
+  viem@2.56.3(typescript@5.7.2)(zod@3.24.1):
+    dependencies:
+      '@noble/curves': 1.9.1
+      '@noble/hashes': 1.8.0
+      '@scure/bip32': 1.7.0
+      '@scure/bip39': 1.6.0
+      abitype: 1.2.3(typescript@5.7.2)(zod@3.24.1)
+      isows: 1.0.7(ws@8.21.0)
+      ox: 0.14.44(typescript@5.7.2)(zod@3.24.1)
+      ws: 8.21.0
+    optionalDependencies:
+      typescript: 5.7.2
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+      - zod
 
   viem@2.56.3(typescript@5.7.2)(zod@4.5.4):
     dependencies:
