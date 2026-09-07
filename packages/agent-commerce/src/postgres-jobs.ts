@@ -1,7 +1,7 @@
 import { canonicalSha256Hex } from "@bnbera/domain";
 import { CommerceError } from "./errors.js";
 import { approveErc8183Result } from "./lifecycle.js";
-import { persistMarketplaceSettlementProjection, persistMarketplaceSubmissionProjection } from "./marketplace-projection.js";
+import { persistMarketplaceRefundProjection, persistMarketplaceSettlementProjection, persistMarketplaceSubmissionProjection } from "./marketplace-projection.js";
 import type { Erc8183OperationQueryClient, Erc8183OperationQueryPool } from "./operations.js";
 import {
   erc8183JobEventSchema,
@@ -23,6 +23,12 @@ export interface PersistentErc8183JobTransitionInput {
   readonly job: Erc8183JobRecord;
   readonly previousState: Erc8183JobState;
   readonly event: Erc8183JobEvent;
+}
+
+export interface Erc8183RefundProjectionRepairResult {
+  readonly scanned: number;
+  readonly repaired: number;
+  readonly skipped: number;
 }
 
 type JobRow = {
@@ -103,6 +109,30 @@ const jobSelect = `
     refund_transaction_hash, last_observed_block, last_observed_block_hash,
     last_observed_at, "createdAt" AS created_at, "updatedAt" AS updated_at
   FROM erc8183_jobs
+`;
+
+const eventSelect = `
+  SELECT
+    j.chain_id,
+    j.commerce_contract,
+    j.erc8183_job_id,
+    e.id AS event_id,
+    e.event_key,
+    e.event_type,
+    e.previous_state,
+    e.next_state,
+    e.actor_address,
+    e.transaction_hash,
+    e.block_number,
+    e.block_hash,
+    e.log_index,
+    e.confirmation_state,
+    e.payload_digest,
+    e.payload,
+    e.correlation_id,
+    e.observed_at
+  FROM erc8183_job_events e
+  JOIN erc8183_jobs j ON j.id = e.erc8183_job_id
 `;
 
 function asUnix(value: Date | string | null, label: string): number | null {
@@ -275,6 +305,84 @@ function jobValues(input: PersistentErc8183JobCreateInput | PersistentErc8183Job
 export class PostgresErc8183JobRepository {
   public constructor(private readonly pool: Erc8183OperationQueryPool) {}
 
+  /**
+   * Replay the parent projection for one already-canonical expired job.
+   *
+   * This path reads the persisted canonical job-expiry event and never creates
+   * another protocol operation or event.  It is intentionally a separate
+   * transaction from the original transition so a process restart can repair
+   * rows written by an older application version without resending a refund.
+   */
+  public async repairExpiredMarketplaceProjection(input: {
+    readonly jobKey: { readonly chainId: 56 | 97; readonly commerceContract: string; readonly jobId: string };
+  }): Promise<{ readonly repaired: boolean }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const jobResult = await client.query<JobRow>(`${jobSelect}
+        WHERE chain_id = $1 AND commerce_contract = $2 AND erc8183_job_id = $3
+        FOR UPDATE`, [input.jobKey.chainId, normalizeAddress(input.jobKey.commerceContract, "commerce contract"), input.jobKey.jobId]);
+      const row = jobResult.rows[0];
+      if (row === undefined) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The expired ERC-8183 job does not exist.", nextAction: "reconcile_job" });
+      const job = rowToJob(row);
+      const eventResult = await client.query<EventRow>(`${eventSelect}
+        WHERE e.erc8183_job_id = $1
+          AND e.event_type = 'job_expired'
+          AND e.confirmation_state = 'canonical'
+        ORDER BY e.observed_at DESC, e.id DESC
+        LIMIT 1`, [row.id]);
+      const eventRow = eventResult.rows[0];
+      if (eventRow === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The canonical expired job has no persisted refund event evidence.", nextAction: "manual_review", ...(job.refundTransactionHash === null ? {} : { transactionHash: job.refundTransactionHash as `0x${string}` }) });
+      if (row.commerce_job_id === undefined || row.commerce_job_id.trim() === "") throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The canonical expired job has no parent commerce reservation binding.", nextAction: "manual_review", ...(job.refundTransactionHash === null ? {} : { transactionHash: job.refundTransactionHash as `0x${string}` }) });
+      await persistMarketplaceRefundProjection(client, { jobRecordId: row.id, commerceJobId: row.commerce_job_id, job, event: rowToEvent(eventRow) });
+      await client.query("COMMIT");
+      return { repaired: true };
+    } catch (cause) {
+      try { await client.query("ROLLBACK"); } catch { /* retain original error */ }
+      if (cause instanceof CommerceError) throw cause;
+      throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The expired marketplace refund projection could not be repaired.", nextAction: "manual_review", cause });
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Repair a bounded batch of canonical, refund-backed jobs.  Invalid or
+   * mismatched rows are skipped for manual review while valid rows continue;
+   * each row remains atomic and idempotent through the single-row method.
+   */
+  public async repairExpiredMarketplaceProjections(input: { readonly limit?: number } = {}): Promise<Erc8183RefundProjectionRepairResult> {
+    const requestedLimit = input.limit ?? 32;
+    if (!Number.isSafeInteger(requestedLimit) || requestedLimit <= 0) throw new CommerceError({ code: "INVALID_JOB", message: "Refund projection repair limit must be a positive integer.", nextAction: "configure_reconciler" });
+    const limit = Math.min(requestedLimit, 100);
+    const candidates = await this.pool.query<{ readonly chain_id: number; readonly commerce_contract: string; readonly erc8183_job_id: string }>(`
+      SELECT j.chain_id, j.commerce_contract, j.erc8183_job_id
+        FROM erc8183_jobs j
+        JOIN commerce_jobs c ON c.id = j.commerce_job_id
+       WHERE j.state = 'expired'
+         AND j.refund_transaction_hash IS NOT NULL
+         AND c.status IN ('funded', 'accepted', 'submitted', 'disputed')
+       ORDER BY j."updatedAt" ASC, j.id ASC
+       LIMIT $1
+    `, [limit]);
+    let repaired = 0;
+    let skipped = 0;
+    for (const candidate of candidates.rows) {
+      try {
+        if (candidate.chain_id !== 56 && candidate.chain_id !== 97) throw new CommerceError({ code: "INVALID_CHAIN", message: "The refund repair candidate uses an unsupported chain.", nextAction: "manual_review" });
+        await this.repairExpiredMarketplaceProjection({ jobKey: { chainId: candidate.chain_id, commerceContract: candidate.commerce_contract, jobId: candidate.erc8183_job_id } });
+        repaired += 1;
+      } catch (cause) {
+        if (cause instanceof CommerceError && ["ONCHAIN_MISMATCH", "RECONCILIATION_REQUIRED", "UNKNOWN_JOB", "STALE_JOB"].includes(cause.code)) {
+          skipped += 1;
+          continue;
+        }
+        throw cause;
+      }
+    }
+    return { scanned: candidates.rows.length, repaired, skipped };
+  }
+
   /** Keep the buyer-facing parent bound to the same confirmed funding proof. */
   private async syncMarketplaceFunding(
     client: Erc8183OperationQueryClient,
@@ -426,7 +534,13 @@ export class PostgresErc8183JobRepository {
     const existingEvent = await this.pool.query<{ readonly id: string }>("SELECT id FROM erc8183_job_events WHERE event_key = $1", [event.eventKey]);
     if (existingEvent.rows[0] !== undefined) {
       const current = await this.get(job.jobKey);
-      if (current !== null && canonicalSha256Hex(current) === canonicalSha256Hex(job)) return { job: current, replayed: true };
+      if (current !== null && canonicalSha256Hex(current) === canonicalSha256Hex(job)) {
+        // A process may have committed the canonical expiry event before an
+        // older application version projected the parent. Re-read the stored
+        // event and repair only that parent; never append a duplicate event.
+        if (event.eventType === "job_expired") await this.repairExpiredMarketplaceProjection({ jobKey: job.jobKey });
+        return { job: current, replayed: true };
+      }
       throw new CommerceError({ code: "EVENT_CONFLICT", message: "The ERC-8183 event key was reused for different state." });
     }
     const client = await this.pool.connect();
@@ -457,6 +571,9 @@ export class PostgresErc8183JobRepository {
       } else if (event.eventType === "job_completed") {
         if (protocolRow.commerce_job_id === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted ERC-8183 job has no BNBEra commerce job binding." });
         await persistMarketplaceSettlementProjection(client, { jobRecordId: protocolRow.id, commerceJobId: protocolRow.commerce_job_id, job, event });
+      } else if (event.eventType === "job_expired") {
+        if (protocolRow.commerce_job_id === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted ERC-8183 job has no BNBEra commerce job binding." });
+        await persistMarketplaceRefundProjection(client, { jobRecordId: protocolRow.id, commerceJobId: protocolRow.commerce_job_id, job, event });
       }
       await client.query("COMMIT");
     } catch (cause) {
@@ -464,7 +581,10 @@ export class PostgresErc8183JobRepository {
       if (cause instanceof CommerceError) throw cause;
       if (isUniqueViolation(cause)) {
         const current = await this.get(job.jobKey);
-        if (current !== null && canonicalSha256Hex(current) === canonicalSha256Hex(job)) return { job: current, replayed: true };
+        if (current !== null && canonicalSha256Hex(current) === canonicalSha256Hex(job)) {
+          if (event.eventType === "job_expired") await this.repairExpiredMarketplaceProjection({ jobKey: job.jobKey });
+          return { job: current, replayed: true };
+        }
       }
       throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The ERC-8183 job transition could not be persisted.", cause });
     } finally { client.release(); }

@@ -1,13 +1,94 @@
 # BNBEra MVP status
 
-Updated: `2026-09-06T13:00:06Z`
+Updated: `2026-09-07` (current audited state at merged `main` `3cbd4135d809fe865e2a88285e9b79b8e357085a`)
+
+## Current audited state — merged main
+
+This section is the current source of truth for the reconciled checkout. GitHub
+`main` is `3cbd4135d809fe865e2a88285e9b79b8e357085a`, and PRs #20–#24 are
+merged. Those merges include the T5 WalletConnect-only EOA/SIWE buyer boundary,
+sequential ERC-8183 commerce implementation, provider-readiness/card fixes,
+and the guarded 2206 marketplace provider path.
+
+### Current gate result
+
+| Scope | Result | Evidence and remaining boundary |
+| --- | --- | --- |
+| G1 persistent marketplace | Retained/local scope only | T1–T3 discovery, enrichment, category, vector, publication, API/SSR, restart and freshness evidence remains accepted for the retained/local scope. No stable public HTTPS/deployed-browser claim is made. |
+| G2 paid hiring | Pending interactive WalletConnect browser acceptance | The merged T5 implementation and authorized operator EOA canary provide live chain evidence for agent 2206, including useful health-factor work, paid cycle `job1103`, settlement and a verified-purchase review. The operator harness is not interactive WalletConnect pairing, browser SIWE/session binding or browser recovery acceptance. |
+| G3 Creator | Planned | Altana grant/status/revoke and Agent Studio creation remain unaccepted. |
+| G4 Greenfield | Planned | Greenfield pins, upload/seal/readback and final walkthrough remain unaccepted. |
+| ERC-8183 release | Disabled | The standards-lock `releaseEnabled` value remains `false`; the quick tunnel and operator canary are development evidence only. |
+
+### T5 implementation and operator EOA evidence
+
+The buyer implementation is merged, but the release gate is not. The browser
+path uses wagmi's single `walletConnect` connector with public
+`NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`, normalizes one EOA and chain-97 SIWE
+session, and drives named sequential APEX/ERC-8183 calls. There is no separate
+`injected()` or MetaMask-specific connector. WalletConnect may reach compatible
+extension wallets or mobile wallets through QR/deep links; extension
+availability is not guaranteed.
+
+The authorized operator EOA canary exercised agent `2206` as a published,
+callable health-factor service and completed useful live work in paid
+`job1103`. The full identity tuple is
+`eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:2206`. This is
+operator-harness evidence, not an interactive browser acceptance.
+
+#### Paid cycle `job1103` (operator EOA canary, chain 97)
+
+| Step | Public evidence |
+| --- | --- |
+| Quote | `695c1be6-a6bb-4deb-b9b8-9eabd60b0ae7` |
+| `createJob` | `0xb95b22905005e6fdb430a15f48c4c53f6e127013c7ccac8725af1fdc049b19a4` |
+| Router `registerJob` | `0x35559fab1f7a196a2beeb1d53179f9d5fff721c4340b99e902d23929737c631e` |
+| Commerce `setBudget` | `0xcd7e35f97e1a7d5aad25ca83200af1494944244bae5103f749bf5e38f90e48e2` |
+| ERC-20 `approve` | `0x89b28913748cd04eebd7f0c503dd40eae3648361c184576aea747bb76f7de1b1` |
+| Commerce `fund` | `0x0b005abb90ee3238204b2b989ca36e0924b9e0842b3464961d1def3a9ac67afc` |
+| Provider submit/result | `0x8343f2402aa567f274340538fb4798125a67d93d10f308017659dc84bc0fddf1` |
+| Buyer/operator settlement | `0x8f580a37cb22ec2f5c19c78cb9f3371caee02426e60c499bd9b18064ede3f26f` |
+
+Result integrity evidence: local SHA-256
+`3d73b7286e9207de2c76906e1eaf216850ad20aafb3b32026cfe1a25d780b42d` and
+on-chain/SDK deliverable Keccak
+`0xe3064c53a95081f9c882ff611944ba9dd768b24c47cd783bea4f804db590c65`.
+The verified-purchase review is score `5`, active revision `1`.
+
+#### Refund cycle `job1101`
+
+The canonical job state reached expiry/refund with transaction
+`0xc1a051eeb933ec6f7711fce9448bdb1e7563685fd23503cdf00d9ca3a3093628`.
+The parent summary still reporting `funded` is a known P1 projection issue
+being fixed separately; it must not override the canonical expired/refund
+state or be used as current funded-job evidence.
+
+#### Operator harness limitation and release gate
+
+The canary is driven by the operator EOA harness and therefore does not prove
+WalletConnect browser pairing, browser-owned SIWE session continuity, page
+reload/account-change handling or unknown-wallet-response recovery in the UI.
+It proves useful live 2206 work and the pinned chain journey, including
+settlement/review, but G2 remains pending until the interactive WalletConnect
+browser flow is accepted. Keep `releaseEnabled=false`; the authorized quick
+HTTPS tunnel remains canary-only with no uptime guarantee. A redundant second
+web build in CI is tracked as a nonblocking P2 note; CI was not changed by this
+documentation reconciliation.
+
+## Historical retained/local snapshots
+
+The sections below are preserved historical evidence captured before the
+current `main` reconciliation. Their timestamps, checkouts, counts, and gate
+wording are not current branch or release claims.
+
+### Historical T3/G1 acceptance snapshot
 
 This record captures the T3/G1 acceptance evidence at checkout
 `/home/ubuntu/bnbera-t3-public-preview`, branch `task/t3-public-preview`,
 HEAD `d9069c17b5d9d0b3e0294a950c2d40f709b2abca`. It is retained-host/local
 evidence, not a claim that a public HTTPS preview or any later gate is live.
 
-## Gate result
+### Historical T3/G1 gate result
 
 | Scope | Result | Evidence |
 | --- | --- | --- |
@@ -23,7 +104,7 @@ The public G1 gate remains open only for the missing authorized HTTPS topology
 and deployed-browser walkthrough. The local/retained marketplace acceptance is
 not promoted to a public claim.
 
-## Build and focused checks
+### Historical build and focused checks
 
 Runtime: Node `v22.22.1`, pnpm `10.15.1`, Next.js `16.0.1`.
 
@@ -43,7 +124,7 @@ exports had not been generated in the fresh checkout. The ordinary recursive
 `pnpm build` generated those outputs and then completed the web production
 build; this is a clean-checkout bootstrap prerequisite, not a source failure.
 
-## Retained database snapshot
+### Historical retained database snapshot
 
 The configured database is `bnbera_erc8004` on `127.0.0.1:55432`; the URL and
 credentials were never printed or committed. The migration journal is in the
@@ -92,7 +173,7 @@ openrouter-openai-text-embedding-3-small-v1 / 1536 /
 bnbera-agent-semantic-v1`. Preview semantic retrieval remains disabled by the
 standards lock; persisted vectors do not by themselves enable release mode.
 
-## Cron evidence and topology
+### Historical cron evidence and topology
 
 The currently installed host entries are:
 
@@ -121,7 +202,7 @@ was local `*:3103`, while PostgreSQL listens on loopback (`127.0.0.1:55432`).
 No public hostname/certificate or approved remote API/private-network bridge is
 configured. PostgreSQL must remain private.
 
-## API/SSR acceptance
+### Historical API/SSR acceptance
 
 The immutable build was started locally with the retained environment supplied
 by reference and these non-secret safety overrides:
@@ -171,7 +252,7 @@ browser automation was run in this host acceptance because the lightweight
 HTTP/SSR checks were sufficient and no approved browser runner was available;
 deployed-browser evidence remains pending the public URL.
 
-## Restart, freshness, and fallback evidence
+### Historical restart, freshness, and fallback evidence
 
 - Restarting the production web process from the same built SHA preserved the
   DB-backed listing/detail response after the same-origin environment was
@@ -189,7 +270,7 @@ deployed-browser evidence remains pending the public URL.
   preview. Marketplace hybrid tests cover no-compatible-embedding and mixed
   model-version fallback paths.
 
-## Honest gaps and owner requests
+### Historical honest gaps and owner requests
 
 - **Public HTTPS/deployed browser (owner: coordinator/release + authorized
   host owner):** provide a stable HTTPS origin and certificate, and either run
@@ -215,7 +296,7 @@ Rollback is application-only: stop the preview process and/or remove only the
 two installed BNBEra cron lines, then restore the prior application artifact.
 Do not reset, delete, or roll back retained PostgreSQL history.
 
-## T2 retained reputation rollout addendum
+### Historical T2 retained reputation rollout addendum
 
 Updated: `2026-09-06T14:54:28Z`
 
@@ -225,7 +306,7 @@ This addendum records the forward rollout from the merged reputation code at
 `task/t2-reputation-rollout`. It does not change eligibility, semantic release,
 cron topology, or any later gate.
 
-### Backup and migration evidence
+#### Historical backup and migration evidence
 
 - Retained PostgreSQL container: `bnbera_erc8004_pgvector`, healthy, loopback
   `127.0.0.1:55432`, retained volume `bnbera_erc8004_pgdata`; database/role
@@ -247,7 +328,7 @@ cron topology, or any later gate.
   `erc8004_reputation_checkpoints`, and the replacement unique index are
   present; event/checkpoint counts remain `0` / `0`.
 
-### Retained read snapshot
+#### Historical retained read snapshot
 
 The final read-only readiness snapshot used one-off safety overrides
 `ERC8004_INGESTION_ENABLED=false`,
@@ -274,7 +355,7 @@ reported `status=degraded`, `dataState=degraded`, `appliedCount=7`,
 Published category supply at the snapshot was rebalancing `2`, grid-trading
 `3`, yield-optimisation `2`, health-factor `2`, and uncategorized `16`.
 
-### Reputation sync result and blocker
+#### Historical reputation sync result and blocker
 
 The bounded command used the standards-locked BSC testnet identity/reputation
 registries, chain `97`, finalized RPC tag, max block range `10,000`, max events
@@ -291,7 +372,7 @@ Latest/finalized block preflight reads succeeded at the same block/hash before
 the provider log failure, so this is an RPC log/archive limitation rather than
 a standards-lock or migration failure. No fallback provider was invented.
 
-### Read/restart checks
+#### Historical read/restart checks
 
 - `pnpm db:check` passed.
 - Targeted ERC-8004 reputation/RPC tests passed `5/5`; DB schema/legacy
@@ -312,7 +393,7 @@ and verified-purchase views remain provenance-separated and explicitly
 unknown/unavailable; no rating or review count was fabricated. The follow-up
 recovery addendum below records a successful process-only endpoint override.
 
-### RPC retry audit from the retained main environment
+#### Historical RPC retry audit from the retained main environment
 
 Updated: `2026-09-06T15:08:00Z`
 
@@ -355,7 +436,7 @@ verified-purchase views remained `unavailable` with their explicit reasons.
 This confirms the RPC failure did not alter marketplace identity/listing data
 or collapse the three reputation provenance views.
 
-## T2 reputation RPC recovery and retained sync
+### Historical T2 reputation RPC recovery and retained sync
 
 Updated: `2026-09-06T15:12:08Z`
 

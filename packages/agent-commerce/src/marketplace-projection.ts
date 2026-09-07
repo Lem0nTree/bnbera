@@ -479,6 +479,103 @@ export async function persistMarketplaceSettlementProjection(client: QueryClient
   `, [input.commerceJobId, input.job.jobKey.jobId, input.event.transactionHash]);
 }
 
+/**
+ * Project a confirmed protocol refund onto the buyer-facing commerce job.
+ *
+ * The ERC-8183 row/event pair is the source of truth for a refund.  Keep this
+ * projection deliberately narrow: a parent may only become cancelled from an
+ * active funded/submitted lifecycle, and a replay is accepted only when the
+ * parent is already cancelled for this same protocol job.  This function is
+ * called by the canonical-job repository while its transition transaction is
+ * still open, so a missing or mismatched refund proof rolls back both the
+ * protocol transition and the parent projection.
+ */
+export async function persistMarketplaceRefundProjection(client: QueryClient, input: {
+  readonly jobRecordId: string;
+  readonly commerceJobId: string;
+  readonly job: Erc8183JobRecord;
+  readonly event: Erc8183JobEvent;
+}): Promise<void> {
+  const event = input.event;
+  const job = input.job;
+  const refundTransactionHash = job.refundTransactionHash;
+  if (
+    event.eventType !== "job_expired" ||
+    (event.previousState !== "funded" && event.previousState !== "submitted") ||
+    event.nextState !== "expired" ||
+    event.confirmationState !== "canonical" ||
+    event.transactionHash === null ||
+    event.blockNumber === null ||
+    event.blockHash === null
+  ) {
+    throw new CommerceError({
+      code: "ONCHAIN_MISMATCH",
+      message: "Only a canonical receipt-backed refund can cancel the marketplace job.",
+      nextAction: "manual_review",
+      ...(event.transactionHash === null ? {} : { transactionHash: event.transactionHash as `0x${string}` })
+    });
+  }
+  const eventTransactionHash = event.transactionHash as `0x${string}`;
+  if (job.state !== "expired" || refundTransactionHash === null) {
+    throw new CommerceError({
+      code: "ONCHAIN_MISMATCH",
+      message: "The canonical expired job is missing its confirmed refund evidence.",
+      nextAction: "manual_review",
+      transactionHash: eventTransactionHash
+    });
+  }
+  if (refundTransactionHash.toLowerCase() !== eventTransactionHash.toLowerCase()) {
+    throw new CommerceError({
+      code: "ONCHAIN_MISMATCH",
+      message: "The canonical refund hash does not match its receipt-backed expiry event.",
+      nextAction: "manual_review",
+      transactionHash: eventTransactionHash
+    });
+  }
+  if (event.actorAddress === null || event.actorAddress.toLowerCase() !== job.terms.clientAddress.toLowerCase()) {
+    throw new CommerceError({
+      code: "ONCHAIN_MISMATCH",
+      message: "The canonical refund event actor does not match the ERC-8183 client.",
+      nextAction: "manual_review",
+      transactionHash: eventTransactionHash
+    });
+  }
+  if (
+    event.jobKey.chainId !== job.jobKey.chainId ||
+    event.jobKey.commerceContract.toLowerCase() !== job.jobKey.commerceContract.toLowerCase() ||
+    event.jobKey.jobId !== job.jobKey.jobId
+  ) {
+    throw new CommerceError({
+      code: "ONCHAIN_MISMATCH",
+      message: "The canonical refund event is bound to a different ERC-8183 job.",
+      nextAction: "manual_review",
+      transactionHash: eventTransactionHash
+    });
+  }
+
+  const updated = await client.query<{ readonly id: string }>(`
+    UPDATE commerce_jobs
+       SET erc8183_job_id = $2,
+           status = 'cancelled',
+           "updatedAt" = now()
+     WHERE id = $1
+       AND (erc8183_job_id = $2 OR erc8183_job_id LIKE 'draft:%' OR erc8183_job_id LIKE 'intent:%')
+       AND (
+         status IN ('funded', 'accepted', 'submitted', 'disputed')
+         OR (status = 'cancelled' AND erc8183_job_id = $2)
+       )
+     RETURNING id
+  `, [input.commerceJobId, job.jobKey.jobId]);
+  if (updated.rows[0] === undefined) {
+    throw new CommerceError({
+      code: "ONCHAIN_MISMATCH",
+      message: "The confirmed refund could not be bound to an eligible parent commerce job.",
+      nextAction: "manual_review",
+      transactionHash: eventTransactionHash
+    });
+  }
+}
+
 async function readReviewForResult(client: QueryClient, resultId: string, includeInactive = false): Promise<ReviewRow | null> {
   const stateClause = includeInactive ? "" : " AND review_state = 'active'";
   const result = await client.query<ReviewRow>(`${reviewSelect} FROM commerce_job_reviews WHERE commerce_job_result_id = $1${stateClause} ORDER BY revision DESC, id DESC LIMIT 1`, [resultId]);

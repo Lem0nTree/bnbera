@@ -50,6 +50,8 @@ export interface Erc8183CanonicalJobStore {
   get(jobKey: { readonly chainId: 56 | 97; readonly commerceContract: string; readonly jobId: string }): Promise<Erc8183JobRecord | null>;
   create(input: PersistentErc8183JobCreateInput): Promise<{ readonly job: Erc8183JobRecord; readonly replayed: boolean }>;
   transition(input: PersistentErc8183JobTransitionInput): Promise<{ readonly job: Erc8183JobRecord; readonly replayed: boolean }>;
+  /** Optional restart repair for canonical expiry rows written before parent projection was added. */
+  repairExpiredMarketplaceProjection?(input: { readonly jobKey: { readonly chainId: 56 | 97; readonly commerceContract: string; readonly jobId: string } }): Promise<{ readonly repaired: boolean }>;
 }
 
 type AdapterExecution = {
@@ -588,7 +590,18 @@ export class Erc8183OperationCoordinator {
     if (this.jobs === undefined) return;
     const current = await this.jobs.get({ chainId: this.adapter.pin.chainId, commerceContract: this.adapter.pin.commerceContract, jobId: onchain.id });
     if (current === null) throw new CommerceError({ code: "RECONCILIATION_REQUIRED", message: "The terminal on-chain result has no canonical hired job projection.", nextAction: "reconcile_job" });
-    if (current.state === state) return;
+    if (current.state === state) {
+      if (state === "expired") {
+        if (current.refundTransactionHash === null || current.refundTransactionHash.toLowerCase() !== receipt.transactionHash.toLowerCase()) {
+          throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed refund does not match the canonical expired job evidence.", transactionHash: receipt.transactionHash, nextAction: "manual_review" });
+        }
+        const repair = this.jobs.repairExpiredMarketplaceProjection;
+        if (repair !== undefined) {
+          await repair.call(this.jobs, { jobKey: { chainId: this.adapter.pin.chainId, commerceContract: this.adapter.pin.commerceContract, jobId: onchain.id } });
+        }
+      }
+      return;
+    }
     if (state === "completed" && current.state !== "submitted") throw new CommerceError({ code: "STALE_JOB", message: "The canonical job is not SUBMITTED for settlement.", retriable: true, nextAction: "reconcile_job" });
     if (state === "expired" && current.state !== "funded" && current.state !== "submitted") throw new CommerceError({ code: "STALE_JOB", message: "The canonical job is not refundable from its persisted state.", retriable: true, nextAction: "reconcile_job" });
     const updatedAt = Math.max(current.updatedAtUnix, nowUnix());
