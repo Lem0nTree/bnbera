@@ -328,7 +328,7 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
       .slice(0, 500) || null;
     return parseMarketplaceSourceSnapshot({
       records,
-      status: this.options.status === "degraded" || skipped > 0 || reputationReadFailures > 0 ? "degraded" : "healthy",
+      status: this.options.status === "degraded" || skipped > 0 || reputationReadFailures > 0 || commerceReadFailures > 0 ? "degraded" : "healthy",
       sourceName: this.options.sourceName ?? "ingestion-read-model",
       warning,
       refreshedAt: now.toISOString()
