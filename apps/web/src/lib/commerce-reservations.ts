@@ -133,6 +133,7 @@ export type ReferenceProviderReadinessConfig = {
   readonly identity: Erc8004Identity;
   readonly expectedOwnerAddress: string;
   readonly providerAddress: string;
+  /** The canonical published A2A card URL used for commerce readiness. */
   readonly providerEndpoint: string;
   readonly authoritySecretReference: string;
   readonly chainId: 97;
@@ -298,7 +299,7 @@ export function assertCommerceProviderReadiness(input: CommerceProviderReadiness
   if (result.status !== "ready") throw readinessFailure("COMMERCE_DISABLED", "The configured provider is not ready for execution.", "configure_provider_readiness");
   if (erc8004IdentityKey(result.identity) !== erc8004IdentityKey(input.identity)) throw readinessFailure("ONCHAIN_MISMATCH", "The provider readiness identity changed during resolution.", "reload_identity");
   if (normalizedAddress(result.providerAddress, "resolved provider address") !== normalizedAddress(input.providerAddress, "provider address")) throw readinessFailure("UNAUTHORIZED_ACTOR", "The provider readiness actor does not match the published listing.", "reload_identity");
-  if (normalizedHttpsEndpoint(result.endpoint, "resolved provider endpoint") !== normalizedHttpsEndpoint(input.service.url, "provider service")) throw readinessFailure("ONCHAIN_MISMATCH", "The provider readiness endpoint does not match the published service.", "reload_listing");
+  if (normalizedHttpsEndpoint(result.endpoint, "resolved provider card") !== normalizedHttpsEndpoint(input.service.url, "provider service")) throw readinessFailure("ONCHAIN_MISMATCH", "The provider readiness card URL does not match the published agent card.", "reload_listing");
   try {
     referenceProviderSecretReferenceSchema.parse(result.authoritySecretReference);
   } catch (cause) {
@@ -319,7 +320,7 @@ export function createReferenceProviderReadinessResolver(config: ReferenceProvid
   const providerAddress = normalizedAddress(config.providerAddress, "configured reference provider");
   const commerceContract = normalizedAddress(config.commerceContract, "configured commerce contract");
   const paymentToken = normalizedAddress(config.paymentToken, "configured payment token");
-  const configuredEndpoint = normalizedHttpsEndpoint(config.providerEndpoint, "configured reference provider");
+  const configuredCardUrl = normalizedHttpsEndpoint(config.providerEndpoint, "configured reference provider card");
   const secretReference = referenceProviderSecretReferenceSchema.safeParse(config.authoritySecretReference);
   if (!secretReference.success) throw readinessFailure("COMMERCE_DISABLED", "The configured reference provider secret must be a secret reference.", "configure_provider_readiness", secretReference.error);
   if (!Number.isSafeInteger(config.paymentDecimals) || config.paymentDecimals < 0 || config.paymentDecimals > 255) throw readinessFailure("INVALID_TOKEN", "The configured reference payment decimals are invalid.", "verify_standards_lock");
@@ -339,8 +340,8 @@ export function createReferenceProviderReadinessResolver(config: ReferenceProvid
       const nowUnix = config.nowUnix?.() ?? Math.floor(Date.now() / 1_000);
       const freshnessWindowSeconds = config.freshnessWindowSeconds ?? 120;
       if (!Number.isSafeInteger(nowUnix) || nowUnix <= 0 || !Number.isSafeInteger(freshnessWindowSeconds) || freshnessWindowSeconds <= 0) throw readinessFailure("COMMERCE_DISABLED", "The provider readiness clock or freshness window is invalid.", "configure_provider_readiness");
-      const endpoint = assertFreshProviderService(input.service, nowUnix, freshnessWindowSeconds);
-      if (endpoint !== configuredEndpoint) throw readinessFailure("ONCHAIN_MISMATCH", "The provider service endpoint does not match the configured reference endpoint.", "reload_listing");
+      const cardUrl = assertFreshProviderService(input.service, nowUnix, freshnessWindowSeconds);
+      if (cardUrl !== configuredCardUrl) throw readinessFailure("ONCHAIN_MISMATCH", "The published provider agent card does not match the configured reference card URL.", "reload_listing");
       let amount: bigint;
       try { amount = BigInt(input.priceAtomic); } catch (cause) { throw readinessFailure("INVALID_AMOUNT", "The provider price is not a valid atomic amount.", "reload_listing", cause); }
       if (amount <= 0n || amount > BigInt(config.maxBudgetAtomic)) throw readinessFailure("INVALID_AMOUNT", "The provider price exceeds the configured readiness budget cap.", "reload_quote");
@@ -357,7 +358,7 @@ export function createReferenceProviderReadinessResolver(config: ReferenceProvid
         status: "ready",
         identity,
         providerAddress,
-        endpoint,
+        endpoint: cardUrl,
         authoritySecretReference: secretReference.data,
         observedAt
       });

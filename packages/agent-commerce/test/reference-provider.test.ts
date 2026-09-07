@@ -34,6 +34,8 @@ const PROVIDER = "0x4444444444444444444444444444444444444444" as `0x${string}`;
 const OWNER = "0x7777777777777777777777777777777777777777" as `0x${string}`;
 const OTHER = "0x5555555555555555555555555555555555555555" as `0x${string}`;
 const TOKEN = "0x6666666666666666666666666666666666666666" as `0x${string}`;
+const SERVICE_URL = "https://provider.example/api/reference-provider/health-factor";
+const CARD_URL = "https://provider.example/.well-known/agent-card.json";
 const JOB_KEY: Erc8183JobKey = { chainId: 97, commerceContract: COMMERCE, jobId: "7" };
 const PROVIDER_BINDING: Erc8183ProviderBinding = {
   identity: { namespace: "eip155", chainId: 97, identityRegistry: "0x1111111111111111111111111111111111111111", agentId: "42" },
@@ -155,7 +157,7 @@ const RUNNER_CONFIG = {
   jobKey: JOB_KEY,
   expectedOwnerAddress: OWNER,
   providerAddress: PROVIDER,
-  providerEndpoint: "https://provider.example/api/reference-provider/health-factor",
+  providerEndpoint: SERVICE_URL,
   authoritySecretReference: "secret://t5/reference-provider",
   routerContract: ROUTER,
   policyContract: POLICY
@@ -304,7 +306,7 @@ describe("BNBEra reference health-factor provider", () => {
       T5_REFERENCE_PROVIDER_JOB_ID: JOB_KEY.jobId,
       T5_REFERENCE_PROVIDER_EXPECTED_OWNER_ADDRESS: OWNER,
       T5_REFERENCE_PROVIDER_ADDRESS: PROVIDER,
-      T5_REFERENCE_PROVIDER_SERVICE_URL: "https://provider.example/api/reference-provider/health-factor",
+      T5_REFERENCE_PROVIDER_SERVICE_URL: SERVICE_URL,
       T5_REFERENCE_PROVIDER_ROUTER_CONTRACT: ROUTER,
       T5_REFERENCE_PROVIDER_POLICY_CONTRACT: POLICY,
       T5_REFERENCE_PROVIDER_SECRET_REFERENCE: PROVIDER
@@ -314,11 +316,16 @@ describe("BNBEra reference health-factor provider", () => {
       enabled: true,
       chainId: 97,
       releaseEnabled: false,
-      authoritySecretReference: "secret://t5/reference-provider"
+      authoritySecretReference: "secret://t5/reference-provider",
+      providerEndpoint: SERVICE_URL
     });
 
     const readinessEnvironment = Object.fromEntries(
-      Object.entries({ ...enabledEnvironment, T5_REFERENCE_PROVIDER_SECRET_REFERENCE: "secret://t5/reference-provider" })
+      Object.entries({
+        ...enabledEnvironment,
+        T5_REFERENCE_PROVIDER_CARD_URL: CARD_URL,
+        T5_REFERENCE_PROVIDER_SECRET_REFERENCE: "secret://t5/reference-provider"
+      })
         .filter(([name]) => name !== "T5_REFERENCE_PROVIDER_JOB_ID")
     );
     expect(referenceProviderReadinessConfigFromEnvironment(readinessEnvironment)).toMatchObject({
@@ -327,7 +334,7 @@ describe("BNBEra reference health-factor provider", () => {
       identity: PROVIDER_BINDING.identity,
       expectedOwnerAddress: OWNER,
       providerAddress: PROVIDER,
-      providerEndpoint: "https://provider.example/api/reference-provider/health-factor",
+      providerEndpoint: CARD_URL,
       authoritySecretReference: "secret://t5/reference-provider",
       commerceContract: COMMERCE,
       routerContract: ROUTER,
@@ -336,6 +343,10 @@ describe("BNBEra reference health-factor provider", () => {
     });
     expect(referenceProviderReadinessConfigFromEnvironment(readinessEnvironment)).not.toHaveProperty("jobKey");
     expect(() => referenceProviderRunnerConfigFromEnvironment(readinessEnvironment)).toThrow(/T5_REFERENCE_PROVIDER_JOB_ID/);
+
+    expect(() => referenceProviderReadinessConfigFromEnvironment({ ...readinessEnvironment, T5_REFERENCE_PROVIDER_CARD_URL: undefined })).toThrow(/T5_REFERENCE_PROVIDER_CARD_URL/);
+    expect(() => referenceProviderReadinessConfigFromEnvironment({ ...readinessEnvironment, T5_REFERENCE_PROVIDER_CARD_URL: "http://provider.example/.well-known/agent-card.json" })).toThrow(/HTTPS/i);
+    expect(() => referenceProviderReadinessConfigFromEnvironment({ ...readinessEnvironment, T5_REFERENCE_PROVIDER_CARD_URL: "https://user:password@provider.example/.well-known/agent-card.json" })).toThrow(/credential/i);
   });
 
   it("calls the existing health-factor endpoint and retains its exact canonical bytes and digest", async () => {
@@ -343,7 +354,7 @@ describe("BNBEra reference health-factor provider", () => {
     const expected = createReferenceHealthFactorResult({ task, observedAtUnix: 2_000_001 });
     const resultBytes = canonicalHealthFactorResultBytes(expected.result);
     const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
-      expect(url).toBe("https://provider.example/api/reference-provider/health-factor");
+      expect(url).toBe(SERVICE_URL);
       expect(init?.method).toBe("POST");
       expect(init?.headers).toMatchObject({ "Content-Type": "application/json", Accept: "application/json" });
       expect(JSON.parse(String(init?.body))).toEqual({
@@ -364,7 +375,7 @@ describe("BNBEra reference health-factor provider", () => {
       });
     });
     const client = createReferenceHealthFactorProviderClient({
-      endpoint: "https://provider.example/api/reference-provider/health-factor",
+      endpoint: SERVICE_URL,
       fetch: fetcher
     });
 

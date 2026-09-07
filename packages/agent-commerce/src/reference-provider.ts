@@ -54,6 +54,17 @@ const publicHttpUrlSchema = z.string().trim().url().superRefine((value, ctx) => 
   }
 });
 
+/** Readiness is tied to the publicly published A2A card, which must be HTTPS. */
+const publicHttpsUrlSchema = publicHttpUrlSchema.superRefine((value, ctx) => {
+  try {
+    if (new URL(value).protocol !== "https:") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "The provider card URL must be a credential-free HTTPS URL." });
+    }
+  } catch {
+    // `publicHttpUrlSchema` reports malformed URLs and credential-bearing URLs.
+  }
+});
+
 /** Secret-manager references only; the resolved signer never enters this package's public data. */
 export const referenceProviderSecretReferenceSchema = z
   .string()
@@ -107,7 +118,7 @@ function refineReferenceProviderConfig(value: ReferenceProviderConfigBase, ctx: 
   if (requireCommerceContract && value.commerceContract === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["commerceContract"], message: "An enabled reference provider requires the standards-locked commerce contract." });
   if (value.expectedOwnerAddress === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["expectedOwnerAddress"], message: "An enabled reference provider requires the expected ERC-8004 owner address." });
   if (value.providerAddress === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["providerAddress"], message: "An enabled reference provider requires one configured provider wallet." });
-  if (value.providerEndpoint === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["providerEndpoint"], message: "An enabled reference provider requires its existing health-factor endpoint." });
+  if (value.providerEndpoint === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["providerEndpoint"], message: "An enabled reference provider requires its configured public endpoint." });
   if (value.authoritySecretReference === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["authoritySecretReference"], message: "An enabled reference provider requires a secret reference for its signing authority." });
   if (value.routerContract === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routerContract"], message: "An enabled reference provider requires the existing router contract seam." });
   if (value.policyContract === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["policyContract"], message: "An enabled reference provider requires the existing policy contract seam." });
@@ -118,10 +129,12 @@ function refineReferenceProviderConfig(value: ReferenceProviderConfigBase, ctx: 
  * Job-independent public configuration used while composing commerce
  * readiness. A quote may be the operation that creates the protocol job, so
  * this parser deliberately has no job ID or task input. It still requires the
- * same identity, owner, provider, endpoint, secret-reference, deployment and
- * bounded-budget fields as the worker configuration.
+ * same identity, owner, provider, public-card endpoint, secret-reference,
+ * deployment and bounded-budget fields as the worker configuration.
  */
-export const referenceProviderReadinessConfigSchema = referenceProviderConfigBaseSchema.superRefine((value, ctx) => refineReferenceProviderConfig(value, ctx, true));
+export const referenceProviderReadinessConfigSchema = referenceProviderConfigBaseSchema
+  .extend({ providerEndpoint: publicHttpsUrlSchema.optional() })
+  .superRefine((value, ctx) => refineReferenceProviderConfig(value, ctx, true));
 export type ReferenceProviderReadinessConfig = z.infer<typeof referenceProviderReadinessConfigSchema>;
 
 /**
@@ -154,7 +167,10 @@ function requiredReferenceProviderEnvironmentAny(env: Readonly<Record<string, st
   throw new CommerceError({ code: "COMMERCE_DISABLED", message: `The enabled reference provider is missing ${first}.`, nextAction: "configure_reference_provider" });
 }
 
-function referenceProviderEnvironmentFields(env: Readonly<Record<string, string | undefined>>): ReferenceProviderConfigBase {
+function referenceProviderEnvironmentFields(
+  env: Readonly<Record<string, string | undefined>>,
+  endpointEnvironmentName: "T5_REFERENCE_PROVIDER_SERVICE_URL" | "T5_REFERENCE_PROVIDER_CARD_URL"
+): ReferenceProviderConfigBase {
   const chainIdText = env.T5_REFERENCE_PROVIDER_CHAIN_ID?.trim() || "97";
   // The schema below performs the runtime validation; this assertion keeps
   // the shared config projection aligned with its testnet-only literal type.
@@ -169,7 +185,7 @@ function referenceProviderEnvironmentFields(env: Readonly<Record<string, string 
     "WALLET_ADDRESS"
   ]);
   const providerAddress = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_ADDRESS");
-  const providerEndpoint = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_SERVICE_URL");
+  const providerEndpoint = requiredReferenceProviderEnvironment(env, endpointEnvironmentName);
   const routerContract = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_ROUTER_CONTRACT");
   const policyContract = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_POLICY_CONTRACT");
   const authoritySecretReference = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_SECRET_REFERENCE");
@@ -198,7 +214,9 @@ function referenceProviderEnvironmentFields(env: Readonly<Record<string, string 
  */
 export function referenceProviderReadinessConfigFromEnvironment(env: Readonly<Record<string, string | undefined>>): ReferenceProviderReadinessConfig {
   if (env.T5_REFERENCE_PROVIDER_WORKER_ENABLED !== "true") return referenceProviderReadinessConfigSchema.parse({ enabled: false });
-  return referenceProviderReadinessConfigSchema.parse(referenceProviderEnvironmentFields(env));
+  // Readiness proves the canonical published A2A card, not the worker's
+  // POST invocation endpoint. Keep these environment contracts separate.
+  return referenceProviderReadinessConfigSchema.parse(referenceProviderEnvironmentFields(env, "T5_REFERENCE_PROVIDER_CARD_URL"));
 }
 
 /**
@@ -209,7 +227,8 @@ export function referenceProviderReadinessConfigFromEnvironment(env: Readonly<Re
  */
 export function referenceProviderRunnerConfigFromEnvironment(env: Readonly<Record<string, string | undefined>>): ReferenceProviderRunnerConfig {
   if (env.T5_REFERENCE_PROVIDER_WORKER_ENABLED !== "true") return referenceProviderRunnerConfigSchema.parse({ enabled: false });
-  const fields = referenceProviderEnvironmentFields(env);
+  // The runner invokes the existing health-factor POST service URL.
+  const fields = referenceProviderEnvironmentFields(env, "T5_REFERENCE_PROVIDER_SERVICE_URL");
   const jobId = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_JOB_ID");
   const { commerceContract, ...runnerFields } = fields;
   return referenceProviderRunnerConfigSchema.parse({

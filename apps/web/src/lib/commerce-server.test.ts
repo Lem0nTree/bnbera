@@ -23,6 +23,8 @@ const COMMERCE = "0xa206c0517b6371c6638cd9e4a42cc9f02a33b0de";
 const ROUTER = "0xd7d36d66d2f1b608a0f943f722d27e3744f66f25";
 const POLICY = "0xd6a4217588f6b1f5657a92a3e94e6422ad771cea";
 const TOKEN = "0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565";
+const SERVICE_URL = "https://provider.example/api/reference-provider/health-factor";
+const CARD_URL = "https://provider.example/.well-known/agent-card.json";
 const PARENT_ID = "00000000-0000-4000-8000-000000000007";
 const VERSION_ID = "00000000-0000-4000-8000-000000000042";
 const IDENTITY = { namespace: "eip155", chainId: 97, identityRegistry: "0x1111111111111111111111111111111111111111", agentId: "42" };
@@ -66,7 +68,7 @@ const EXTERNAL_READINESS: CommerceProviderReadinessInput = {
   providerAddress: OTHER,
   service: {
     kind: "a2a",
-    url: "https://provider.example/a2a",
+    url: CARD_URL,
     protocolVersion: "1.0",
     observedAt: "2026-09-07T00:00:00.000Z",
     probeObservedAt: new Date().toISOString()
@@ -222,7 +224,8 @@ describe("T5 commerce server composition", () => {
     vi.stubEnv("T5_REFERENCE_PROVIDER_COMMERCE_CONTRACT", COMMERCE);
     vi.stubEnv("T5_REFERENCE_PROVIDER_EXPECTED_OWNER_ADDRESS", BUYER);
     vi.stubEnv("T5_REFERENCE_PROVIDER_ADDRESS", OTHER);
-    vi.stubEnv("T5_REFERENCE_PROVIDER_SERVICE_URL", "https://provider.example/a2a");
+    vi.stubEnv("T5_REFERENCE_PROVIDER_SERVICE_URL", SERVICE_URL);
+    vi.stubEnv("T5_REFERENCE_PROVIDER_CARD_URL", CARD_URL);
     vi.stubEnv("T5_REFERENCE_PROVIDER_ROUTER_CONTRACT", ROUTER);
     vi.stubEnv("T5_REFERENCE_PROVIDER_POLICY_CONTRACT", POLICY);
     vi.stubEnv("T5_REFERENCE_PROVIDER_SECRET_REFERENCE", "env://T5_REFERENCE_PROVIDER_PRIVATE_KEY");
@@ -232,6 +235,7 @@ describe("T5 commerce server composition", () => {
       const resolver = (composition as unknown as { readonly providerReadinessResolver?: CommerceProviderReadinessResolver }).providerReadinessResolver;
       expect(resolver).toEqual({ resolve: expect.any(Function) });
       if (resolver === undefined) throw new Error("configured provider readiness resolver was not injected");
+      await expect(resolver.resolve({ ...EXTERNAL_READINESS, service: { ...EXTERNAL_READINESS.service, url: SERVICE_URL } })).rejects.toMatchObject({ code: "ONCHAIN_MISMATCH" });
       await expect(resolver.resolve(EXTERNAL_READINESS)).rejects.toMatchObject({ code: "COMMERCE_DISABLED", nextAction: "configure_secret_reference" });
     } finally {
       await closeCommerceAuthDatabaseForTests();

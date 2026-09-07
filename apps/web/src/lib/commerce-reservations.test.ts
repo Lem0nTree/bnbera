@@ -21,6 +21,7 @@ const AGENT_UUID = "00000000-0000-4000-8000-000000000010";
 const VERSION_UUID = "00000000-0000-4000-8000-000000000011";
 const JOB_UUID = "00000000-0000-4000-8000-000000000012";
 const BUYER = "buyer-user";
+const CARD_URL = "https://provider.example/.well-known/agent-card.json";
 
 const PIN = {
   enabled: true as const,
@@ -70,7 +71,7 @@ const listingRow = {
     observedAt: "2026-09-07T00:00:00.000Z"
   },
   service_kind: "a2a" as const,
-  service_url: "https://provider.example/a2a",
+  service_url: CARD_URL,
   service_protocol_version: "1.0",
   service_observed_at: "2026-09-07T00:00:00.000Z",
   probe_observed_at: new Date().toISOString()
@@ -90,7 +91,7 @@ function readinessInput(overrides: Partial<CommerceProviderReadinessInput> = {})
     providerAddress: PROVIDER,
     service: {
       kind: "a2a",
-      url: "https://provider.example/a2a",
+      url: CARD_URL,
       protocolVersion: "1.0",
       observedAt: new Date(now * 1_000).toISOString(),
       probeObservedAt: new Date(now * 1_000).toISOString()
@@ -112,7 +113,7 @@ function readinessResolver(overrides: Partial<Parameters<typeof createReferenceP
     identity: readinessInput().identity,
     expectedOwnerAddress: OWNER,
     providerAddress: PROVIDER,
-    providerEndpoint: "https://provider.example/a2a",
+    providerEndpoint: CARD_URL,
     authoritySecretReference: "env://T5_REFERENCE_PROVIDER_PRIVATE_KEY",
     chainId: 97,
     commerceContract: COMMERCE,

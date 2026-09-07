@@ -1177,8 +1177,9 @@ function referenceProviderSignerAddressResolver(
 }
 
 /**
- * Compose the one external reference-provider readiness seam from the same
- * guarded public environment configuration used by the provider worker.
+ * Compose the one external reference-provider readiness seam from the guarded
+ * public card configuration. The provider worker intentionally uses the
+ * separate health-factor service URL for its POST invocation.
  * Missing/disabled configuration intentionally returns no resolver so the
  * marketplace remains readable while external funding stays fail-closed.
  */
@@ -1192,14 +1193,14 @@ function referenceProviderReadinessFromEnvironment(
   const commerceContract = config.commerceContract;
   const expectedOwnerAddress = config.expectedOwnerAddress;
   const providerAddress = config.providerAddress;
-  const providerEndpoint = config.providerEndpoint;
+  const providerCardUrl = config.providerEndpoint;
   const authoritySecretReference = config.authoritySecretReference;
   if (
     identity === undefined ||
     commerceContract === undefined ||
     expectedOwnerAddress === undefined ||
     providerAddress === undefined ||
-    providerEndpoint === undefined ||
+    providerCardUrl === undefined ||
     authoritySecretReference === undefined ||
     config.chainId !== 97 ||
     commerceContract.toLowerCase() !== pin.commerceContract.toLowerCase()
@@ -1211,7 +1212,7 @@ function referenceProviderReadinessFromEnvironment(
     identity,
     expectedOwnerAddress,
     providerAddress,
-    providerEndpoint,
+    providerEndpoint: providerCardUrl,
     authoritySecretReference,
     chainId: 97,
     commerceContract: pin.commerceContract,
