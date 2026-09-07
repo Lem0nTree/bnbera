@@ -37,8 +37,11 @@ import {
   type Erc8183ClaimRefundResult
 } from "@bnbera/agent-commerce";
 import {
+  buildErc8183EoaCall,
+  ERC8183_EOA_CONTRACTS,
   parseEnabledDeploymentPin,
-  type Erc8183SubmitInput
+  type Erc8183SubmitInput,
+  type Erc8183EoaStep
 } from "@bnbera/agent-commerce";
 import { commerceBrowserDispatchSchema, type CommerceBrowserDispatch } from "./commerce-contract";
 import {
@@ -75,6 +78,8 @@ export interface AuthenticatedCommerceIdentity {
   readonly authenticated: true;
   readonly userId: string;
   readonly requesterAddress: string;
+  /** SIWE session chain; legacy test seams may omit it. */
+  readonly chainId?: number;
 }
 
 /**
@@ -214,6 +219,7 @@ function assertIdentityShape(identity: unknown): asserts identity is Authenticat
     message: "The server-authenticated requester identity is invalid.",
     nextAction: "authenticate_actor"
   });
+  if (value.chainId !== undefined && value.chainId !== 97) throw new CommerceError({ code: "INVALID_CHAIN", message: "The authenticated requester session is not bound to BSC testnet.", nextAction: "authenticate_actor" });
 }
 
 function assertAuthorityShape(authority: unknown): asserts authority is Erc8183AltanaAuthority {
@@ -349,9 +355,50 @@ function jobKeyFor(adapter: Erc8183AltanaAdapter, jobId: string): Erc8183JobKey 
  * Operation context remains server-side and is never returned wholesale;
  * malformed or incomplete intent context fails closed.
  */
-function browserDispatchFor(operation: Erc8183OperationRecord): CommerceBrowserDispatch | null {
+function browserDispatchFor(operation: Erc8183OperationRecord, adapter?: Erc8183AltanaAdapter): CommerceBrowserDispatch | null {
   if (operation.status !== "awaiting_signature") return null;
   const parameters = operation.context?.parameters;
+  const persistedStep = parameters?.eoaStep;
+  if (persistedStep !== undefined) {
+    const steps: readonly Erc8183EoaStep[] = ["create", "register", "set_budget", "approve", "fund", "settle", "dispute", "claim_refund"];
+    if (typeof persistedStep !== "string" || !steps.includes(persistedStep as Erc8183EoaStep)) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted browser EOA step is invalid.", nextAction: "manual_review" });
+    if (operation.context?.signerAddress === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted browser EOA intent has no actor binding.", nextAction: "manual_review" });
+    if (parameters?.connector !== "walletConnect") throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted browser EOA intent is not bound to the WalletConnect connector.", nextAction: "manual_review" });
+    const step = persistedStep as Erc8183EoaStep;
+    const contracts = adapter === undefined ? ERC8183_EOA_CONTRACTS : {
+      commerceContract: adapter.pin.commerceContract,
+      routerContract: adapter.routerContract,
+      policyContract: adapter.policyContract,
+      paymentToken: adapter.paymentToken
+    };
+    const call = buildErc8183EoaCall({
+      chainId: operation.chainId,
+      contracts,
+      step,
+      ...(typeof parameters?.providerAddress === "string" ? { providerAddress: parameters.providerAddress } : {}),
+      ...(typeof parameters?.task === "string" ? { task: parameters.task } : {}),
+      ...(typeof parameters?.budgetAtomic === "string" ? { budgetAtomic: parameters.budgetAtomic } : {}),
+      ...(typeof parameters?.expiredAtUnix === "number" ? { expiredAtUnix: parameters.expiredAtUnix } : {}),
+      ...(operation.jobId === null ? {} : { jobId: operation.jobId })
+    });
+    if (operation.context.to === undefined || operation.context.data === undefined || operation.context.valueAtomic !== "0" || operation.context.to.toLowerCase() !== call.to.toLowerCase() || operation.context.data.toLowerCase() !== call.data.toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted browser EOA calldata does not match the pinned contract or operation parameters.", nextAction: "manual_review" });
+    const action = step === "settle" ? "settle" : step === "dispute" ? "dispute" : step === "claim_refund" ? "refund" : "hire";
+    return commerceBrowserDispatchSchema.parse({
+      operationId: operation.operationId,
+      action,
+      chainId: operation.chainId,
+      actorAddress: operation.context.signerAddress,
+      providerAddress: typeof parameters?.providerAddress === "string" ? parameters.providerAddress : null,
+      task: typeof parameters?.task === "string" ? parameters.task : null,
+      budgetAtomic: typeof parameters?.budgetAtomic === "string" ? parameters.budgetAtomic : null,
+      deadlineSeconds: typeof parameters?.deadlineSeconds === "number" ? parameters.deadlineSeconds : null,
+      jobId: operation.jobId,
+      step,
+      to: call.to,
+      data: call.data,
+      valueAtomic: "0"
+    });
+  }
   const action = operation.context?.sdkAction;
   if (action === "hire") {
     if (
@@ -467,6 +514,7 @@ export class Erc8183CommerceComposition {
       });
     }
     assertIdentityShape(identity);
+    if (identity.chainId !== undefined && identity.chainId !== this.adapter.pin.chainId) throw new CommerceError({ code: "INVALID_CHAIN", message: "The authenticated requester session is not bound to the pinned commerce chain.", nextAction: "authenticate_actor" });
     return identity;
   }
 
@@ -610,6 +658,14 @@ export class Erc8183CommerceComposition {
     }
     const task = parent.task;
     if (task === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted quote has no task snapshot.", nextAction: "manual_review" });
+    const verifyNetwork = (this.adapter as Erc8183AltanaAdapter & { readonly verifyNetwork?: () => Promise<unknown> }).verifyNetwork;
+    if (typeof verifyNetwork === "function") await verifyNetwork.call(this.adapter);
+    const deadlineSeconds = input.deadlineSeconds ?? 1_800;
+    const disputeWindow = typeof (this.adapter as Erc8183AltanaAdapter & { readDisputeWindow?: () => Promise<number> }).readDisputeWindow === "function"
+      ? await (this.adapter as Erc8183AltanaAdapter & { readDisputeWindow: () => Promise<number> }).readDisputeWindow()
+      : this.adapter.pin.minExpiryLeadSeconds;
+    const expiredAtUnix = Math.floor(Date.now() / 1_000) + Math.max(disputeWindow, this.adapter.pin.minExpiryLeadSeconds) + deadlineSeconds;
+    if (expiredAtUnix > Math.floor(Date.now() / 1_000) + this.adapter.pin.maxExpiryHorizonSeconds) throw new CommerceError({ code: "INVALID_JOB", message: "The requested hire expiry exceeds the standards-locked horizon.", nextAction: "reload_quote" });
     const idempotencyKey = serverHireIdempotencyKey(input.commerceJobId);
     const prepared = this.service.prepareHireIntent({
       idempotencyKey,
@@ -619,14 +675,15 @@ export class Erc8183CommerceComposition {
       budgetAtomic: parent.priceAtomic,
       providerBinding: parent.providerBinding,
       requesterAddress: identity.requesterAddress,
-      ...(input.deadlineSeconds === undefined ? {} : { deadlineSeconds: input.deadlineSeconds })
+      deadlineSeconds,
+      expiredAtUnix
     });
     const reservation = await this.service.reserveExternal({ operation: prepared, idempotencyKey });
     const job = reservation.operation.jobId === null ? null : await this.readWithoutActor(reservation.operation.jobId);
     return {
       operation: reservation.operation,
       replayed: reservation.replayed,
-      dispatch: reservation.dispatchable ? browserDispatchFor(reservation.operation) : null,
+      dispatch: (reservation.dispatchable || reservation.operation.context?.parameters?.eoaStep !== undefined) ? browserDispatchFor(reservation.operation, this.adapter) : null,
       read: job
     };
   }
@@ -676,7 +733,7 @@ export class Erc8183CommerceComposition {
       action: input.action,
       operation: reservation.operation,
       replayed: reservation.replayed,
-      dispatch: reservation.dispatchable ? browserDispatchFor(reservation.operation) : null,
+      dispatch: (reservation.dispatchable || reservation.operation.context?.parameters?.eoaStep !== undefined) ? browserDispatchFor(reservation.operation, this.adapter) : null,
       read: await this.reads.get(jobKey)
     };
   }
@@ -687,27 +744,146 @@ export class Erc8183CommerceComposition {
     const prepared = await this.service.prepareSettleIntent({ idempotencyKey, requesterAddress: identity.requesterAddress, jobId, action: "approve" });
     const reservation = await this.service.reserveExternal({ operation: prepared, idempotencyKey });
     const job = reservation.operation.jobId === null ? null : await this.readWithoutActor(reservation.operation.jobId);
-    return { operation: reservation.operation, replayed: reservation.replayed, dispatch: reservation.dispatchable ? browserDispatchFor(reservation.operation) : null, read: job };
+    return { operation: reservation.operation, replayed: reservation.replayed, dispatch: (reservation.dispatchable || reservation.operation.context?.parameters?.eoaStep !== undefined) ? browserDispatchFor(reservation.operation, this.adapter) : null, read: job };
+  }
+
+  private eoaStep(operation: Erc8183OperationRecord): Erc8183EoaStep | null {
+    const value = operation.context?.parameters?.eoaStep;
+    return typeof value === "string" && ["create", "register", "set_budget", "approve", "fund", "settle", "dispute", "claim_refund"].includes(value) ? value as Erc8183EoaStep : null;
+  }
+
+  private nextEoaStep(step: Erc8183EoaStep): Erc8183EoaStep | null {
+    if (step === "create") return "register";
+    if (step === "register") return "set_budget";
+    if (step === "set_budget") return "approve";
+    if (step === "approve") return "fund";
+    return null;
+  }
+
+  private async optionalJob(jobId: string | null): Promise<Erc8183JobRead | null> {
+    if (jobId === null) return null;
+    try {
+      return await this.readWithoutActor(jobId);
+    } catch (cause) {
+      if (cause instanceof CommerceError && ["UNKNOWN_JOB", "RECONCILIATION_REQUIRED"].includes(cause.code)) return null;
+      throw cause;
+    }
+  }
+
+  private async advanceEoa(operation: Erc8183OperationRecord, verified?: Awaited<ReturnType<Erc8183AltanaAdapter["verifyEoaReceipt"]>>): Promise<CommerceBrowserIntentResult> {
+    const step = this.eoaStep(operation);
+    if (step === null) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The browser operation is missing its persisted EOA step.", nextAction: "manual_review" });
+    const nextStep = this.nextEoaStep(step);
+    if (nextStep === null) {
+      return { operation, replayed: true, dispatch: null, read: await this.optionalJob(operation.jobId ?? verified?.jobId ?? null) };
+    }
+    const parameters = operation.context?.parameters ?? {};
+    const jobId = operation.jobId ?? verified?.jobId ?? null;
+    if (jobId === null) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The next browser EOA step has no actual protocol job ID.", nextAction: "manual_review" });
+    const commerceJobId = typeof parameters.commerceJobId === "string" && parameters.commerceJobId.trim() !== "" ? parameters.commerceJobId : operation.idempotencyKey;
+    const idempotencyKey = `t5-eoa:${commerceJobId}:${nextStep}`;
+    const prepared = this.service.prepareEoaStep({
+      idempotencyKey,
+      step: nextStep,
+      requesterAddress: operation.context?.signerAddress ?? "",
+      jobId,
+      ...(typeof parameters.providerAddress === "string" ? { providerAddress: parameters.providerAddress } : {}),
+      ...(typeof parameters.task === "string" ? { task: parameters.task } : {}),
+      ...(typeof parameters.budgetAtomic === "string" ? { budgetAtomic: parameters.budgetAtomic } : {}),
+      ...(typeof parameters.expiredAtUnix === "number" ? { expiredAtUnix: parameters.expiredAtUnix } : {}),
+      ...(typeof parameters.deadlineSeconds === "number" ? { deadlineSeconds: parameters.deadlineSeconds } : {}),
+      commerceJobId,
+      ...(parameters.providerBinding === undefined ? {} : { providerBinding: erc8183ProviderBindingSchema.parse(parameters.providerBinding) })
+    });
+    const reservation = await this.service.reserveExternal({ operation: prepared, idempotencyKey });
+    const next = reservation.operation;
+    return {
+      operation: next,
+      replayed: reservation.replayed,
+      dispatch: browserDispatchFor(next, this.adapter),
+      read: await this.optionalJob(next.jobId)
+    };
+  }
+
+  private async confirmEoa(operation: Erc8183OperationRecord, suppliedHash?: string): Promise<CommerceBrowserIntentResult> {
+    const step = this.eoaStep(operation);
+    if (step === null) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The browser operation is not an EOA operation.", nextAction: "manual_review" });
+    const transactionHash = suppliedHash ?? operation.transactionHash;
+    if (transactionHash === undefined || transactionHash === null) {
+      if (operation.status === "awaiting_signature") return { operation, replayed: true, dispatch: browserDispatchFor(operation, this.adapter), read: await this.optionalJob(operation.jobId) };
+      const unknown = await this.operations.markUnknown({ operationId: operation.operationId, failureCode: "EOA_TRANSACTION_HASH_MISSING" });
+      return { operation: unknown, replayed: false, dispatch: null, read: await this.optionalJob(unknown.jobId) };
+    }
+    if (operation.transactionHash !== null && operation.transactionHash.toLowerCase() !== transactionHash.toLowerCase()) throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The browser operation is already bound to a different transaction hash.", nextAction: "manual_review" });
+    let submitted = operation;
+    if (operation.status === "awaiting_signature" || operation.status === "unknown") submitted = await this.operations.markSubmitted({ operationId: operation.operationId, transactionHash });
+    try {
+      const parameters = operation.context?.parameters ?? {};
+      const verified = await this.adapter.verifyEoaReceipt({
+        transactionHash: transactionHash as `0x${string}`,
+        step,
+        actorAddress: operation.context?.signerAddress ?? "",
+        jobId: submitted.jobId,
+        ...(typeof parameters.providerAddress === "string" ? { providerAddress: parameters.providerAddress } : {}),
+        ...(typeof parameters.task === "string" ? { task: parameters.task } : {}),
+        ...(typeof parameters.budgetAtomic === "string" ? { budgetAtomic: parameters.budgetAtomic } : {}),
+        ...(typeof parameters.expiredAtUnix === "number" ? { expiredAtUnix: parameters.expiredAtUnix } : {})
+      });
+      const confirmed = submitted.status === "confirmed"
+        ? submitted
+        : await this.operations.markReceipt({ operationId: operation.operationId, status: "confirmed", transactionHash: verified.receipt.transactionHash, blockNumber: verified.receipt.blockNumber.toString(10), blockHash: verified.receipt.blockHash, logIndex: verified.logIndex, failureCode: null });
+      let current = confirmed;
+      if (step === "create" && current.jobId === null) current = await this.operations.attachJobId({ operationId: current.operationId, jobId: verified.jobId });
+      if (step === "fund") await this.service.persistEoaFunding(current, verified.job, verified.receipt);
+      if (step === "settle") await this.service.persistEoaTerminal(current, verified.job, verified.receipt, "completed");
+      if (step === "claim_refund") await this.service.persistEoaTerminal(current, verified.job, verified.receipt, "expired");
+      return await this.advanceEoa(current, verified);
+    } catch (cause) {
+      if (cause instanceof CommerceError && cause.code === "TRANSACTION_UNKNOWN") {
+        if (operation.status === "confirmed" || operation.status === "manual_review" || operation.status === "reconciled") return { operation, replayed: false, dispatch: null, read: await this.optionalJob(operation.jobId) };
+        const unknown = await this.operations.markUnknown({ operationId: operation.operationId, failureCode: "EOA_RECEIPT_PENDING" });
+        return { operation: unknown, replayed: false, dispatch: null, read: await this.optionalJob(unknown.jobId) };
+      }
+      if (cause instanceof CommerceError && cause.code === "TRANSACTION_REVERTED") {
+        const receipt = await this.adapter.getTransactionReceipt(transactionHash as `0x${string}`);
+        if (receipt !== null) {
+          const reverted = await this.operations.markReceipt({ operationId: operation.operationId, status: "reverted", transactionHash: receipt.transactionHash, blockNumber: receipt.blockNumber.toString(10), blockHash: receipt.blockHash, failureCode: "TRANSACTION_REVERTED" });
+          return { operation: reverted, replayed: false, dispatch: null, read: await this.optionalJob(reverted.jobId) };
+        }
+      }
+      try { await this.operations.markManualReview({ operationId: operation.operationId, failureCode: cause instanceof CommerceError ? cause.code : "EOA_RECEIPT_VALIDATION_FAILED" }); } catch { /* preserve validation failure */ }
+      throw cause;
+    }
   }
 
   /** Attach browser-reported calls/transaction identity and reconcile reads. */
-  public async attachExternalExecution(request: Request, input: { readonly operationId: string; readonly callsId: string; readonly transactionHash?: string | undefined }): Promise<CommerceBrowserIntentResult> {
+  public async attachExternalExecution(request: Request, input: { readonly operationId: string; readonly callsId?: string | undefined; readonly transactionHash?: string | undefined }): Promise<CommerceBrowserIntentResult> {
     const identity = await this.identity(request);
     const existing = await this.operations.get(input.operationId);
     if (existing === null) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The requested commerce operation does not exist." });
     if (existing.context?.signerAddress === undefined || existing.context.signerAddress.toLowerCase() !== identity.requesterAddress.toLowerCase()) {
       throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The authenticated requester does not match the browser operation actor.", nextAction: "authenticate_actor" });
     }
+    if (this.eoaStep(existing) !== null) {
+      if (input.transactionHash === undefined) {
+        const unknown = existing.status === "awaiting_signature" || existing.status === "submitted"
+          ? await this.operations.markUnknown({ operationId: existing.operationId, failureCode: "EOA_TRANSACTION_HASH_MISSING" })
+          : existing;
+        return { operation: unknown, replayed: false, dispatch: null, read: await this.optionalJob(unknown.jobId) };
+      }
+      return this.confirmEoa(existing, input.transactionHash);
+    }
+    if (input.callsId === undefined) throw new CommerceError({ code: "INVALID_JOB", message: "The legacy browser relay operation requires its public calls ID.", nextAction: "reconcile_transaction" });
     const result = await this.service.attachExternalExecution({
       operationId: input.operationId,
       callsId: input.callsId,
       ...(input.transactionHash === undefined ? {} : { transactionHash: input.transactionHash })
     });
-    const job = result.operation.jobId === null ? null : await this.readWithoutActor(result.operation.jobId);
+    const job = result.operation.jobId === null ? null : await this.optionalJob(result.operation.jobId);
     return {
       operation: result.operation,
       replayed: result.replayed,
-      dispatch: browserDispatchFor(result.operation),
+      dispatch: browserDispatchFor(result.operation, this.adapter),
       read: job
     };
   }
@@ -719,6 +895,21 @@ export class Erc8183CommerceComposition {
     if (operation === null) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The requested commerce operation does not exist." });
     if (operation.context?.signerAddress === undefined || operation.context.signerAddress.toLowerCase() !== identity.requesterAddress.toLowerCase()) {
       throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The authenticated requester does not match the browser operation actor.", nextAction: "authenticate_actor" });
+    }
+    if (this.eoaStep(operation) !== null) {
+      let current = operation;
+      if (operation.transactionHash !== null && ["submitted", "unknown", "confirmed"].includes(operation.status)) {
+        const result = await this.confirmEoa(operation);
+        current = result.operation;
+        return result;
+      }
+      if (operation.status === "confirmed" || operation.status === "reconciled") return this.advanceEoa(operation);
+      return {
+        operation: current,
+        replayed: true,
+        dispatch: current.status === "awaiting_signature" ? browserDispatchFor(current, this.adapter) : null,
+        read: await this.optionalJob(current.jobId)
+      };
     }
     let current = operation;
     // A browser noWait result is reconciled by this actor-bound reload path.
@@ -733,7 +924,7 @@ export class Erc8183CommerceComposition {
         if (latest !== null) current = latest;
       }
     }
-    const job = current.jobId === null ? null : await this.readWithoutActor(current.jobId);
+    const job = current.jobId === null ? null : await this.optionalJob(current.jobId);
     // Browser dispatch is a one-shot response from prepare/approve. Reload
     // never receives a second action and therefore cannot double-fund.
     return { operation: current, replayed: true, dispatch: null, read: job };
@@ -751,10 +942,19 @@ export class Erc8183CommerceComposition {
     });
   }
 
-  public async refund(request: Request, jobId: string, idempotencyKey: string): Promise<CommerceRefundCompositionResult> {
+  public async refund(request: Request, jobId: string, idempotencyKey: string): Promise<CommerceBrowserIntentResult> {
     const identity = await this.identity(request);
-    const authority = await this.authority(request, identity);
-    return this.service.claimRefund({ idempotencyKey, authority, requesterAddress: identity.requesterAddress, jobId });
+    const current = await this.reads.get(jobKeyFor(this.adapter, jobId));
+    if (current.job.terms.clientAddress.toLowerCase() !== identity.requesterAddress.toLowerCase()) throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "Only the authenticated buyer may claim this refund.", nextAction: "authenticate_actor" });
+    if ((current.job.state !== "funded" && current.job.state !== "submitted") || current.job.terms.expiresAtUnix > Math.floor(Date.now() / 1_000)) throw new CommerceError({ code: "STALE_JOB", message: "A refund is available only for an unresolved funded job after the pinned protocol expiry.", nextAction: "wait_for_expiry" });
+    const prepared = this.service.prepareEoaStep({ idempotencyKey, step: "claim_refund", requesterAddress: identity.requesterAddress, jobId, commerceJobId: jobId });
+    const reservation = await this.service.reserveExternal({ operation: prepared, idempotencyKey });
+    return {
+      operation: reservation.operation,
+      replayed: reservation.replayed,
+      dispatch: (reservation.dispatchable || reservation.operation.context?.parameters?.eoaStep !== undefined) ? browserDispatchFor(reservation.operation, this.adapter) : null,
+      read: current
+    };
   }
 
   public async reconcile(request: Request, operationId: string): Promise<Erc8183OperationCoordinatorResult<unknown>> {
@@ -774,6 +974,7 @@ export class Erc8183CommerceComposition {
     // receipt may be the only surviving evidence after a projection write was
     // interrupted; the service must be allowed to rebuild it from that
     // verified receipt.
+    if (this.eoaStep(existing) !== null) return (await this.confirmEoa(existing)) as unknown as Erc8183OperationCoordinatorResult<unknown>;
     const result = await this.service.reconcile(operationId);
     return result as Erc8183OperationCoordinatorResult<unknown>;
   }
@@ -843,10 +1044,6 @@ async function readCommerceStandardsLock(): Promise<unknown> {
  * from request data. Browser signing remains an explicit external SDK call.
  */
 export async function getCommerceComposition(): Promise<Erc8183CommerceComposition> {
-  if (process.env.T5_ALTANA_AUTH_ENABLED !== "true") {
-    return Promise.reject(commerceAuthorityBoundaryError());
-  }
-
   const nodeEnvironment = process.env.NODE_ENV === "production"
     ? "production"
     : process.env.NODE_ENV === "test"

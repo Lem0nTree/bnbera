@@ -1,20 +1,14 @@
-/**
- * Browser-safe ERC-8183 SDK surface for the T5 composition.
- *
- * Keep this subpath intentionally small: importing the package root also
- * exposes PostgreSQL/node persistence helpers, while a browser only needs
- * the public Altana high-level actions and their opaque Wallet/Signer types.
- */
+/** The browser only receives exact WalletConnect EOA calls from the server. */
 export {
-  BNB_TESTNET,
-  createClient,
-  hireErc8183Agent,
-  settleErc8183Job
-} from "@altananetwork/sdk";
+  ERC8183_EOA_CHAIN_ID,
+  ERC8183_EOA_CONTRACTS,
+  ERC8183_EOA_MAX_BUDGET_ATOMIC,
+  buildErc8183EoaCall,
+  erc8183EoaSteps
+} from "./eoa.js";
 export type {
-  ExecuteResult,
-  HireAgentParams,
-  HireAgentResult,
-  Signer,
-  Wallet
-} from "@altananetwork/sdk";
+  Erc8183EoaCall,
+  Erc8183EoaCallInput,
+  Erc8183EoaContracts,
+  Erc8183EoaStep
+} from "./eoa.js";

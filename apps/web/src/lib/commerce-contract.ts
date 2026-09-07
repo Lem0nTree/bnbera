@@ -118,7 +118,8 @@ export type CommerceReconcileRequest = z.infer<typeof commerceReconcileRequestSc
  */
 export const commerceExternalDispatchRequestSchema = z.object({
   operationId: z.string().uuid(),
-  callsId: transactionHashSchema,
+  /** Legacy relay identifier; EOA WalletConnect sends only transactionHash. */
+  callsId: transactionHashSchema.optional(),
   transactionHash: transactionHashSchema.optional()
 }).strict();
 export type CommerceExternalDispatchRequest = z.infer<typeof commerceExternalDispatchRequestSchema>;
@@ -126,16 +127,32 @@ export type CommerceExternalDispatchRequest = z.infer<typeof commerceExternalDis
 /** Immutable, safe-to-replay parameters for one browser SDK action. */
 export const commerceBrowserDispatchSchema = z.object({
   operationId: z.string().uuid(),
-  action: z.enum(["hire", "settle", "dispute"]),
+  action: z.enum(["hire", "settle", "dispute", "refund"]),
   chainId: z.union([z.literal(56), z.literal(97)]),
   actorAddress: evmAddressSchema,
   providerAddress: evmAddressSchema.nullable(),
   task: z.string().trim().min(1).max(4_096).nullable(),
   budgetAtomic: decimalUintSchema.nullable(),
   deadlineSeconds: z.number().int().positive().max(365 * 24 * 60 * 60).nullable(),
-  jobId: decimalUintSchema.nullable()
+  jobId: decimalUintSchema.nullable(),
+  /** Present for the sequential EOA adapter; absent only on legacy SDK rows. */
+  step: z.enum(["create", "register", "set_budget", "approve", "fund", "settle", "dispute", "claim_refund"]).optional(),
+  to: evmAddressSchema.optional(),
+  data: publicHexSchema.optional(),
+  valueAtomic: decimalUintSchema.optional()
 }).strict().superRefine((value, context) => {
-  if (value.action === "hire") {
+  const step = value.step;
+  if (step !== undefined && (value.to === undefined || value.data === undefined || value.valueAtomic === undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["step"], message: "EOA dispatch requires the exact target, calldata, and zero value." });
+  }
+  if (step === "create") {
+    if (value.providerAddress === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["providerAddress"], message: "Hire dispatch requires a provider address." });
+    if (value.task === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["task"], message: "Hire dispatch requires the persisted task." });
+    if (value.budgetAtomic === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["budgetAtomic"], message: "Hire dispatch requires the persisted budget." });
+    if (value.jobId !== null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["jobId"], message: "Hire dispatch cannot contain a protocol job ID before receipt reconciliation." });
+  } else if (step !== undefined) {
+    if (value.jobId === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["jobId"], message: "Settlement dispatch requires a protocol job ID." });
+  } else if (value.action === "hire") {
     if (value.providerAddress === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["providerAddress"], message: "Hire dispatch requires a provider address." });
     if (value.task === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["task"], message: "Hire dispatch requires the persisted task." });
     if (value.budgetAtomic === null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["budgetAtomic"], message: "Hire dispatch requires the persisted budget." });

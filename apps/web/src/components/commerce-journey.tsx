@@ -2,6 +2,7 @@
 
 import { Callout, StatusBadge } from "@bnbera/ui";
 import type { WalletClient } from "viem";
+import { bscTestnet } from "viem/chains";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   useAccount,
@@ -9,7 +10,8 @@ import {
   useDisconnect,
   useSignMessage,
   useSwitchChain,
-  useWalletClient
+  useWalletClient,
+  usePublicClient
 } from "wagmi";
 import type {
   CommerceActionResponse,
@@ -67,6 +69,12 @@ async function parseResponse<T>(response: Response): Promise<T> {
   return body as T;
 }
 
+function isUserRejected(cause: unknown): boolean {
+  if (typeof cause !== "object" || cause === null) return false;
+  const value = cause as { readonly code?: unknown; readonly name?: unknown };
+  return value.code === 4001 || value.name === "UserRejectedRequestError" || (cause instanceof Error && /user rejected|rejected the request|request denied/iu.test(cause.message));
+}
+
 function operationStatusTone(status: string): "success" | "warning" | "danger" | "neutral" {
   if (status === "confirmed" || status === "reconciled") return "success";
   if (status === "unknown" || status === "manual_review") return "warning";
@@ -108,6 +116,7 @@ function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: 
   const { switchChainAsync, isPending: switchPending } = useSwitchChain();
   const { signMessageAsync, isPending: signPending } = useSignMessage();
   const { data: walletClient } = useWalletClient();
+  const publicClient = usePublicClient();
 
   const walletSnapshot = useMemo<EoaWalletSnapshot>(() => ({
     connected: isConnected,
@@ -219,12 +228,29 @@ function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: 
   }, [clearBrowserAuthority, disconnect, logoutBrowserSession]);
 
   const loadOperation = useCallback(async (id: string) => {
+    const localHash = window.localStorage.getItem(`${storageKey}:tx:${id}`);
+    if (localHash !== null && /^0x[0-9a-f]{64}$/iu.test(localHash)) {
+      try {
+        const recovery = await fetch("/api/commerce/dispatch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ operationId: id, transactionHash: localHash })
+        });
+        const recovered = await parseResponse<CommerceActionResponse>(recovery);
+        applyAction(recovered);
+        if (recovered.operation?.status !== "unknown" && recovered.operation?.status !== "submitted" && recovered.operation?.status !== "awaiting_signature") window.localStorage.removeItem(`${storageKey}:tx:${id}`);
+        return;
+      } catch {
+        // The actor-bound status read below remains the source of truth when
+        // the recovery request is temporarily unavailable.
+      }
+    }
     const response = await fetch(`/api/commerce/operation/${encodeURIComponent(id)}`, { cache: "no-store" });
     const body = await parseResponse<CommerceOperationStatusResponse>(response);
     setOperation(body.operation);
     setJob(body.job);
     setDispatch(body.dispatch);
-  }, []);
+  }, [applyAction, storageKey]);
 
   useEffect(() => {
     const storedQuote = window.localStorage.getItem(quoteKey);
@@ -338,15 +364,84 @@ function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: 
       setError("The connected wallet does not match the authenticated operation actor; no call was sent.");
       return;
     }
-    // The browser-owned ERC-8183 EOA transaction adapter attaches public
-    // calls/receipt evidence in the dependent commerce slice. Keeping this
-    // guard here ensures no Altana/passkey writer can be reached meanwhile.
-    setError("The EOA commerce transaction adapter is not enabled in this canary yet.");
+    if (walletClient === undefined || nextDispatch.to === undefined || nextDispatch.data === undefined || nextDispatch.valueAtomic === undefined) {
+      setError("The server did not return a complete pinned EOA call; no transaction was sent.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    let inFlight: { readonly operationId: string; readonly transactionHash?: string } | null = null;
+    try {
+      let current: CommerceBrowserDispatch | null = nextDispatch;
+      while (current !== null) {
+        if (current.chainId !== EOA_BUYER_CHAIN_ID || current.to === undefined || current.data === undefined || current.valueAtomic === undefined) throw new Error("The persisted EOA step is incomplete or on the wrong network.");
+        if (authority === null || authority.address.toLowerCase() !== current.actorAddress.toLowerCase() || address?.toLowerCase() !== current.actorAddress.toLowerCase()) throw new Error("The connected wallet changed; no further call was sent.");
+        inFlight = { operationId: current.operationId };
+        let transactionHash: string;
+        try {
+          transactionHash = await walletClient.sendTransaction({
+            account: authority.address as `0x${string}`,
+            to: current.to as `0x${string}`,
+            data: current.data as `0x${string}`,
+            value: BigInt(current.valueAtomic),
+            chain: bscTestnet
+          });
+        } catch (cause) {
+          // A user rejection is still an unsigned intent and may be retried.
+          // Any other wallet error is unknown until the server records the
+          // step as such; never expose it as a fresh fundable dispatch.
+          if (!isUserRejected(cause)) {
+            try {
+              const recovery = await fetch("/api/commerce/dispatch", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ operationId: current.operationId })
+              });
+              applyAction(await parseResponse<CommerceActionResponse>(recovery));
+              inFlight = null;
+            } catch {
+              // Keep the durable intent visible for a later actor-bound
+              // reload; the wallet error itself remains the user-facing clue.
+            }
+          }
+          throw cause;
+        }
+        inFlight = { operationId: current.operationId, transactionHash };
+        window.localStorage.setItem(`${storageKey}:tx:${current.operationId}`, transactionHash);
+        if (publicClient !== undefined) await publicClient.waitForTransactionReceipt({ hash: transactionHash as `0x${string}` });
+        const response: Response = await fetch("/api/commerce/dispatch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ operationId: current.operationId, transactionHash })
+        });
+        const result: CommerceActionResponse = await parseResponse<CommerceActionResponse>(response);
+        applyAction(result);
+        window.localStorage.removeItem(`${storageKey}:tx:${current.operationId}`);
+        inFlight = null;
+        current = result.dispatch;
+      }
+    } catch (cause) {
+      if (inFlight !== null && !isUserRejected(cause)) {
+        try {
+          const recovery = await fetch("/api/commerce/dispatch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ operationId: inFlight.operationId, ...(inFlight.transactionHash === undefined ? {} : { transactionHash: inFlight.transactionHash }) })
+          });
+          applyAction(await parseResponse<CommerceActionResponse>(recovery));
+          if (inFlight.transactionHash !== undefined) window.localStorage.removeItem(`${storageKey}:tx:${inFlight.operationId}`);
+        } catch {
+          // Keep the local public hash so a reload can attach it without a
+          // second wallet send.
+        }
+      }
+      setError(cause instanceof Error ? cause.message : "The WalletConnect transaction could not be completed. Do not resend an unknown transaction; reload to reconcile it.");
+    } finally { setBusy(false); }
   };
 
   const attachTransactionHash = async () => {
-    if (operation === null || operation.callsId === null) {
-      setError("No persisted public relay calls ID is available for transaction recovery.");
+    if (operation === null) {
+      setError("No persisted commerce operation is available for transaction recovery.");
       return;
     }
     const transactionHash = transactionHashDraft.trim();
@@ -360,7 +455,7 @@ function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: 
       const response = await fetch("/api/commerce/dispatch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ operationId: operation.operationId, callsId: operation.callsId, transactionHash })
+        body: JSON.stringify({ operationId: operation.operationId, transactionHash, ...(operation.callsId === null ? {} : { callsId: operation.callsId }) })
       });
       applyAction(await parseResponse<CommerceActionResponse>(response));
       setTransactionHashDraft("");
@@ -386,6 +481,25 @@ function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: 
       applyAction(await parseResponse<CommerceActionResponse>(response));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The buyer decision could not be prepared.");
+    } finally { setBusy(false); }
+  };
+
+  const claimRefund = async () => {
+    if (!walletAuthenticated || job === null) {
+      setError("Connect and sign in with the buyer wallet before claiming a refund.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/commerce/${encodeURIComponent(job.job.jobKey.jobId)}/refund`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idempotencyKey: makeIdempotencyKey("refund") })
+      });
+      applyAction(await parseResponse<CommerceActionResponse>(response));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The refund call could not be prepared.");
     } finally { setBusy(false); }
   };
 
@@ -418,12 +532,13 @@ function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: 
   const completed = job?.job.state === "completed";
   const submission = job?.submission ?? null;
   const submitted = job !== null && job.job.state === "submitted" && submission !== null;
+  const refundable = job !== null && (job.job.state === "funded" || job.job.state === "submitted") && job.job.terms.expiresAtUnix <= Math.floor(Date.now() / 1_000);
 
   return (
     <div className="commerce-journey" data-testid="commerce-journey">
       <div className="commerce-journey__header"><strong>ERC-8183 paid task</strong>{operation !== null && <StatusBadge value={statusLabel(operation.status)} tone={operationStatusTone(operation.status)} />}</div>
       <div className="commerce-journey__authority">
-        <p className="detail-section__lede">Connect with WalletConnect to use MetaMask or another EOA wallet. BNBEra receives only the signed SIWE proof and public operation evidence; it never receives wallet keys.</p>
+        <p className="detail-section__lede">Connect your EOA through WalletConnect. It handles compatible browser and mobile wallets; BNBEra receives only the signed SIWE proof and public operation evidence.</p>
         {!isConnected && <>
           {!walletConnectProjectConfigured && <p className="muted-label">WalletConnect is unavailable in this preview until <code>NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID</code> is configured. Marketplace browsing remains available.</p>}
           <button className="button button--primary" type="button" disabled={busy || connectionPending || !walletConnectProjectConfigured} onClick={() => {
@@ -469,7 +584,7 @@ function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: 
       </div>}
       {canDispatch && <button className="button button--primary" type="button" disabled={busy || authority === null || !walletAuthenticated || chainId !== EOA_BUYER_CHAIN_ID} onClick={() => void dispatchBrowser(dispatch)}>Explicitly fund / sign</button>}
       {pending && operation?.status !== "awaiting_signature" && <p className="muted-label">This operation is pending or ambiguous. It will not be resent. Reload or attach the same public transaction hash when available.</p>}
-      {pending && operation?.status !== "awaiting_signature" && operation?.callsId !== null && <div className="commerce-journey__recovery">
+      {pending && operation?.status !== "awaiting_signature" && <div className="commerce-journey__recovery">
         <label htmlFor={`${identifier}-transaction-hash`}>Public transaction hash (optional recovery)</label>
         <input id={`${identifier}-transaction-hash`} value={transactionHashDraft} onChange={(event) => setTransactionHashDraft(event.target.value)} placeholder="0x…" inputMode="text" autoComplete="off" />
         <button className="button button--ghost button--small" type="button" disabled={busy || transactionHashDraft.trim() === ""} onClick={() => void attachTransactionHash()}>Attach and reconcile</button>
@@ -488,6 +603,7 @@ function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: 
         <p className="detail-section__lede">Inspect the exact bytes and digest, then choose one buyer decision.</p>
         <div className="detail-actions"><button className="button button--primary" type="button" disabled={busy || authority === null || !walletAuthenticated || chainId !== EOA_BUYER_CHAIN_ID} onClick={() => void decide("approve")}>Approve and settle</button><button className="button button--ghost button--small" type="button" disabled={busy || authority === null || !walletAuthenticated || chainId !== EOA_BUYER_CHAIN_ID} onClick={() => void decide("dispute")}>Dispute result</button></div>
       </div>}
+      {refundable && <div className="commerce-journey__decision"><p className="detail-section__lede">This funded job has expired without a completed result.</p><button className="button button--ghost button--small" type="button" disabled={busy || !walletAuthenticated || chainId !== EOA_BUYER_CHAIN_ID} onClick={() => void claimRefund()}>Claim refund</button></div>}
       {completed && !reviewSent && <div className="commerce-journey__review">
         <p className="eyebrow">Verified-purchase review</p>
         <select value={reviewScore} onChange={(event) => setReviewScore(event.target.value)} aria-label="Review score"><option value="5">5 · Excellent</option><option value="4">4 · Good</option><option value="3">3 · Mixed</option><option value="2">2 · Poor</option><option value="1">1 · Failed</option></select>
