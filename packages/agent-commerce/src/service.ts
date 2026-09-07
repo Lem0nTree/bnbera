@@ -215,6 +215,12 @@ export class Erc8183OperationCoordinator {
         jobId: input.operation.jobId
       });
     }
+    // Mark the operation's one-shot browser slot in the same INSERT as the
+    // idempotency row. A replay can observe the intent, but never receives a
+    // dispatch, including after a process crashes between reserve and return.
+    const dispatchContext = input.operation.context === undefined
+      ? null
+      : { ...input.operation.context, dispatchClaimed: true };
     const reservation = await this.operations.reserve({
       idempotencyKey: input.idempotencyKey,
       requestDigest: input.operation.requestDigest,
@@ -223,12 +229,12 @@ export class Erc8183OperationCoordinator {
       jobId: input.operation.jobId,
       kind: input.operation.kind,
       signerRole: input.operation.signerRole,
-      context: input.operation.context ?? null
+      context: dispatchContext
     });
     return {
       operation: reservation.operation,
       replayed: reservation.replayed,
-      dispatchable: reservation.operation.status === "awaiting_signature"
+      dispatchable: !reservation.replayed && reservation.operation.status === "awaiting_signature" && reservation.operation.context?.dispatchClaimed === true
     };
   }
 
@@ -255,6 +261,11 @@ export class Erc8183OperationCoordinator {
       if (latest === null) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The commerce operation disappeared during evidence attachment." });
       if (latest.status === "awaiting_signature" || latest.status === "submitted") {
         await this.operations.markUnknown({ operationId: input.operationId, failureCode: "BROWSER_RELAY_PENDING" });
+      }
+      try {
+        return await this.reconcile(input.operationId);
+      } catch (cause) {
+        if (!(cause instanceof CommerceError) || cause.code !== "TRANSACTION_UNKNOWN") throw cause;
       }
       const operation = await this.operations.get(input.operationId);
       if (operation === null) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The commerce operation disappeared during pending-state recording." });
@@ -295,6 +306,26 @@ export class Erc8183OperationCoordinator {
     if (existing === null) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The requested commerce operation does not exist." });
     if (["reverted", "reconciled"].includes(existing.status)) return { operation: existing, result: null, replayed: true };
     if (existing.transactionHash === null) {
+      const callsId = existing.context?.callsId;
+      if (callsId !== undefined && callsId !== null) {
+        const relay = await this.adapter.getCallsStatus(callsId);
+        if (relay.status === "CONFIRMED" && relay.transactionHash !== null) {
+          await this.operations.markSubmitted({ operationId, transactionHash: relay.transactionHash });
+          return this.reconcile(operationId);
+        }
+        if (relay.status === "FAILED") {
+          if (relay.transactionHash !== null) {
+            await this.operations.markSubmitted({ operationId, transactionHash: relay.transactionHash });
+            return this.reconcile(operationId);
+          }
+          const failed = await this.operations.markFailed({ operationId, failureCode: relay.statusCode === null ? "RELAY_FAILED" : `RELAY_FAILED_${relay.statusCode}` });
+          return { operation: failed, result: null, replayed: false };
+        }
+        try { await this.operations.markUnknown({ operationId, failureCode: relay.statusCode === null ? "RELAY_PENDING" : `RELAY_PENDING_${relay.statusCode}` }); } catch { /* already unknown */ }
+        const pending = await this.operations.get(operationId);
+        if (pending === null) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The commerce operation disappeared during relay status recovery." });
+        return { operation: pending, result: null, replayed: false };
+      }
       try { await this.operations.markManualReview({ operationId, failureCode: "RECONCILIATION_CONTEXT_MISSING" }); } catch { /* preserve original action */ }
       throw new CommerceError({ code: "RECONCILIATION_REQUIRED", message: "The operation has no persisted transaction hash; manual review is required and no retry is safe.", nextAction: "manual_review" });
     }

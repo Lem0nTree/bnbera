@@ -594,6 +594,21 @@ function mapEvidence(card: CoreMarketplaceAgentCard): MarketplaceAgentReadModel[
 
 function mapActivation(card: CoreMarketplaceAgentCard): MarketplaceAgentReadModel["activation"] {
   const method = card.activation.method === "manual" ? "external" : card.activation.method;
+  const localCanary = process.env.NODE_ENV !== "production" &&
+    process.env.T5_ALTANA_AUTH_ENABLED === "true" &&
+    process.env.T5_COMMERCE_LOCAL_ACTIVATION === "true" &&
+    process.env.T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED === "true" &&
+    method === "erc8183";
+  if (localCanary) {
+    return {
+      enabled: true,
+      availability: "available",
+      method,
+      title: "Local ERC-8183 canary",
+      reason: "Browser activation is enabled only for this local development canary; the standards-lock release gate remains closed.",
+      nextAction: "review_activation_terms"
+    };
+  }
   return {
     enabled: card.activation.available,
     availability: card.activation.available ? "available" : "unavailable",

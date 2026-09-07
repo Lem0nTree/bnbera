@@ -165,6 +165,7 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   const [reviewScore, setReviewScore] = useState("5");
   const [reviewComment, setReviewComment] = useState("");
   const [reviewSent, setReviewSent] = useState(false);
+  const [transactionHashDraft, setTransactionHashDraft] = useState("");
 
   const rememberOperation = useCallback((nextOperationId: string) => {
     setOperationId(nextOperationId);
@@ -233,7 +234,10 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
       await authenticateBrowserPasskey(result.address, result.signer);
       setAuthority({ wallet: result, signer: result.signer });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "The browser passkey authority could not be prepared.");
+      const message = cause instanceof Error ? cause.message : "The browser passkey authority could not be prepared.";
+      setError(recover && /has no keys registered|never executed a transaction/iu.test(message)
+        ? "This passkey wallet has not completed its first on-chain registration yet. Recovery is unavailable until its first hire is completed; use the same browser's Create passkey wallet flow for the authenticated bootstrap."
+        : message);
     } finally { setBusy(false); }
   };
 
@@ -301,6 +305,31 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
       applyAction(await parseResponse<CommerceActionResponse>(response));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The browser operation did not complete.");
+    } finally { setBusy(false); }
+  };
+
+  const attachTransactionHash = async () => {
+    if (operation === null || operation.callsId === null) {
+      setError("No persisted public relay calls ID is available for transaction recovery.");
+      return;
+    }
+    const transactionHash = transactionHashDraft.trim();
+    if (!/^0x[0-9a-f]{64}$/iu.test(transactionHash)) {
+      setError("Enter the public 32-byte transaction hash returned by the relay or explorer.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/commerce/dispatch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operationId: operation.operationId, callsId: operation.callsId, transactionHash })
+      });
+      applyAction(await parseResponse<CommerceActionResponse>(response));
+      setTransactionHashDraft("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The public transaction hash could not be attached safely.");
     } finally { setBusy(false); }
   };
 
@@ -375,6 +404,11 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
       </div>}
       {canDispatch && <button className="button button--primary" type="button" disabled={busy || authority === null} onClick={() => void dispatchBrowser(dispatch)}>Explicitly fund / sign</button>}
       {pending && operation?.status !== "awaiting_signature" && <p className="muted-label">This operation is pending or ambiguous. It will not be resent. Reload or attach the same public transaction hash when available.</p>}
+      {pending && operation?.status !== "awaiting_signature" && operation?.callsId !== null && <div className="commerce-journey__recovery">
+        <label htmlFor={`${identifier}-transaction-hash`}>Public transaction hash (optional recovery)</label>
+        <input id={`${identifier}-transaction-hash`} value={transactionHashDraft} onChange={(event) => setTransactionHashDraft(event.target.value)} placeholder="0x…" inputMode="text" autoComplete="off" />
+        <button className="button button--ghost button--small" type="button" disabled={busy || transactionHashDraft.trim() === ""} onClick={() => void attachTransactionHash()}>Attach and reconcile</button>
+      </div>}
       {submission !== null && <div className="commerce-journey__result">
         <p className="eyebrow">Exact result evidence</p>
         <div className="detail-kv"><span>Protocol job</span><code>{job?.job.jobKey.jobId ?? "Not observed"}</code></div>

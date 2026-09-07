@@ -34,8 +34,13 @@ class FakeOperationPool implements Erc8183OperationQueryPool {
       if (this.row === null || this.row.id !== values[0]) return { rows: [] };
       if (text.includes("operation_context = jsonb_set")) {
         const context = (this.row.operation_context ?? {}) as Record<string, unknown>;
-        if (context.callsId !== undefined && context.callsId !== null) return { rows: [] };
-        this.row.operation_context = { ...context, callsId: values[1] };
+        if (text.includes("{dispatchClaimed}")) {
+          if (this.row.status !== "awaiting_signature" || context.dispatchClaimed === true) return { rows: [] };
+          this.row.operation_context = { ...context, dispatchClaimed: true };
+        } else {
+          if (context.callsId !== undefined && context.callsId !== null) return { rows: [] };
+          this.row.operation_context = { ...context, callsId: values[1] };
+        }
       } else if (text.includes("SET status = 'submitted'")) {
         if (!(this.row.status === "awaiting_signature" || (this.row.status === "unknown" && (this.row.transaction_hash === null || this.row.transaction_hash === values[1])))) return { rows: [] };
         this.row.status = "submitted";
@@ -56,6 +61,11 @@ class FakeOperationPool implements Erc8183OperationQueryPool {
       } else if (text.includes("status = 'unknown'")) {
         if (!["awaiting_signature", "submitted"].includes(String(this.row.status))) return { rows: [] };
         this.row.status = "unknown";
+        this.row.failure_code = values[1];
+        this.row.updated_at_unix = values[2];
+      } else if (text.includes("status = 'reverted'")) {
+        if (!(this.row.status === "awaiting_signature" || this.row.status === "submitted" || this.row.status === "unknown") || this.row.transaction_hash !== null) return { rows: [] };
+        this.row.status = "reverted";
         this.row.failure_code = values[1];
         this.row.updated_at_unix = values[2];
       } else if (text.includes("status = $2")) {
@@ -120,6 +130,28 @@ describe("ERC-8183 operation persistence", () => {
       signerRole: "client",
       nowUnix: 2_000_001
     })).replayed).toBe(true);
+  });
+
+  it("claims one browser dispatch and treats relay failure without a hash as terminal", async () => {
+    const repository = new PostgresErc8183OperationRepository(new FakeOperationPool());
+    const { operation } = await repository.reserve({
+      idempotencyKey: "single-browser-dispatch",
+      requestDigest: "f".repeat(64),
+      chainId: 97,
+      commerceContract: "0x1111111111111111111111111111111111111111",
+      kind: "create",
+      signerRole: "client",
+      nowUnix: 2_000_000,
+      context: { signerAddress: "0x5555555555555555555555555555555555555555", sdkAction: "hire" }
+    });
+    const first = await repository.claimExternalDispatch({ operationId: operation.operationId });
+    const replay = await repository.claimExternalDispatch({ operationId: operation.operationId });
+    expect(first.claimed).toBe(true);
+    expect(first.operation.context?.dispatchClaimed).toBe(true);
+    expect(replay.claimed).toBe(false);
+    const failed = await repository.markFailed({ operationId: operation.operationId, failureCode: "RELAY_FAILED_300", nowUnix: 2_000_001 });
+    expect(failed.status).toBe("reverted");
+    expect(failed.transactionHash).toBeNull();
   });
 
   it("binds an idempotency key to protocol identity and authenticated execution wallet", async () => {

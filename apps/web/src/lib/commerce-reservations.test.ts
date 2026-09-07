@@ -173,4 +173,35 @@ describe("ERC-8183 quote reservations", () => {
       paymentDecimals: 18
     })).resolves.toBeNull();
   });
+
+  it("atomically claims a draft quote and rejects funded reclaims", async () => {
+    const quote = quoteSnapshot();
+    const row = reservationRow(quote);
+    const statements: string[] = [];
+    const client = {
+      query: async (text: string) => {
+        statements.push(text);
+        if (text.includes("FROM commerce_jobs")) return { rows: [row] };
+        return { rows: [], rowCount: 1 };
+      },
+      release: () => undefined
+    };
+    const store = new PostgresCommerceReservationStore({
+      query: async () => ({ rows: [] }),
+      connect: async () => client
+    } as never, PIN);
+    await expect(store.claim({ commerceJobId: JOB_UUID, buyerUserId: BUYER })).resolves.toBeUndefined();
+    expect(statements.some((text) => text.includes("FOR UPDATE"))).toBe(true);
+    expect(statements.some((text) => text.includes("status = 'negotiating'"))).toBe(true);
+
+    const funded = { ...row, status: "funded" as const, funding_transaction_hash: `0x${"a".repeat(64)}` };
+    const fundedStore = new PostgresCommerceReservationStore({
+      query: async () => ({ rows: [] }),
+      connect: async () => ({
+        query: async (text: string) => text.includes("FROM commerce_jobs") ? { rows: [funded] } : { rows: [], rowCount: 1 },
+        release: () => undefined
+      })
+    } as never, PIN);
+    await expect(fundedStore.claim({ commerceJobId: JOB_UUID, buyerUserId: BUYER })).rejects.toMatchObject({ code: "STALE_JOB" });
+  });
 });

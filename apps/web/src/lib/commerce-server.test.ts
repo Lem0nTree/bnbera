@@ -198,6 +198,37 @@ describe("T4 commerce server composition", () => {
     expect(hire).toHaveBeenCalledWith(expect.objectContaining({ providerAddress: OTHER, providerBinding: BINDING }));
   });
 
+  it("claims the parent before reserving one server-derived hire key", async () => {
+    const claim = vi.fn(async () => undefined);
+    const prepareHireIntent = vi.fn(() => ({}) as never);
+    const reserveExternal = vi.fn(async () => ({
+      operation: {
+        operationId: "00000000-0000-4000-8000-000000000001",
+        jobId: null,
+        status: "awaiting_signature",
+        context: { signerAddress: BUYER, sdkAction: "hire", dispatchClaimed: true }
+      },
+      replayed: false,
+      dispatchable: false
+    }));
+    const composition = testComposition({
+      reservationResolver: { claim },
+      service: { prepareHireIntent, reserveExternal }
+    });
+    await composition.prepareHireIntent(new Request("http://localhost"), {
+      idempotencyKey: "browser-random-key-a",
+      commerceJobId: PARENT_ID
+    });
+    await composition.prepareHireIntent(new Request("http://localhost"), {
+      idempotencyKey: "browser-random-key-b",
+      commerceJobId: PARENT_ID
+    });
+    expect(claim).toHaveBeenCalledTimes(2);
+    expect(prepareHireIntent).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: `t5-hire:${PARENT_ID}` }));
+    expect(reserveExternal).toHaveBeenNthCalledWith(1, expect.objectContaining({ idempotencyKey: `t5-hire:${PARENT_ID}` }));
+    expect(reserveExternal).toHaveBeenNthCalledWith(2, expect.objectContaining({ idempotencyKey: `t5-hire:${PARENT_ID}` }));
+  });
+
   it("denies a parent/listing binding mismatch without reaching the SDK", async () => {
     const hire = vi.fn();
     const mismatched = parent({ providerAddress: BUYER });

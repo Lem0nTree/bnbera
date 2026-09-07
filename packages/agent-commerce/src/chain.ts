@@ -38,6 +38,21 @@ export interface Erc8183ReceiptReader {
   getTransactionReceipt(input: { readonly hash: Hex }): Promise<Erc8183RpcReceipt | null>;
 }
 
+/** Public EIP-5792 relay status, reduced to the safe recovery states BNBEra uses. */
+export type Erc8183RelayCallStatus = "PENDING" | "CONFIRMED" | "FAILED";
+
+export interface Erc8183RelayStatus {
+  readonly status: Erc8183RelayCallStatus;
+  /** Raw EIP-5792 status code when the relay returned one. */
+  readonly statusCode: number | null;
+  /** The first public transaction hash reported by the relay, if any. */
+  readonly transactionHash: Hex | null;
+}
+
+export interface Erc8183RelayStatusReader {
+  getCallsStatus(input: { readonly callsId: Hex }): Promise<Erc8183RelayStatus>;
+}
+
 /** Read-only seam for the standards-lock deployment gate. */
 export interface Erc8183DeploymentReader {
   getBytecode(input: { readonly address: Address }): Promise<Hex | undefined>;
@@ -180,6 +195,8 @@ export interface Erc8183AltanaAdapterOptions {
   readonly network?: NetworkConfig;
   /** Injected only for deterministic tests or a platform-owned read client. */
   readonly receiptReader?: Erc8183ReceiptReader;
+  /** Injected only for deterministic tests; production uses the pinned public relay RPC. */
+  readonly relayStatusReader?: Erc8183RelayStatusReader;
   readonly deploymentReader?: Erc8183DeploymentReader;
   /** The checked-in lock is the only supported source for runtime pins in
    * production composition. Explicit verification remains available to
@@ -654,6 +671,66 @@ function authorityAddress(authority: Erc8183AltanaAuthority): Address {
   return normalizeAddress("session" in authority ? authority.session.walletAddress : authority.wallet.address, "signer address") as Address;
 }
 
+function relayStatusCode(value: unknown): number | null {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
+  if (typeof value !== "string") return null;
+  if (/^0x[0-9a-f]+$/iu.test(value)) {
+    const parsed = Number.parseInt(value.slice(2), 16);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  if (/^[0-9]+$/u.test(value)) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function relayStatusFromRaw(value: unknown): Erc8183RelayCallStatus {
+  if (typeof value === "string") {
+    const normalized = value.trim().toUpperCase();
+    if (normalized === "CONFIRMED" || normalized === "SUCCESS") return "CONFIRMED";
+    if (normalized === "FAILED" || normalized === "REVERTED") return "FAILED";
+    if (normalized === "PENDING" || normalized === "SUBMITTED") return "PENDING";
+  }
+  const code = relayStatusCode(value);
+  if (code !== null) {
+    if (code >= 200 && code < 300) return "CONFIRMED";
+    if (code >= 300 && code <= 699) return "FAILED";
+    // 1xx is in-flight. Unknown bands intentionally remain pending so an
+    // unrecognized relay response can never trigger a duplicate send.
+    return "PENDING";
+  }
+  return "PENDING";
+}
+
+function createRelayStatusReader(network: NetworkConfig): Erc8183RelayStatusReader {
+  return {
+    getCallsStatus: async ({ callsId }) => {
+      if (network.relayUrl === undefined || network.relayUrl.trim() === "") {
+        throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The pinned Altana network has no public relay status endpoint.", nextAction: "configure_altana_sdk" });
+      }
+      const relay = createPublicClient({ chain: network.chain, transport: http(network.relayUrl) });
+      const raw = await relay.request({ method: "wallet_getCallsStatus", params: [callsId] } as never) as unknown;
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+        throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The Altana relay returned an invalid calls status response.", relayCallsId: callsId, nextAction: "reconcile_transaction" });
+      }
+      const response = raw as Record<string, unknown>;
+      const receipts = Array.isArray(response.receipts) ? response.receipts : [];
+      const firstReceipt = receipts[0];
+      const transactionHash = typeof firstReceipt === "object" && firstReceipt !== null && !Array.isArray(firstReceipt)
+        && typeof (firstReceipt as Record<string, unknown>).transactionHash === "string"
+        && /^0x[0-9a-f]{64}$/iu.test((firstReceipt as Record<string, unknown>).transactionHash as string)
+        ? ((firstReceipt as Record<string, unknown>).transactionHash as string).toLowerCase() as Hex
+        : null;
+      return {
+        status: relayStatusFromRaw(response.status),
+        statusCode: relayStatusCode(response.status),
+        transactionHash
+      };
+    }
+  };
+}
+
 function invokeHire(fn: typeof hireErc8183Agent, authority: Erc8183AltanaAuthority, params: HireAgentParams, opts: { readonly network: NetworkConfig; readonly noWait?: boolean; readonly feeToken?: Address }): ReturnType<typeof hireErc8183Agent> {
   return "session" in authority
     ? fn(authority.session, params, opts)
@@ -702,6 +779,7 @@ export class Erc8183AltanaAdapter {
   public readonly paymentToken: Address;
   private readonly sdk: Erc8183AltanaSdk;
   private readonly receiptReader: Erc8183ReceiptReader;
+  private readonly relayStatusReader: Erc8183RelayStatusReader;
   private readonly deploymentReader: Erc8183DeploymentReader;
   private readonly deploymentVerification: Erc8183DeploymentVerification | undefined;
   private readonly standardsLockEnabled: boolean | undefined;
@@ -724,6 +802,7 @@ export class Erc8183AltanaAdapter {
       : client.execute({ wallet: authority.wallet, signer: authority.signer, calls, chainId: opts.network.chainId, ...(opts.noWait === undefined ? {} : { noWait: opts.noWait }), ...(opts.feeToken === undefined ? {} : { feeToken: opts.feeToken }) });
     this.sdk = { ...SDK_DEFAULTS, execute: defaultExecute, ...(options.sdk ?? {}) };
     this.receiptReader = options.receiptReader ?? createReceiptReader(this.network);
+    this.relayStatusReader = options.relayStatusReader ?? createRelayStatusReader(this.network);
     this.deploymentReader = options.deploymentReader ?? (publicClient as unknown as Erc8183DeploymentReader);
     const lockConfig = options.standardsLock === undefined ? undefined : resolveErc8183DeploymentVerification(options.standardsLock, this.pin.chainId);
     this.deploymentVerification = lockConfig?.verification ?? options.deploymentVerification;
@@ -816,6 +895,19 @@ export class Erc8183AltanaAdapter {
 
   public async getTransactionReceipt(hash: Hex): Promise<Erc8183RpcReceipt | null> {
     try { return await this.receiptReader.getTransactionReceipt({ hash }); } catch (cause) { throw sdkCallError("receipt read", cause); }
+  }
+
+  /**
+   * Read one bounded relay status sample. The caller may invoke this again on
+   * a later reload, but this method never waits or resubmits a calls bundle.
+   */
+  public async getCallsStatus(callsId: Hex): Promise<Erc8183RelayStatus> {
+    try {
+      return await this.relayStatusReader.getCallsStatus({ callsId });
+    } catch (cause) {
+      if (cause instanceof CommerceError && cause.code === "TRANSACTION_UNKNOWN") throw cause;
+      throw new CommerceError({ code: "TRANSACTION_UNKNOWN", message: "The Altana relay status is temporarily unavailable; do not resend the operation.", retriable: true, nextAction: "reconcile_transaction", relayCallsId: callsId, cause });
+    }
   }
 
   public async hire(authority: Erc8183AltanaAuthority, input: Erc8183HireInput): Promise<Erc8183HireResult> {

@@ -557,4 +557,55 @@ export class PostgresCommerceReservationStore {
     const parent = reservationParent(row, quote, listing);
     return parent;
   }
+
+  /**
+   * Atomically claim a buyer quote for the single hire intent. The existing
+   * negotiating state is deliberately idempotent: a retry after a process
+   * crash may continue the same server-derived operation key, but a funded or
+   * otherwise terminal parent can never be claimed again.
+   */
+  public async claim(input: { readonly commerceJobId: string; readonly buyerUserId: string }): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<ReservationRow>(`
+        SELECT id, erc8183_job_id, buyer_user_id, provider_agent_id, quote, price,
+          task_input_digest, status, funding_transaction_hash,
+          fulfillment_transaction_hash, dispute_transaction_hash, settlement_transaction_hash
+        FROM commerce_jobs
+        WHERE id = $1 AND buyer_user_id = $2
+        FOR UPDATE
+      `, [input.commerceJobId, input.buyerUserId]);
+      const row = result.rows[0];
+      if (row === undefined) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The requested parent commerce reservation is unavailable for this buyer.", nextAction: "reload_quote" });
+      // Parse the immutable snapshot before changing the claim state. A
+      // malformed row must go to review, never into a fundable operation.
+      const quote = parseReservationRow(row);
+      if (Date.parse(quote.expiresAt) <= Date.now()) {
+        throw new CommerceError({ code: "STALE_JOB", message: "The quote has expired; request a fresh quote.", nextAction: "reload_quote" });
+      }
+      if (row.status !== "draft" && row.status !== "negotiating") {
+        throw new CommerceError({ code: "STALE_JOB", message: "The parent commerce reservation is no longer unpaid and reservable.", nextAction: "reload_quote" });
+      }
+      if (row.funding_transaction_hash !== null || row.fulfillment_transaction_hash !== null || row.dispute_transaction_hash !== null || row.settlement_transaction_hash !== null) {
+        throw new CommerceError({ code: "STALE_JOB", message: "The parent commerce reservation already has chain evidence and cannot be claimed again.", nextAction: "reload_quote" });
+      }
+      if (row.status === "draft") {
+        const updated = await client.query(`
+          UPDATE commerce_jobs SET status = 'negotiating', "updatedAt" = now()
+          WHERE id = $1 AND buyer_user_id = $2 AND status = 'draft'
+        `, [input.commerceJobId, input.buyerUserId]);
+        if (updated.rowCount !== undefined && updated.rowCount !== 1) {
+          throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "Another hire claim won the parent reservation race.", nextAction: "reload_quote" });
+        }
+      }
+      await client.query("COMMIT");
+    } catch (cause) {
+      try { await client.query("ROLLBACK"); } catch { /* preserve the original safe error */ }
+      if (cause instanceof CommerceError) throw cause;
+      throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The parent commerce reservation could not be claimed safely.", nextAction: "retry_quote", cause });
+    } finally {
+      client.release();
+    }
+  }
 }

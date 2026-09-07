@@ -331,6 +331,11 @@ function taskDigest(task: string): string {
   return PostgresErc8183OperationRepository.requestDigest(task).toLowerCase();
 }
 
+/** Server-owned operation identity; request-body keys cannot create another hire. */
+function serverHireIdempotencyKey(commerceJobId: string): string {
+  return `t5-hire:${commerceJobId}`;
+}
+
 function jobKeyFor(adapter: Erc8183AltanaAdapter, jobId: string): Erc8183JobKey {
   return erc8183JobKeySchema.parse({
     chainId: adapter.pin.chainId,
@@ -559,12 +564,18 @@ export class Erc8183CommerceComposition {
     readonly deadlineSeconds?: number | undefined;
   }): Promise<CommerceHireCompositionResult> {
     const identity = await this.identity(request);
-    const parent = await this.resolveParentHire(identity, input);
+    let parent = await this.resolveParentHire(identity, input);
+    if (this.reservationResolver !== undefined) {
+      await this.reservationResolver.claim({ commerceJobId: input.commerceJobId, buyerUserId: identity.userId });
+      // Re-read after the row lock so listing freshness/expiry is checked on
+      // the exact claimed snapshot, not only on the pre-lock authorization read.
+      parent = await this.resolveParentHire(identity, input);
+    }
     const authority = await this.authority(request, identity);
     const task = parent.task;
     if (task === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted quote has no task snapshot.", nextAction: "manual_review" });
     return this.service.hire({
-      idempotencyKey: input.idempotencyKey,
+      idempotencyKey: serverHireIdempotencyKey(input.commerceJobId),
       commerceJobId: input.commerceJobId,
       providerAddress: parent.providerAddress,
       task,
@@ -590,11 +601,18 @@ export class Erc8183CommerceComposition {
     readonly deadlineSeconds?: number | undefined;
   }): Promise<CommerceBrowserIntentResult> {
     const identity = await this.identity(request);
-    const parent = await this.resolveParentHire(identity, input);
+    let parent = await this.resolveParentHire(identity, input);
+    if (this.reservationResolver !== undefined) {
+      await this.reservationResolver.claim({ commerceJobId: input.commerceJobId, buyerUserId: identity.userId });
+      // Re-read after the row lock so a quote/listing that changed during the
+      // claim cannot become a browser-fundable operation.
+      parent = await this.resolveParentHire(identity, input);
+    }
     const task = parent.task;
     if (task === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted quote has no task snapshot.", nextAction: "manual_review" });
+    const idempotencyKey = serverHireIdempotencyKey(input.commerceJobId);
     const prepared = this.service.prepareHireIntent({
-      idempotencyKey: input.idempotencyKey,
+      idempotencyKey,
       commerceJobId: input.commerceJobId,
       providerAddress: parent.providerAddress,
       task,
@@ -603,7 +621,7 @@ export class Erc8183CommerceComposition {
       requesterAddress: identity.requesterAddress,
       ...(input.deadlineSeconds === undefined ? {} : { deadlineSeconds: input.deadlineSeconds })
     });
-    const reservation = await this.service.reserveExternal({ operation: prepared, idempotencyKey: input.idempotencyKey });
+    const reservation = await this.service.reserveExternal({ operation: prepared, idempotencyKey });
     const job = reservation.operation.jobId === null ? null : await this.readWithoutActor(reservation.operation.jobId);
     return {
       operation: reservation.operation,
@@ -702,8 +720,23 @@ export class Erc8183CommerceComposition {
     if (operation.context?.signerAddress === undefined || operation.context.signerAddress.toLowerCase() !== identity.requesterAddress.toLowerCase()) {
       throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The authenticated requester does not match the browser operation actor.", nextAction: "authenticate_actor" });
     }
-    const job = operation.jobId === null ? null : await this.readWithoutActor(operation.jobId);
-    return { operation, replayed: true, dispatch: browserDispatchFor(operation), read: job };
+    let current = operation;
+    // A browser noWait result is reconciled by this actor-bound reload path.
+    // Only a bounded public relay/receipt read occurs; no SDK writer is called.
+    if (operation.context?.callsId !== undefined && operation.context.callsId !== null && ["awaiting_signature", "submitted", "unknown"].includes(operation.status)) {
+      try {
+        const reconciled = await this.service.reconcile(operationId);
+        current = reconciled.operation;
+      } catch (cause) {
+        if (!(cause instanceof CommerceError) || !["TRANSACTION_UNKNOWN", "RECONCILIATION_REQUIRED"].includes(cause.code)) throw cause;
+        const latest = await this.operations.get(operationId);
+        if (latest !== null) current = latest;
+      }
+    }
+    const job = current.jobId === null ? null : await this.readWithoutActor(current.jobId);
+    // Browser dispatch is a one-shot response from prepare/approve. Reload
+    // never receives a second action and therefore cannot double-fund.
+    return { operation: current, replayed: true, dispatch: null, read: job };
   }
 
   public async createReview(request: Request, input: { readonly commerceJobId: string; readonly idempotencyKey: string; readonly score: number; readonly comment: string }): Promise<{ readonly replayed: boolean; readonly review: Awaited<ReturnType<PostgresErc8183MarketplaceProjection["createReview"]>>["review"] }> {
@@ -814,14 +847,25 @@ export async function getCommerceComposition(): Promise<Erc8183CommerceCompositi
     return Promise.reject(commerceAuthorityBoundaryError());
   }
 
+  const nodeEnvironment = process.env.NODE_ENV === "production"
+    ? "production"
+    : process.env.NODE_ENV === "test"
+      ? "test"
+      : "development";
+  if (
+    nodeEnvironment === "production" ||
+    process.env.T5_COMMERCE_LOCAL_ACTIVATION !== "true" ||
+    process.env.T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED !== "true"
+  ) {
+    return Promise.reject(invalidComposition(
+      "ERC-8183 browser activation is limited to the explicitly enabled local development canary; the standards-lock release gate remains closed.",
+      "enable_local_development_canary"
+    ));
+  }
+
   const standardsLock = await readCommerceStandardsLock();
   try {
     const pool = getCommerceAuthDatabasePool();
-    const nodeEnvironment = process.env.NODE_ENV === "production"
-      ? "production"
-      : process.env.NODE_ENV === "test"
-        ? "test"
-        : "development";
     return createProductionCommerceComposition({
       standardsLock,
       pin: commercePinFromStandardsLock(standardsLock),

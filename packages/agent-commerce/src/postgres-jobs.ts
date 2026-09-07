@@ -2,7 +2,7 @@ import { canonicalSha256Hex } from "@bnbera/domain";
 import { CommerceError } from "./errors.js";
 import { approveErc8183Result } from "./lifecycle.js";
 import { persistMarketplaceSettlementProjection, persistMarketplaceSubmissionProjection } from "./marketplace-projection.js";
-import type { Erc8183OperationQueryPool } from "./operations.js";
+import type { Erc8183OperationQueryClient, Erc8183OperationQueryPool } from "./operations.js";
 import {
   erc8183JobEventSchema,
   erc8183JobRecordSchema,
@@ -275,6 +275,29 @@ function jobValues(input: PersistentErc8183JobCreateInput | PersistentErc8183Job
 export class PostgresErc8183JobRepository {
   public constructor(private readonly pool: Erc8183OperationQueryPool) {}
 
+  /** Keep the buyer-facing parent bound to the same confirmed funding proof. */
+  private async syncMarketplaceFunding(
+    client: Erc8183OperationQueryClient,
+    input: PersistentErc8183JobCreateInput,
+    job: Erc8183JobRecord
+  ): Promise<void> {
+    if (job.state === "open" || job.fundingTransactionHash === null) return;
+    const result = await client.query<{ readonly id: string }>(`
+      UPDATE commerce_jobs
+      SET erc8183_job_id = $2,
+          status = CASE WHEN status IN ('draft', 'negotiating') THEN 'funded' ELSE status END,
+          funding_transaction_hash = COALESCE(funding_transaction_hash, $3),
+          "updatedAt" = now()
+      WHERE id = $1
+        AND (funding_transaction_hash IS NULL OR funding_transaction_hash = $3)
+        AND (erc8183_job_id = $2 OR erc8183_job_id LIKE 'draft:%' OR erc8183_job_id LIKE 'intent:%')
+      RETURNING id
+    `, [input.commerceJobId, job.jobKey.jobId, job.fundingTransactionHash]);
+    if (result.rows[0] === undefined) {
+      throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The confirmed funding proof could not be bound to its parent commerce reservation.", transactionHash: job.fundingTransactionHash as `0x${string}`, nextAction: "manual_review" });
+    }
+  }
+
   public async get(jobKey: { readonly chainId: 56 | 97; readonly commerceContract: string; readonly jobId: string }): Promise<Erc8183JobRecord | null> {
     const result = await this.pool.query<JobRow>(`${jobSelect} WHERE chain_id = $1 AND commerce_contract = $2 AND erc8183_job_id = $3`, [jobKey.chainId, normalizeAddress(jobKey.commerceContract, "commerce contract"), jobKey.jobId]);
     return result.rows[0] === undefined ? null : rowToJob(result.rows[0]);
@@ -329,6 +352,7 @@ export class PostgresErc8183JobRepository {
     const existing = await this.get(job.jobKey);
     if (existing !== null) {
       if (canonicalSha256Hex(existing) !== canonicalSha256Hex(job)) throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "An ERC-8183 protocol job already exists with different terms." });
+      if (existing.fundingTransactionHash !== null) await this.syncMarketplaceFunding(this.pool, input, existing);
       return { job: existing, replayed: true };
     }
     const client = await this.pool.connect();
@@ -357,6 +381,7 @@ export class PostgresErc8183JobRepository {
           confirmation_state, payload_digest, payload, correlation_id, observed_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15)
       `, eventValues(event, protocolRow.id));
+      await this.syncMarketplaceFunding(client, input, job);
       await client.query("COMMIT");
     } catch (cause) {
       try { await client.query("ROLLBACK"); } catch { /* retain original error */ }
