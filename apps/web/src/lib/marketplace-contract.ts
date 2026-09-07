@@ -598,7 +598,13 @@ function mapActivation(card: CoreMarketplaceAgentCard): MarketplaceAgentReadMode
     process.env.T5_ALTANA_AUTH_ENABLED === "true" &&
     process.env.T5_COMMERCE_LOCAL_ACTIVATION === "true" &&
     process.env.T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED === "true" &&
-    method === "erc8183";
+    method === "erc8183" &&
+    card.fixture === null &&
+    card.activationOffer.erc8183 !== undefined &&
+    card.activationOffer.erc8183.chainId === card.identity.chainId &&
+    card.activationOffer.erc8183.providerAddress.toLowerCase() === (card.agentWallet ?? "").toLowerCase() &&
+    card.activationOffer.erc8183.paymentToken.toLowerCase() === (card.pricing.tokenAddress ?? "").toLowerCase() &&
+    card.activationOffer.erc8183.priceAtomic === (card.pricing.minAtomic ?? card.pricing.maxAtomic);
   if (localCanary) {
     return {
       enabled: true,

@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { referenceProviderSecretReferenceSchema } from "../packages/agent-commerce/src/reference-provider.ts";
 import { createDb } from "../packages/db/src/client.ts";
 import { PostgresMarketplacePublicationService, type MarketplacePublicationPool } from "../packages/marketplace/src/publication.ts";
+import { marketplaceActivationOfferSchema, type MarketplaceActivationOffer } from "../packages/marketplace/src/types.ts";
 import { capabilityManifestSchema, evmAddressSchema, erc8004IdentitySchema, type Erc8004Identity } from "../packages/domain/src/index.ts";
 
 const CHAIN_ID = 97 as const;
@@ -86,11 +87,15 @@ type ExistingServiceRow = {
   readonly validation_status: string;
 };
 
-type LockedCommerceTerms = {
+export type LockedCommerceTerms = {
+  readonly commerceContract: string;
+  readonly routerContract: string;
+  readonly policyContract: string;
   readonly paymentToken: string;
   readonly paymentTokenSymbol: string;
   readonly paymentDecimals: number;
   readonly maxBudgetAtomic: string;
+  readonly releaseEnabled: false;
 };
 
 function nonEmpty(name: string): string | null {
@@ -124,27 +129,73 @@ async function lockedCommerceTerms(): Promise<LockedCommerceTerms> {
     readonly networks?: Record<string, {
       readonly erc8004?: { readonly identityRegistry?: unknown };
       readonly erc8183?: {
+        readonly enabled?: unknown;
+        readonly releaseEnabled?: unknown;
+        readonly commerceProxy?: unknown;
+        readonly routerProxy?: unknown;
+        readonly policy?: unknown;
         readonly paymentToken?: unknown;
         readonly paymentTokenSymbol?: unknown;
         readonly paymentDecimals?: unknown;
-        readonly riskLimits?: { readonly maxBudgetAtomic?: unknown };
+        readonly riskLimits?: { readonly network?: unknown; readonly token?: unknown; readonly maxBudgetAtomic?: unknown };
       };
     }>;
   };
   const network = lock.networks?.[String(CHAIN_ID)];
-  const paymentToken = requiredAddress(typeof network?.erc8183?.paymentToken === "string" ? network.erc8183.paymentToken : null, "The standards-locked ERC-8183 payment token");
-  const paymentTokenSymbol = network?.erc8183?.paymentTokenSymbol;
-  const paymentDecimals = network?.erc8183?.paymentDecimals;
-  const maxBudgetAtomic = network?.erc8183?.riskLimits?.maxBudgetAtomic;
-  if (typeof paymentTokenSymbol !== "string" || paymentTokenSymbol.trim() === "" || typeof paymentDecimals !== "number" || !Number.isSafeInteger(paymentDecimals) || paymentDecimals < 0 || paymentDecimals > 255 || typeof maxBudgetAtomic !== "string" || !/^[1-9][0-9]*$/u.test(maxBudgetAtomic)) {
+  const deployment = network?.erc8183;
+  if (deployment?.enabled !== true || deployment.releaseEnabled !== false) {
+    throw new Error("The standards-locked ERC-8183 reference offer is disabled or release-enabled unexpectedly.");
+  }
+  const commerceContract = requiredAddress(typeof deployment.commerceProxy === "string" ? deployment.commerceProxy : null, "The standards-locked ERC-8183 commerce contract");
+  const routerContract = requiredAddress(typeof deployment.routerProxy === "string" ? deployment.routerProxy : null, "The standards-locked ERC-8183 router contract");
+  const policyContract = requiredAddress(typeof deployment.policy === "string" ? deployment.policy : null, "The standards-locked ERC-8183 policy contract");
+  const paymentToken = requiredAddress(typeof deployment.paymentToken === "string" ? deployment.paymentToken : null, "The standards-locked ERC-8183 payment token");
+  const paymentTokenSymbol = deployment.paymentTokenSymbol;
+  const paymentDecimals = deployment.paymentDecimals;
+  const riskNetwork = deployment.riskLimits?.network;
+  const riskToken = deployment.riskLimits?.token;
+  const maxBudgetAtomic = deployment.riskLimits?.maxBudgetAtomic;
+  if (riskNetwork !== CHAIN_ID || typeof riskToken !== "string" || riskToken.toLowerCase() !== paymentToken || typeof paymentTokenSymbol !== "string" || paymentTokenSymbol.trim() === "" || typeof paymentDecimals !== "number" || !Number.isSafeInteger(paymentDecimals) || paymentDecimals < 0 || paymentDecimals > 255 || typeof maxBudgetAtomic !== "string" || !/^[1-9][0-9]*$/u.test(maxBudgetAtomic)) {
     throw new Error("The standards-locked ERC-8183 payment terms are incomplete.");
   }
   return {
+    commerceContract,
+    routerContract,
+    policyContract,
     paymentToken,
     paymentTokenSymbol,
     paymentDecimals,
-    maxBudgetAtomic
+    maxBudgetAtomic,
+    releaseEnabled: false
   };
+}
+
+/**
+ * Build the reference listing's explicit ERC-8183 offer from the checked-in
+ * terms. This is intentionally separate from authority: the worker verifies
+ * active execution authority immediately before provider work.
+ */
+export function referenceProviderActivationOffer(
+  config: ReferenceProviderSetupConfig,
+  terms: LockedCommerceTerms
+): MarketplaceActivationOffer {
+  return marketplaceActivationOfferSchema.parse({
+    advertised: true,
+    method: "erc8183",
+    label: "ERC-8183 health-factor hire (chain-97 canary)",
+    erc8183: {
+      chainId: CHAIN_ID,
+      commerceContract: terms.commerceContract,
+      routerContract: terms.routerContract,
+      policyContract: terms.policyContract,
+      paymentToken: terms.paymentToken,
+      paymentTokenSymbol: terms.paymentTokenSymbol,
+      paymentDecimals: terms.paymentDecimals,
+      providerAddress: config.providerAddress,
+      priceAtomic: config.priceAtomic,
+      releaseEnabled: terms.releaseEnabled
+    }
+  });
 }
 
 export async function referenceProviderConfigFromEnvironment(): Promise<ReferenceProviderSetupConfig> {
@@ -202,7 +253,15 @@ function registrationPlan(config: ReferenceProviderSetupConfig): ReferenceProvid
   };
 }
 
-export async function inspectReferenceProviderSetup(pool: QueryPool, config: ReferenceProviderSetupConfig, options: { readonly publish?: boolean } = {}): Promise<ReferenceProviderSetupReport> {
+export async function inspectReferenceProviderSetup(
+  pool: QueryPool,
+  config: ReferenceProviderSetupConfig,
+  options: {
+    readonly publish?: boolean;
+    /** Test seam; production uses the existing PostgreSQL publication boundary. */
+    readonly publication?: Pick<PostgresMarketplacePublicationService, "publish">;
+  } = {}
+): Promise<ReferenceProviderSetupReport> {
   const result = await pool.query<IdentityRow>(
     `SELECT i.id, i.namespace, i.chain_id, i.identity_registry, i.agent_id,
             i.owner_address, i.owner_observed_block,
@@ -226,6 +285,9 @@ export async function inspectReferenceProviderSetup(pool: QueryPool, config: Ref
     broadcast: false as const,
     registrationPlan: registrationPlan(config)
   };
+  if (config.identity.chainId !== CHAIN_ID) {
+    return { ...base, status: "blocked", code: "CHAIN_97_REQUIRED", diagnostics: ["The reference provider activation offer is limited to the standards-locked BSC testnet identity."] };
+  }
   if (row === undefined) {
     return { ...base, status: "blocked", code: "OWNED_IDENTITY_REQUIRED", diagnostics: ["No retained ERC-8004 identity matches the requested full identity tuple.", "Complete the explicit owner-authorized testnet registration/setAgentWallet flow, then rerun ingestion before publication."] };
   }
@@ -291,7 +353,8 @@ export async function inspectReferenceProviderSetup(pool: QueryPool, config: Ref
   if (BigInt(commerceTerms.maxBudgetAtomic) !== BigInt(MAX_PRICE_ATOMIC)) {
     return { ...base, status: "withheld", code: "PRICE_CAP_LOCK_MISMATCH", diagnostics: ["The configured reference price cap does not match the standards-locked ERC-8183 risk limit."] };
   }
-  const publication = new PostgresMarketplacePublicationService(pool);
+  const publication = options.publication ?? new PostgresMarketplacePublicationService(pool);
+  const activationOffer = referenceProviderActivationOffer(config, commerceTerms);
   const published = await publication.publish({
     identity: config.identity,
     publicMetadata: existing.public_metadata ?? { name: "BNBEra Reference Health-Factor Provider", description: "BNBEra-operated health-factor reference provider." },
@@ -306,7 +369,8 @@ export async function inspectReferenceProviderSetup(pool: QueryPool, config: Ref
       minAtomic: config.priceAtomic,
       maxAtomic: config.priceAtomic,
       source: "t5_reference_provider_setup"
-    }
+    },
+    activationOffer
   });
   return {
     ...base,

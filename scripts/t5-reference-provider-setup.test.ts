@@ -14,6 +14,17 @@ const IDENTITY = {
 } as const;
 const CARD_URL = "https://reference.example/api/reference-provider/agent-card";
 const SERVICE_URL = "https://reference.example/api/reference-provider/health-factor";
+const referenceCapability = {
+  schemaVersion: "bnbera.reference.health-factor.capability/v1",
+  capabilities: [{
+    id: "health_factor_monitor",
+    description: "Compute a lending health factor from a timestamped snapshot.",
+    inputSchema: { type: "object" },
+    outputSchema: { type: "object" },
+    requiredProtocols: ["A2A/0.3"],
+    allowedActions: ["message/send"]
+  }]
+};
 
 const baseConfig: ReferenceProviderSetupConfig = {
   identity: IDENTITY,
@@ -56,11 +67,19 @@ const identityRow: IdentityRow = {
   read_consistency: "finalized"
 };
 
-function poolFor(row: IdentityRow = identityRow) {
+function poolFor(row: IdentityRow = identityRow, publishable = false) {
   return {
     query: vi.fn(async (text: string) => {
       if (text.includes("FROM erc8004_identities")) return { rows: [row] };
-      if (text.includes("FROM agent_versions")) return { rows: [{ public_metadata: null, capability_manifest: null }] };
+      if (text.includes("FROM agent_versions")) return {
+        rows: [{
+          public_metadata: publishable ? { name: "BNBEra Reference Health-Factor Provider", description: "A callable reference provider." } : null,
+          capability_manifest: publishable ? referenceCapability : null
+        }]
+      };
+      if (text.includes("FROM agent_service_observations")) return {
+        rows: publishable ? [{ url: SERVICE_URL, validation_status: "healthy" }] : []
+      };
       return { rows: [] };
     })
   } as never;
@@ -108,5 +127,37 @@ describe("T5 reference-provider setup authority axes", () => {
     expect(report.status).toBe("withheld");
     expect(report.priceAtomic).toBe(baseConfig.priceAtomic);
     expect(report.secretReferenceConfigured).toBe(false);
+  });
+
+  it("passes a standards-locked ERC-8183 offer only for the owned reference identity", async () => {
+    const publication = { publish: vi.fn(async () => ({ status: "published", diagnostics: [] })) } as never;
+    const report = await inspectReferenceProviderSetup(poolFor(identityRow, true), baseConfig, { publish: true, publication });
+
+    expect(report).toMatchObject({ status: "published", code: "PUBLISHED" });
+    expect((publication as { publish: ReturnType<typeof vi.fn> }).publish).toHaveBeenCalledWith(expect.objectContaining({
+      activationOffer: expect.objectContaining({
+        advertised: true,
+        method: "erc8183",
+        erc8183: expect.objectContaining({
+          chainId: 97,
+          commerceContract: "0xa206c0517b6371c6638cd9e4a42cc9f02a33b0de",
+          routerContract: "0xd7d36d66d2f1b608a0f943f722d27e3744f66f25",
+          policyContract: "0xd6a4217588f6b1f5657a92a3e94e6422ad771cea",
+          paymentToken: "0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565",
+          providerAddress: PROVIDER,
+          priceAtomic: baseConfig.priceAtomic,
+          releaseEnabled: false
+        })
+      })
+    }));
+
+    const unownedPublication = { publish: vi.fn() } as never;
+    const unowned = await inspectReferenceProviderSetup(
+      poolFor({ ...identityRow, owner_address: PROVIDER }, true),
+      baseConfig,
+      { publish: true, publication: unownedPublication }
+    );
+    expect(unowned).toMatchObject({ status: "blocked", code: "IDENTITY_NOT_OWNED" });
+    expect((unownedPublication as { publish: ReturnType<typeof vi.fn> }).publish).not.toHaveBeenCalled();
   });
 });

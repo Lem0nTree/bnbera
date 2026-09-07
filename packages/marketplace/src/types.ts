@@ -494,10 +494,36 @@ export const marketplaceExecutionEvidenceSchema = z.object({
 
 export type MarketplaceExecutionEvidence = z.infer<typeof marketplaceExecutionEvidenceSchema>;
 
+/**
+ * The only activation offer that may be carried by the T5 reference listing.
+ * This is an offer/terms observation, not execution authority: the worker
+ * still has to verify the provider's active authority before a job can run.
+ * Keeping the binding nested makes the existing activation contract useful to
+ * older/general listings while allowing the reference provider to retain the
+ * exact chain-97 canary terms beside its advertised method.
+ */
+export const marketplaceErc8183ActivationBindingSchema = z.object({
+  chainId: z.literal(97),
+  commerceContract: evmAddressSchema,
+  routerContract: evmAddressSchema,
+  policyContract: evmAddressSchema,
+  paymentToken: evmAddressSchema,
+  paymentTokenSymbol: z.string().trim().min(1).max(32),
+  paymentDecimals: z.number().int().min(0).max(255),
+  providerAddress: evmAddressSchema,
+  priceAtomic: atomicAmountSchema,
+  /** The standards lock is deliberately still canary-only. */
+  releaseEnabled: z.literal(false)
+}).strict();
+
+export type MarketplaceErc8183ActivationBinding = z.infer<typeof marketplaceErc8183ActivationBindingSchema>;
+
 export const marketplaceActivationOfferSchema = z.object({
   advertised: z.boolean(),
   method: z.enum(activationMethods),
-  label: z.string().trim().min(1).max(200)
+  label: z.string().trim().min(1).max(200),
+  /** Optional so legacy/general listings retain their existing shape. */
+  erc8183: marketplaceErc8183ActivationBindingSchema.optional()
 }).superRefine((value, context) => {
   if (value.advertised && value.method === "none") {
     context.addIssue({
@@ -511,6 +537,13 @@ export const marketplaceActivationOfferSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ["method"],
       message: "A non-advertised activation offer must use method none"
+    });
+  }
+  if (value.erc8183 !== undefined && (!value.advertised || value.method !== "erc8183")) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["erc8183"],
+      message: "An ERC-8183 activation binding must belong to an advertised ERC-8183 offer"
     });
   }
 });
