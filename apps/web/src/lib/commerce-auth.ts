@@ -1,14 +1,21 @@
 import { randomBytes, createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import pg from "pg";
+import { verifyMessage, type Address, type Hex } from "viem";
 import { BNB_TESTNET } from "@altananetwork/sdk";
 import {
   authCookieName,
   createAltanaAdminKeyReader,
   issueWebAuthnChallenge,
+  siweRequestSchema,
+  verifySiweRequest,
   type AuthenticatedSession,
   type NonceStore,
   type AltanaAdminKeyReader,
+  type SiweRequest,
+  type SiweVerificationContext,
+  type SiweVerifier,
+  type VerifiedSiweProof,
   verifyAltanaPasskeyAssertion
 } from "@bnbera/auth";
 import { AppError, loadRuntimeConfig } from "@bnbera/config";
@@ -16,6 +23,7 @@ import { chainIdSchema, evmAddressSchema, normalizeEvmAddress } from "@bnbera/do
 import type { Pool as PgPool } from "pg";
 import type { AltanaReadNetwork } from "@bnbera/auth";
 import { z } from "zod";
+import { formatSiweMessage } from "./siwe-message";
 
 const { Pool } = pg;
 
@@ -27,6 +35,15 @@ const challengeRequestSchema = z.object({
 const assertionRequestSchema = challengeRequestSchema.extend({
   response: z.unknown()
 });
+
+const siweChallengeRequestSchema = z.object({
+  address: evmAddressSchema,
+  chainId: chainIdSchema
+});
+const siweAuthenticationRequestSchema = siweRequestSchema.extend({
+  message: z.string().min(1).max(8_192),
+  signature: z.string().regex(/^0x[0-9a-fA-F]+$/u).max(2_048)
+}).strict();
 
 const sessionTtlMs = 15 * 60_000;
 const challengeTtlMs = 60_000;
@@ -148,6 +165,22 @@ function digest(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+/**
+ * Keep legacy WebAuthn nonce rows readable while binding new SIWE nonces to
+ * the requested EOA. The address is part of the digest rather than a new
+ * database column, so an intercepted challenge cannot be replayed for a
+ * different account and no migration is needed.
+ */
+function nonceDigest(input: {
+  readonly domain: string;
+  readonly chainId: number;
+  readonly nonce: string;
+  readonly walletAddress?: string;
+}): string {
+  if (input.walletAddress === undefined) return digest(input.nonce);
+  return digest(`siwe-v1\n${input.domain}\n${input.chainId}\n${input.walletAddress.toLowerCase()}\n${input.nonce}`);
+}
+
 export function createOpaqueSessionToken(): string {
   return randomBytes(32).toString("base64url");
 }
@@ -176,25 +209,13 @@ function runtimeFromEnvironment(env: StringEnvironment = process.env): AuthRunti
     throw authError("AUTH_CONFIGURATION_INVALID", "Authentication is temporarily unavailable.", "try_again", true);
   }
 
-  // This is intentionally an explicit local/testnet enablement. Mainnet
-  // Altana custody remains pending in the standards lock and cannot be enabled
-  // by changing BSC_CHAIN_ID or an untrusted request field.
-  if (env.T5_ALTANA_AUTH_ENABLED !== "true") {
-    throw authError(
-      "AUTH_CONFIGURATION_BLOCKED",
-      "Altana passkey authentication is not enabled for this runtime.",
-      "configure_auth_boundary"
-    );
-  }
-
   if (runtime.bscChainId !== BNB_TESTNET.chainId) {
     throw authError(
       "AUTH_CONFIGURATION_BLOCKED",
-      "Altana passkey authentication is enabled only for the reviewed BNB testnet runtime.",
+      "Wallet authentication is enabled only for the reviewed BNB testnet runtime.",
       "switch_network"
     );
   }
-  assertAltanaAuthStandardsLock(readAltanaAuthStandardsLock(), BNB_TESTNET);
 
   if (runtime.databaseUrl === undefined || runtime.databaseUrl.trim() === "") {
     throw authError("AUTH_DATABASE_UNAVAILABLE", "Authentication is temporarily unavailable.", "try_again", true);
@@ -208,6 +229,20 @@ function runtimeFromEnvironment(env: StringEnvironment = process.env): AuthRunti
     chainId: 97,
     network: BNB_TESTNET
   };
+}
+
+/** Altana passkey auth remains available only to the future Creator path. */
+function altanaRuntimeFromEnvironment(env: StringEnvironment = process.env): AuthRuntime {
+  const runtime = runtimeFromEnvironment(env);
+  if (env.T5_ALTANA_AUTH_ENABLED !== "true") {
+    throw authError(
+      "AUTH_CONFIGURATION_BLOCKED",
+      "Altana passkey authentication is not enabled for this runtime.",
+      "configure_auth_boundary"
+    );
+  }
+  assertAltanaAuthStandardsLock(readAltanaAuthStandardsLock(), BNB_TESTNET);
+  return runtime;
 }
 
 function getPool(runtime: AuthRuntime): PgPool {
@@ -248,7 +283,7 @@ function nonceStore(pool: AuthPool, now: () => Date = () => new Date()): NonceSt
           await pool.query(
             `INSERT INTO auth_nonces (domain, chain_id, nonce_digest, expires_at)
              VALUES ($1, $2, $3, $4)`,
-            [input.domain, input.chainId, digest(nonce), expiresAt]
+            [input.domain, input.chainId, nonceDigest({ ...input, nonce }), expiresAt]
           );
           return { nonce, expiresAt };
         } catch (cause) {
@@ -270,7 +305,7 @@ function nonceStore(pool: AuthPool, now: () => Date = () => new Date()): NonceSt
             AND consumed_at IS NULL
             AND expires_at > NOW()
           RETURNING id`,
-        [input.domain, input.chainId, digest(input.nonce)]
+        [input.domain, input.chainId, nonceDigest(input)]
       );
       return result.rowCount === 1;
     }
@@ -393,7 +428,7 @@ export async function parseAuthJson(request: Request): Promise<unknown> {
   try {
     return await request.json();
   } catch (cause) {
-    throw authError("AUTH_REQUEST_INVALID", "The passkey authentication request is invalid.", "check_request", false, cause);
+    throw authError("AUTH_REQUEST_INVALID", "The wallet authentication request is invalid.", "check_request", false, cause);
   }
 }
 
@@ -421,6 +456,153 @@ export function parsePasskeyAssertionRequest(input: unknown): {
   };
 }
 
+export type EoaSiweChallenge = {
+  readonly address: string;
+  readonly chainId: 97;
+  readonly domain: string;
+  readonly uri: string;
+  readonly nonce: string;
+  readonly issuedAt: string;
+  readonly expirationTime: string;
+  readonly expiresAt: string;
+  readonly statement: string;
+  readonly message: string;
+};
+
+export type EoaSiweAuthenticationRequest = SiweRequest & {
+  readonly message: string;
+  readonly signature: string;
+};
+
+function parseEoaSiweChallengeRequest(input: unknown): { readonly address: string; readonly chainId: 56 | 97 } {
+  const parsed = siweChallengeRequestSchema.safeParse(input);
+  if (!parsed.success || (parsed.data.chainId !== 56 && parsed.data.chainId !== 97)) {
+    throw authError("AUTH_REQUEST_INVALID", "The wallet authentication request is invalid.", "check_request", false, parsed.success ? undefined : parsed.error);
+  }
+  return { address: normalizeEvmAddress(parsed.data.address), chainId: parsed.data.chainId };
+}
+
+export function parseEoaSiweAuthenticationRequest(input: unknown): EoaSiweAuthenticationRequest {
+  const parsed = siweAuthenticationRequestSchema.safeParse(input);
+  if (!parsed.success) {
+    throw authError("AUTH_REQUEST_INVALID", "The wallet authentication request is invalid.", "check_request", false, parsed.error);
+  }
+  // Preserve the address spelling from the signed SIWE message. EIP-191
+  // verification is byte-sensitive; the shared boundary normalizes only
+  // after the signature has been checked for ownership/session binding.
+  return parsed.data;
+}
+
+function siweContext(runtime: AuthRuntime, now?: Date): SiweVerificationContext {
+  const context = {
+    domain: runtime.rpId,
+    uri: runtime.appOrigin,
+    chainId: runtime.chainId
+  } as const;
+  return now === undefined ? context : { ...context, now };
+}
+
+/** Verify an EOA signature over the canonical SIWE message before consuming its nonce. */
+function eoaSiweVerifier(): SiweVerifier {
+  return {
+    async verify(request) {
+      if (request.message === undefined || request.signature === undefined) {
+        throw new Error("The EOA proof is missing its signed message or signature");
+      }
+      const canonical = formatSiweMessage({
+        domain: request.domain,
+        address: request.address,
+        uri: request.uri,
+        chainId: request.chainId,
+        nonce: request.nonce,
+        issuedAt: request.issuedAt,
+        expirationTime: request.expirationTime,
+        ...(request.statement === undefined ? {} : { statement: request.statement }),
+        ...(request.notBefore === undefined ? {} : { notBefore: request.notBefore }),
+        ...(request.resources === undefined ? {} : { resources: request.resources })
+      });
+      if (request.message !== canonical) throw new Error("The EOA proof message is not canonical");
+      const verified = await verifyMessage({
+        address: request.address as Address,
+        message: request.message,
+        signature: request.signature as Hex
+      });
+      if (!verified) throw new Error("The EOA signature does not match the wallet address");
+      return {
+        address: request.address,
+        chainId: request.chainId,
+        issuedAt: request.issuedAt,
+        expirationTime: request.expirationTime
+      };
+    }
+  };
+}
+
+/**
+ * Testable EOA/SIWE verification seam. Production passes the persistent
+ * PostgreSQL nonce store; tests can use an atomic in-memory implementation.
+ */
+export async function verifyEoaSiweRequest(
+  input: unknown,
+  expected: SiweVerificationContext,
+  nonceStore: NonceStore
+): Promise<VerifiedSiweProof> {
+  const request = parseEoaSiweAuthenticationRequest(input);
+  return verifySiweRequest(eoaSiweVerifier(), nonceStore, request, expected);
+}
+
+export async function createEoaSiweChallenge(input: unknown): Promise<EoaSiweChallenge> {
+  const request = parseEoaSiweChallengeRequest(input);
+  const runtime = runtimeFromEnvironment();
+  if (request.chainId !== runtime.chainId) {
+    throw authError("AUTH_CHAIN_MISMATCH", "Wallet authentication is for a different network.", "switch_network");
+  }
+  const now = new Date();
+  const issued = await nonceStore(getPool(runtime), () => now).issue({
+    domain: runtime.rpId,
+    chainId: runtime.chainId,
+    walletAddress: request.address
+  });
+  const fields = {
+    address: request.address,
+    chainId: runtime.chainId,
+    domain: runtime.rpId,
+    uri: runtime.appOrigin,
+    nonce: issued.nonce,
+    issuedAt: now,
+    expirationTime: new Date(now.getTime() + sessionTtlMs),
+    statement: "Sign in to BNBEra commerce."
+  } as const;
+  return {
+    ...fields,
+    issuedAt: fields.issuedAt.toISOString(),
+    expirationTime: fields.expirationTime.toISOString(),
+    expiresAt: issued.expiresAt.toISOString(),
+    message: formatSiweMessage(fields)
+  };
+}
+
+export async function authenticateEoa(input: unknown, options?: {
+  readonly now?: Date;
+}): Promise<{ readonly session: AuthenticatedSession; readonly setCookie: string }> {
+  const request = parseEoaSiweAuthenticationRequest(input);
+  const runtime = runtimeFromEnvironment();
+  if (request.chainId !== runtime.chainId) {
+    throw authError("AUTH_CHAIN_MISMATCH", "Wallet authentication is for a different network.", "switch_network");
+  }
+  const pool = getPool(runtime);
+  const verified = await verifySiweRequest(
+    eoaSiweVerifier(),
+    nonceStore(pool),
+    request,
+    siweContext(runtime, options?.now)
+  );
+  const created = await createSession(pool, options?.now === undefined
+    ? { walletAddress: verified.address, chainId: verified.chainId }
+    : { walletAddress: verified.address, chainId: verified.chainId, now: options.now });
+  return { session: created.session, setCookie: cookieHeader(created.token, created.session.expiresAt, created.session.issuedAt) };
+}
+
 export async function createPasskeyChallenge(input: unknown): Promise<{
   readonly challenge: string;
   readonly rpId: string;
@@ -430,7 +612,7 @@ export async function createPasskeyChallenge(input: unknown): Promise<{
   readonly expiresAt: string;
 }> {
   const request = parsePasskeyChallengeRequest(input);
-  const runtime = runtimeFromEnvironment();
+  const runtime = altanaRuntimeFromEnvironment();
   if (request.chainId !== runtime.chainId) {
     throw authError("AUTH_CHAIN_MISMATCH", "Passkey authentication is for a different network.", "switch_network");
   }
@@ -454,7 +636,7 @@ export async function authenticatePasskey(input: unknown, options?: {
   readonly now?: Date;
 }): Promise<{ readonly session: AuthenticatedSession; readonly setCookie: string }> {
   const request = parsePasskeyAssertionRequest(input);
-  const runtime = runtimeFromEnvironment();
+  const runtime = altanaRuntimeFromEnvironment();
   if (request.chainId !== runtime.chainId) {
     throw authError("AUTH_CHAIN_MISMATCH", "Passkey authentication is for a different network.", "switch_network");
   }
@@ -516,7 +698,7 @@ export async function requireAuthenticatedCommerceIdentity(request: Request): Pr
 }> {
   const session = await getAuthenticatedSession(request);
   if (session === null) {
-    throw authError("AUTH_REQUIRED", "Sign in with your Altana passkey to continue.", "sign_in");
+    throw authError("AUTH_REQUIRED", "Connect and sign in with your wallet to continue.", "sign_in");
   }
   return {
     authenticated: true,

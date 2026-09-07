@@ -1,15 +1,16 @@
 "use client";
 
-import {
-  BNB_TESTNET,
-  createClient,
-  hireErc8183Agent,
-  settleErc8183Job,
-  type Signer,
-  type Wallet
-} from "@bnbera/agent-commerce/browser";
 import { Callout, StatusBadge } from "@bnbera/ui";
+import type { WalletClient } from "viem";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useAccount,
+  useConnect,
+  useDisconnect,
+  useSignMessage,
+  useSwitchChain,
+  useWalletClient
+} from "wagmi";
 import type {
   CommerceActionResponse,
   CommerceBrowserDispatch,
@@ -17,21 +18,11 @@ import type {
 } from "@/lib/commerce-contract";
 import { commerceQuoteSnapshotSchema, type CommerceQuoteResponse, type CommerceQuoteSnapshot } from "@/lib/commerce-quote-contract";
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
-import {
-  activateFreshPasskeyWallet,
-  createPasskeyBootstrapRelayStatusReader,
-  createUnregisteredPasskeyBootstrapRecord,
-  parsePasskeyBootstrapRecord,
-  reconcilePasskeyBootstrapRecord,
-  serializePasskeyBootstrapRecord,
-  PASSKEY_BOOTSTRAP_CHAIN_ID,
-  PASSKEY_BOOTSTRAP_STORAGE_KEY,
-  type PasskeyBootstrapRecord
-} from "@/lib/passkey-bootstrap";
-import { PublicWalletFunding, type WalletAddressCopyState } from "./public-wallet-funding";
+import { isEoaAuthorityCurrent, shouldInvalidateEoaAuthority, EOA_BUYER_CHAIN_ID, type EoaWalletSnapshot } from "@/lib/eoa-wallet";
+import { formatSiweMessage } from "@/lib/siwe-message";
+import { EoaWalletProvider, walletConnectProjectConfigured } from "./eoa-wallet-provider";
 
-type BrowserWallet = Wallet & { readonly signer: Signer };
-type BrowserAuthority = { readonly wallet: BrowserWallet; readonly signer: Signer };
+type BrowserAuthority = { readonly address: string; readonly chainId: number; readonly walletClient: WalletClient };
 type JourneyProps = {
   readonly activation: MarketplaceAgentReadModel["activation"];
   readonly identifier: string;
@@ -41,97 +32,18 @@ type JourneyProps = {
 
 const POLL_INTERVAL_MS = 4_000;
 
-type BrowserPasskeySigner = Signer & {
-  readonly type: "passkey";
-  readonly credential: { readonly id: string };
+type EoaSiweChallengeResponse = {
+  readonly address: string;
+  readonly chainId: 97;
+  readonly domain: string;
+  readonly uri: string;
+  readonly nonce: string;
+  readonly issuedAt: string;
+  readonly expirationTime: string;
+  readonly expiresAt: string;
+  readonly statement: string;
+  readonly message: string;
 };
-
-type PasskeyChallengeResponse = {
-  readonly challenge: string;
-  readonly rpId: string;
-  readonly userVerification: "required";
-  readonly timeout: number;
-};
-
-function decodeBase64Url(value: string): Uint8Array {
-  const padded = value.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
-  const binary = window.atob(padded);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-}
-
-function encodeBase64Url(value: ArrayBuffer): string {
-  const bytes = new Uint8Array(value);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return window.btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
-}
-
-function passkeyCredential(signer: Signer): { readonly id: string } {
-  if (signer.type !== "passkey") throw new Error("The browser authority is not a passkey signer.");
-  const credential = (signer as BrowserPasskeySigner).credential;
-  if (credential === undefined || typeof credential.id !== "string" || credential.id.length === 0) {
-    throw new Error("The browser passkey credential is unavailable.");
-  }
-  return credential;
-}
-
-/**
- * Establish the server session separately from the SDK signer. The API only
- * receives a WebAuthn assertion and the public wallet address; signer/session
- * authority never crosses the browser/server boundary.
- */
-async function authenticateBrowserPasskey(walletAddress: string, signer: Signer): Promise<void> {
-  const credential = passkeyCredential(signer);
-  const challengeResponse = await fetch("/api/auth/passkey/challenge", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "same-origin",
-    body: JSON.stringify({ walletAddress, chainId: BNB_TESTNET.chainId })
-  });
-  const challenge = await parseResponse<PasskeyChallengeResponse>(challengeResponse);
-  if (typeof PublicKeyCredential === "undefined" || typeof navigator.credentials?.get !== "function") {
-    throw new Error("This browser does not provide the WebAuthn assertion API required for commerce sign-in.");
-  }
-  const assertionCredential = await navigator.credentials.get({
-    publicKey: {
-      challenge: decodeBase64Url(challenge.challenge),
-      rpId: challenge.rpId,
-      allowCredentials: [{ id: decodeBase64Url(credential.id), type: "public-key" }],
-      userVerification: challenge.userVerification,
-      timeout: challenge.timeout
-    }
-  });
-  if (!(assertionCredential instanceof PublicKeyCredential)) throw new Error("The browser did not return a passkey assertion.");
-  if (!(assertionCredential.response instanceof AuthenticatorAssertionResponse)) throw new Error("The browser did not return a WebAuthn assertion.");
-  const assertion = assertionCredential.response;
-  const rawId = encodeBase64Url(assertionCredential.rawId);
-  if (assertionCredential.id !== rawId || assertion.userHandle === null) {
-    throw new Error("The browser passkey assertion is missing its wallet binding.");
-  }
-  const response = await fetch("/api/auth/passkey/assertion", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "same-origin",
-    body: JSON.stringify({
-      walletAddress,
-      chainId: BNB_TESTNET.chainId,
-      response: {
-        id: assertionCredential.id,
-        rawId,
-        type: assertionCredential.type,
-        authenticatorAttachment: assertionCredential.authenticatorAttachment ?? undefined,
-        clientExtensionResults: assertionCredential.getClientExtensionResults(),
-        response: {
-          clientDataJSON: encodeBase64Url(assertion.clientDataJSON),
-          authenticatorData: encodeBase64Url(assertion.authenticatorData),
-          signature: encodeBase64Url(assertion.signature),
-          userHandle: encodeBase64Url(assertion.userHandle)
-        }
-      }
-    })
-  });
-  await parseResponse(response);
-}
 
 function publicStorageKey(identifier: string): string {
   return `bnbera:commerce:operation:${identifier}`;
@@ -162,13 +74,19 @@ function operationStatusTone(status: string): "success" | "warning" | "danger" |
   return "neutral";
 }
 
-export function CommerceJourney({ activation, identifier, commerceJobId = null }: JourneyProps) {
+export function CommerceJourney(props: JourneyProps) {
+  return (
+    <EoaWalletProvider>
+      <CommerceJourneyInner {...props} />
+    </EoaWalletProvider>
+  );
+}
+
+function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: JourneyProps) {
   const storageKey = useMemo(() => publicStorageKey(identifier), [identifier]);
   const quoteKey = useMemo(() => quoteStorageKey(identifier), [identifier]);
   const [authority, setAuthority] = useState<BrowserAuthority | null>(null);
-  const [passkeyBootstrap, setPasskeyBootstrap] = useState<PasskeyBootstrapRecord | null>(null);
-  const [walletNeedsActivation, setWalletNeedsActivation] = useState(false);
-  const [passkeyAuthenticated, setPasskeyAuthenticated] = useState(false);
+  const [walletAuthenticated, setWalletAuthenticated] = useState(false);
   const [operationId, setOperationId] = useState<string | null>(null);
   const [operation, setOperation] = useState<CommerceActionResponse["operation"]>(null);
   const [job, setJob] = useState<CommerceActionResponse["job"]>(null);
@@ -182,15 +100,20 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   const [reviewComment, setReviewComment] = useState("");
   const [reviewSent, setReviewSent] = useState(false);
   const [transactionHashDraft, setTransactionHashDraft] = useState("");
-  const [walletAddressCopyState, setWalletAddressCopyState] = useState<WalletAddressCopyState>("idle");
-  const walletAddressInputRef = useRef<HTMLInputElement | null>(null);
-  const authInFlight = useRef(false);
-  const activationInFlight = useRef(false);
+  const previousWallet = useRef<EoaWalletSnapshot | null>(null);
+  const logoutInFlight = useRef(false);
+  const { address, chainId, isConnected } = useAccount();
+  const { connectors, connectAsync, isPending: connectionPending } = useConnect();
+  const { disconnect } = useDisconnect();
+  const { switchChainAsync, isPending: switchPending } = useSwitchChain();
+  const { signMessageAsync, isPending: signPending } = useSignMessage();
+  const { data: walletClient } = useWalletClient();
 
-  const bootstrapRelayStatusReader = useMemo(() => {
-    if (BNB_TESTNET.chainId !== PASSKEY_BOOTSTRAP_CHAIN_ID || typeof BNB_TESTNET.relayUrl !== "string" || BNB_TESTNET.relayUrl.trim() === "") return null;
-    return createPasskeyBootstrapRelayStatusReader(BNB_TESTNET.relayUrl);
-  }, []);
+  const walletSnapshot = useMemo<EoaWalletSnapshot>(() => ({
+    connected: isConnected,
+    address,
+    chainId
+  }), [address, chainId, isConnected]);
 
   const rememberOperation = useCallback((nextOperationId: string) => {
     setOperationId(nextOperationId);
@@ -205,38 +128,95 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
     setQuoteConfirmed(true);
   }, [rememberOperation]);
 
-  const rememberPasskeyBootstrap = useCallback((record: PasskeyBootstrapRecord) => {
-    setPasskeyBootstrap(record);
-    window.localStorage.setItem(PASSKEY_BOOTSTRAP_STORAGE_KEY, serializePasskeyBootstrapRecord(record));
+  const clearBrowserAuthority = useCallback(() => {
+    setAuthority(null);
+    setWalletAuthenticated(false);
+    // A dispatch returned for the previous account must never be sent by the
+    // next account, even if the operation itself remains visible on reload.
+    setDispatch(null);
   }, []);
 
-  const authenticateBrowserAuthority = useCallback(async (nextAuthority: BrowserAuthority): Promise<void> => {
-    if (passkeyAuthenticated || authInFlight.current) return;
-    authInFlight.current = true;
+  const logoutBrowserSession = useCallback(async () => {
+    if (logoutInFlight.current) return;
+    logoutInFlight.current = true;
     try {
-      await authenticateBrowserPasskey(nextAuthority.wallet.address, nextAuthority.signer);
-      setAuthority(nextAuthority);
-      setPasskeyAuthenticated(true);
-      setWalletNeedsActivation(false);
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store"
+      });
     } finally {
-      authInFlight.current = false;
+      logoutInFlight.current = false;
     }
-  }, [passkeyAuthenticated]);
+  }, []);
 
-  const reconcileSavedPasskeyBootstrap = useCallback(async (record: PasskeyBootstrapRecord): Promise<PasskeyBootstrapRecord> => {
-    if (bootstrapRelayStatusReader === null) throw new Error("The standards-locked Altana relay is unavailable; wallet activation stays disabled.");
-    const result = await reconcilePasskeyBootstrapRecord({
-      record,
-      readStatus: bootstrapRelayStatusReader,
-      persist: rememberPasskeyBootstrap
-    });
-    setWalletNeedsActivation(result.status !== "confirmed");
-    if (result.message !== undefined && result.status !== "confirmed") setError(result.message);
-    if (result.status === "confirmed" && authority !== null) {
-      await authenticateBrowserAuthority(authority);
+  const connectWallet = useCallback(async () => {
+    const connector = connectors[0];
+    if (connector === undefined) {
+      throw new Error("WalletConnect is not configured for this preview. Set NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID and reload.");
     }
-    return result.record;
-  }, [authenticateBrowserAuthority, authority, bootstrapRelayStatusReader, rememberPasskeyBootstrap]);
+    const connected = await connectAsync({ connector, chainId: EOA_BUYER_CHAIN_ID });
+    if (connected.chainId !== EOA_BUYER_CHAIN_ID) {
+      await switchChainAsync({ chainId: EOA_BUYER_CHAIN_ID });
+    }
+  }, [connectAsync, connectors, switchChainAsync]);
+
+  const signInWithWallet = useCallback(async () => {
+    if (!isConnected || address === undefined) throw new Error("Connect a WalletConnect EOA before signing in.");
+    if (chainId !== EOA_BUYER_CHAIN_ID) throw new Error("Switch WalletConnect to BNB Smart Chain testnet before signing in.");
+    if (walletClient === undefined) throw new Error("The connected wallet is not ready to sign yet. Try again.");
+
+    const challengeResponse = await fetch("/api/auth/siwe/challenge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      cache: "no-store",
+      body: JSON.stringify({ address, chainId: EOA_BUYER_CHAIN_ID })
+    });
+    const challenge = await parseResponse<EoaSiweChallengeResponse>(challengeResponse);
+    const message = formatSiweMessage({
+      address: challenge.address,
+      chainId: challenge.chainId,
+      domain: challenge.domain,
+      uri: challenge.uri,
+      nonce: challenge.nonce,
+      issuedAt: challenge.issuedAt,
+      expirationTime: challenge.expirationTime,
+      statement: challenge.statement
+    });
+    if (message !== challenge.message) throw new Error("The server SIWE challenge was not canonical.");
+    const signature = await signMessageAsync({ message });
+    await parseResponse(await fetch("/api/auth/siwe/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      cache: "no-store",
+      body: JSON.stringify({
+        address: challenge.address,
+        chainId: challenge.chainId,
+        domain: challenge.domain,
+        uri: challenge.uri,
+        nonce: challenge.nonce,
+        issuedAt: challenge.issuedAt,
+        expirationTime: challenge.expirationTime,
+        statement: challenge.statement,
+        message,
+        signature
+      })
+    }));
+    setAuthority({ address, chainId: EOA_BUYER_CHAIN_ID, walletClient });
+    setWalletAuthenticated(true);
+  }, [address, chainId, isConnected, signMessageAsync, walletClient]);
+
+  const switchToBuyerChain = useCallback(async () => {
+    await switchChainAsync({ chainId: EOA_BUYER_CHAIN_ID });
+  }, [switchChainAsync]);
+
+  const disconnectWallet = useCallback(() => {
+    clearBrowserAuthority();
+    void logoutBrowserSession();
+    disconnect();
+  }, [clearBrowserAuthority, disconnect, logoutBrowserSession]);
 
   const loadOperation = useCallback(async (id: string) => {
     const response = await fetch(`/api/commerce/operation/${encodeURIComponent(id)}`, { cache: "no-store" });
@@ -247,11 +227,6 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   }, []);
 
   useEffect(() => {
-    const storedBootstrap = parsePasskeyBootstrapRecord(window.localStorage.getItem(PASSKEY_BOOTSTRAP_STORAGE_KEY));
-    if (storedBootstrap !== null) {
-      setPasskeyBootstrap(storedBootstrap);
-      setWalletNeedsActivation(storedBootstrap.status !== "confirmed");
-    }
     const storedQuote = window.localStorage.getItem(quoteKey);
     if (storedQuote !== null) {
       try {
@@ -274,23 +249,6 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   }, [loadOperation, quoteKey, storageKey]);
 
   useEffect(() => {
-    const record = passkeyBootstrap;
-    if (record === null || record.callsId === null || record.status === "confirmed" || record.status === "failed" || bootstrapRelayStatusReader === null) return undefined;
-    let stopped = false;
-    const poll = async () => {
-      if (stopped) return;
-      try {
-        await reconcileSavedPasskeyBootstrap(record);
-      } catch (cause) {
-        if (!stopped) setError(cause instanceof Error ? cause.message : "The saved passkey activation could not be reconciled.");
-      }
-    };
-    void poll();
-    const timer = window.setInterval(() => void poll(), POLL_INTERVAL_MS);
-    return () => { stopped = true; window.clearInterval(timer); };
-  }, [bootstrapRelayStatusReader, passkeyBootstrap?.callsId, passkeyBootstrap?.status, reconcileSavedPasskeyBootstrap]);
-
-  useEffect(() => {
     if (operationId === null) return undefined;
     let stopped = false;
     const poll = async () => {
@@ -303,121 +261,38 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
     return () => { stopped = true; window.clearInterval(timer); };
   }, [loadOperation, operationId]);
 
-  const connectPasskey = async (recover: boolean) => {
-    setBusy(true);
-    setError(null);
-    try {
-      if (BNB_TESTNET.chainId !== PASSKEY_BOOTSTRAP_CHAIN_ID) throw new Error("The standards-locked passkey bootstrap network is not BNB testnet chain 97.");
-      if (!recover && passkeyBootstrap !== null) throw new Error("A passkey wallet activation already exists. Recover or reconcile it before creating another wallet.");
-      if (recover && passkeyBootstrap !== null && passkeyBootstrap.status !== "confirmed") {
-        if (passkeyBootstrap.callsId === null && passkeyBootstrap.status !== "unknown") throw new Error("This passkey wallet has not started activation yet. Finish activation in the original browser tab; no second wallet will be created.");
-        if (passkeyBootstrap.callsId !== null) {
-          const reconciled = await reconcileSavedPasskeyBootstrap(passkeyBootstrap);
-          if (reconciled.status !== "confirmed") return;
-        }
-      }
-      const client = createClient({ chains: [BNB_TESTNET], defaultChainId: BNB_TESTNET.chainId });
-      // A missing-ID unknown marker can only use the SDK's read-only recovery:
-      // recoverFromPasskey reads KeyStore and refuses wallets without a root
-      // admin key. It never rebroadcasts the lost first execute.
-      const result = recover
-        ? await client.recoverFromPasskey({ chainId: BNB_TESTNET.chainId })
-        : await client.createPasskeyWallet({ name: "BNBEra commerce" });
-      const nextAuthority: BrowserAuthority = { wallet: result, signer: result.signer };
-      if (recover) {
-        if (passkeyBootstrap !== null && nextAuthority.wallet.address.toLowerCase() !== passkeyBootstrap.walletAddress.toLowerCase()) {
-          throw new Error("The recovered passkey does not match the saved activation wallet; no server sign-in was attempted.");
-        }
-        await authenticateBrowserAuthority(nextAuthority);
-      } else {
-        const initial = createUnregisteredPasskeyBootstrapRecord(result.address);
-        rememberPasskeyBootstrap(initial);
-        setAuthority(nextAuthority);
-        setPasskeyAuthenticated(false);
-        setWalletNeedsActivation(true);
-      }
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : "The browser passkey authority could not be prepared.";
-      setError(recover && /has no keys registered|never executed a transaction/iu.test(message)
-        ? "This passkey wallet has not completed its first on-chain registration yet. Recovery and server sign-in stay unavailable until an authorized first on-chain action registers its admin key; creating the passkey alone does not bootstrap that registration."
-        : message);
-    } finally { setBusy(false); }
-  };
-
-  const activateWallet = async () => {
-    if (authority === null) { setError("Create a passkey wallet before activating it."); return; }
-    if (BNB_TESTNET.chainId !== PASSKEY_BOOTSTRAP_CHAIN_ID) { setError("The standards-locked passkey bootstrap network is not BNB testnet chain 97."); return; }
-    if (bootstrapRelayStatusReader === null) { setError("The standards-locked Altana relay is unavailable; wallet activation stays disabled."); return; }
-    if (activationInFlight.current) return;
-    activationInFlight.current = true;
-    setBusy(true);
-    setError(null);
-    try {
-      const client = createClient({ chains: [BNB_TESTNET], defaultChainId: PASSKEY_BOOTSTRAP_CHAIN_ID });
-      const outcome = await activateFreshPasskeyWallet({
-        walletAddress: authority.wallet.address,
-        walletState: walletNeedsActivation ? "new_unregistered" : "already_registered",
-        record: passkeyBootstrap,
-        // The SDK's admin execute inspects KeyStore and prepends its
-        // initialRegisterKey call when this user-call list is empty. That
-        // first registration stays in the browser-owned signer boundary.
-        execute: async () => client.execute({
-          wallet: authority.wallet,
-          signer: authority.wallet.signer,
-          chainId: PASSKEY_BOOTSTRAP_CHAIN_ID,
-          calls: [],
-          noWait: true
-        }),
-        readStatus: bootstrapRelayStatusReader,
-        persist: rememberPasskeyBootstrap
-      });
-      if (outcome.shouldAuthenticate) {
-        await authenticateBrowserAuthority(authority);
-      } else if (outcome.message !== undefined) {
-        setError(outcome.message);
-      }
-      setWalletNeedsActivation(outcome.status !== "confirmed" && outcome.status !== "already_registered");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Wallet activation could not be completed.");
-    } finally {
-      activationInFlight.current = false;
-      setBusy(false);
+  useEffect(() => {
+    const previous = previousWallet.current;
+    if (shouldInvalidateEoaAuthority(previous, walletSnapshot, authority)) {
+      clearBrowserAuthority();
+      void logoutBrowserSession();
+      setError("The connected account or network changed. Sign in again before continuing.");
     }
-  };
+    previousWallet.current = walletSnapshot;
+  }, [authority, clearBrowserAuthority, logoutBrowserSession, walletSnapshot]);
 
-  const walletAddressForFunding = authority?.wallet.address
-    ?? (passkeyBootstrap !== null && passkeyBootstrap.status !== "confirmed" ? passkeyBootstrap.walletAddress : null);
-
-  const copyWalletAddress = async () => {
-    if (walletAddressForFunding === null) return;
-    setWalletAddressCopyState("copying");
-    if (typeof navigator !== "undefined" && typeof navigator.clipboard?.writeText === "function") {
-      try {
-        await navigator.clipboard.writeText(walletAddressForFunding);
-        setWalletAddressCopyState("copied");
-        return;
-      } catch {
-        // Fall through to the legacy/manual path when clipboard permission is
-        // denied or unavailable in this browser context.
-      }
-    }
-    const addressInput = walletAddressInputRef.current;
-    if (addressInput !== null) {
-      addressInput.focus();
-      addressInput.select();
-      try {
-        if (typeof document !== "undefined" && typeof document.execCommand === "function" && document.execCommand("copy")) {
-          setWalletAddressCopyState("copied");
+  useEffect(() => {
+    if (!isConnected || address === undefined || chainId !== EOA_BUYER_CHAIN_ID || walletClient === undefined || walletAuthenticated) return undefined;
+    let stopped = false;
+    void fetch("/api/auth/session", { cache: "no-store", credentials: "same-origin" })
+      .then((response) => parseResponse<{ readonly authenticated?: boolean; readonly walletAddress?: string; readonly chainId?: number }>(response))
+      .then((session) => {
+        if (stopped || session.authenticated !== true) return;
+        if (session.walletAddress?.toLowerCase() !== address.toLowerCase() || session.chainId !== EOA_BUYER_CHAIN_ID) {
+          // Do not leave a cookie for a previous account active when a
+          // restored WalletConnect session belongs to another EOA.
+          void logoutBrowserSession();
           return;
         }
-      } catch {
-        // Manual selection remains the fallback when legacy copy is blocked.
-      }
-    }
-    setWalletAddressCopyState("manual");
-  };
+        setAuthority({ address, chainId: EOA_BUYER_CHAIN_ID, walletClient });
+        setWalletAuthenticated(true);
+      })
+      .catch(() => undefined);
+    return () => { stopped = true; };
+  }, [address, chainId, isConnected, logoutBrowserSession, walletAuthenticated, walletClient]);
 
   const requestQuote = async () => {
+    if (!walletAuthenticated) { setError("Connect and sign in with the buyer wallet before requesting a quote."); return; }
     if (task.trim() === "") { setError("Describe the result you need before requesting a quote."); return; }
     setBusy(true);
     setError(null);
@@ -439,6 +314,7 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   };
 
   const prepareHire = async () => {
+    if (!walletAuthenticated) { setError("Connect and sign in with the buyer wallet before preparing funding."); return; }
     const reservationId = quote?.quoteId ?? commerceJobId;
     if (reservationId === null || reservationId === undefined) { setError("No server-created quote is available for this listing."); return; }
     setBusy(true);
@@ -456,32 +332,16 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   };
 
   const dispatchBrowser = async (nextDispatch: CommerceBrowserDispatch) => {
-    if (authority === null) { setError("Connect the browser passkey wallet before signing this action."); return; }
-    if (nextDispatch.chainId !== BNB_TESTNET.chainId) { setError("The persisted operation network is not the configured BNB testnet."); return; }
-    if (authority.wallet.address.toLowerCase() !== nextDispatch.actorAddress.toLowerCase()) { setError("The connected browser wallet does not match the authenticated operation actor; no call was sent."); return; }
-    setBusy(true);
-    setError(null);
-    try {
-      const result = nextDispatch.action === "hire"
-        ? await hireErc8183Agent(authority.wallet, authority.signer, {
-            provider: nextDispatch.providerAddress as `0x${string}`,
-            task: nextDispatch.task as string,
-            budget: BigInt(nextDispatch.budgetAtomic as string),
-            ...(nextDispatch.deadlineSeconds === null ? {} : { deadlineSeconds: nextDispatch.deadlineSeconds })
-          }, { network: BNB_TESTNET, noWait: true })
-        : await settleErc8183Job(authority.wallet, authority.signer, {
-            jobId: BigInt(nextDispatch.jobId as string),
-            action: nextDispatch.action === "dispute" ? "dispute" : "approve"
-          }, { network: BNB_TESTNET, noWait: true });
-      const response = await fetch("/api/commerce/dispatch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ operationId: nextDispatch.operationId, callsId: result.callsId, ...(result.transactionHash === undefined ? {} : { transactionHash: result.transactionHash }) })
-      });
-      applyAction(await parseResponse<CommerceActionResponse>(response));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "The browser operation did not complete.");
-    } finally { setBusy(false); }
+    if (authority === null || !walletAuthenticated) { setError("Connect and sign in with the buyer wallet before signing this action."); return; }
+    if (nextDispatch.chainId !== EOA_BUYER_CHAIN_ID) { setError("The persisted operation network is not BNB Smart Chain testnet."); return; }
+    if (!isEoaAuthorityCurrent(walletSnapshot, { address: authority.address, chainId: EOA_BUYER_CHAIN_ID }) || authority.address.toLowerCase() !== nextDispatch.actorAddress.toLowerCase()) {
+      setError("The connected wallet does not match the authenticated operation actor; no call was sent.");
+      return;
+    }
+    // The browser-owned ERC-8183 EOA transaction adapter attaches public
+    // calls/receipt evidence in the dependent commerce slice. Keeping this
+    // guard here ensures no Altana/passkey writer can be reached meanwhile.
+    setError("The EOA commerce transaction adapter is not enabled in this canary yet.");
   };
 
   const attachTransactionHash = async () => {
@@ -510,6 +370,10 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   };
 
   const decide = async (action: "approve" | "dispute") => {
+    if (!walletAuthenticated) {
+      setError("Connect and sign in with the buyer wallet before deciding this result.");
+      return;
+    }
     if (job === null || job.submission === null) return;
     setBusy(true);
     setError(null);
@@ -526,6 +390,10 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   };
 
   const createReview = async () => {
+    if (!walletAuthenticated) {
+      setError("Connect and sign in with the buyer wallet before saving a review.");
+      return;
+    }
     const reservationId = quote?.quoteId ?? commerceJobId;
     if (reservationId === null || reservationId === undefined) return;
     setBusy(true);
@@ -550,37 +418,38 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
   const completed = job?.job.state === "completed";
   const submission = job?.submission ?? null;
   const submitted = job !== null && job.job.state === "submitted" && submission !== null;
-  const savedActivationInFlight = passkeyBootstrap !== null
-    && passkeyBootstrap.callsId !== null
-    && passkeyBootstrap.status !== "confirmed"
-    && passkeyBootstrap.status !== "failed";
-  const activationButtonLabel = savedActivationInFlight ? "Check wallet activation" : "Activate wallet";
 
   return (
     <div className="commerce-journey" data-testid="commerce-journey">
       <div className="commerce-journey__header"><strong>ERC-8183 paid task</strong>{operation !== null && <StatusBadge value={statusLabel(operation.status)} tone={operationStatusTone(operation.status)} />}</div>
-      {walletAddressForFunding !== null && walletNeedsActivation && <PublicWalletFunding
-        identifier={identifier}
-        walletAddress={walletAddressForFunding}
-        copyState={walletAddressCopyState}
-        addressInputRef={walletAddressInputRef}
-        onCopy={() => void copyWalletAddress()}
-      />}
-      {authority === null ? <div className="commerce-journey__authority">
-        <p className="detail-section__lede">Signing stays in this browser. BNBEra receives only the operation ID and public relay evidence.</p>
-        {savedActivationInFlight && <p className="muted-label">Wallet activation is being reconciled from its saved public relay calls ID. No duplicate activation will be sent.</p>}
-        <div className="detail-actions">
-          <button className="button button--ghost button--small" type="button" disabled={busy || savedActivationInFlight} onClick={() => void connectPasskey(true)}>Recover passkey wallet</button>
-          <button className="button button--ghost button--small" type="button" disabled={busy || passkeyBootstrap !== null} onClick={() => void connectPasskey(false)}>Create passkey wallet</button>
-          {savedActivationInFlight && <button className="button button--ghost button--small" type="button" disabled={busy} onClick={() => { if (passkeyBootstrap !== null) void reconcileSavedPasskeyBootstrap(passkeyBootstrap); }}>{activationButtonLabel}</button>}
-        </div>
-      </div> : walletNeedsActivation ? <div className="commerce-journey__authority">
-        <p className="detail-section__lede">Passkey wallet created. Activate it once to register its admin key on BNB testnet, then BNBEra will run the existing WebAuthn sign-in check.</p>
-        <p className="muted-label">Activation uses the SDK&apos;s native KeyStore registration and Altana relay fee; fund the wallet with enough BNB testnet gas first.</p>
-        {passkeyBootstrap?.status === "pending" && <p className="muted-label">Activation is pending; its public relay calls ID is saved and will not be submitted again.</p>}
-        {passkeyBootstrap?.status === "unknown" && <p className="muted-label">Activation outcome is unknown; the saved calls ID must reconcile before another attempt.</p>}
-        <button className="button button--primary" type="button" disabled={busy} onClick={() => void activateWallet()}>{activationButtonLabel}</button>
-      </div> : <p className="muted-label">Browser wallet ready · signer remains in memory only</p>}
+      <div className="commerce-journey__authority">
+        <p className="detail-section__lede">Connect with WalletConnect to use MetaMask or another EOA wallet. BNBEra receives only the signed SIWE proof and public operation evidence; it never receives wallet keys.</p>
+        {!isConnected && <>
+          {!walletConnectProjectConfigured && <p className="muted-label">WalletConnect is unavailable in this preview until <code>NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID</code> is configured. Marketplace browsing remains available.</p>}
+          <button className="button button--primary" type="button" disabled={busy || connectionPending || !walletConnectProjectConfigured} onClick={() => {
+            setBusy(true);
+            setError(null);
+            void connectWallet().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "WalletConnect could not connect.")).finally(() => setBusy(false));
+          }}>{walletConnectProjectConfigured ? "Connect WalletConnect" : "WalletConnect unavailable"}</button>
+        </>}
+        {isConnected && chainId !== EOA_BUYER_CHAIN_ID && <>
+          <p className="muted-label">Connected on chain {chainId ?? "unknown"}. Commerce requires BNB Smart Chain testnet (97).</p>
+          <button className="button button--primary" type="button" disabled={busy || switchPending} onClick={() => {
+            setBusy(true);
+            setError(null);
+            void switchToBuyerChain().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "The wallet network could not be changed.")).finally(() => setBusy(false));
+          }}>Switch to BNB testnet</button>
+        </>}
+        {isConnected && chainId === EOA_BUYER_CHAIN_ID && !walletAuthenticated && <button className="button button--primary" type="button" disabled={busy || signPending} onClick={() => {
+          setBusy(true);
+          setError(null);
+          void signInWithWallet().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "The wallet sign-in could not be completed.")).finally(() => setBusy(false));
+        }}>Sign in with wallet</button>}
+        {isConnected && chainId === EOA_BUYER_CHAIN_ID && walletAuthenticated && <div className="detail-actions">
+          <p className="muted-label">Buyer wallet ready · {authority?.address ?? address}</p>
+          <button className="button button--ghost button--small" type="button" disabled={busy} onClick={disconnectWallet}>Disconnect wallet</button>
+        </div>}
+      </div>
       {error !== null && <Callout title="Commerce action stopped" tone="warning" icon="!">{error}</Callout>}
       {operationId === null && quote === null && <div className="commerce-journey__quote">
         <label htmlFor={`${identifier}-task`}>Task</label>
@@ -598,7 +467,7 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
         <button className="button button--primary" type="button" disabled={busy || !quoteConfirmed} onClick={() => void prepareHire()}>Prepare explicit funding</button>
         <button className="button button--ghost button--small" type="button" disabled={busy} onClick={() => { setQuote(null); setQuoteConfirmed(false); window.localStorage.removeItem(quoteKey); }}>Request a fresh quote</button>
       </div>}
-      {canDispatch && <button className="button button--primary" type="button" disabled={busy || authority === null} onClick={() => void dispatchBrowser(dispatch)}>Explicitly fund / sign</button>}
+      {canDispatch && <button className="button button--primary" type="button" disabled={busy || authority === null || !walletAuthenticated || chainId !== EOA_BUYER_CHAIN_ID} onClick={() => void dispatchBrowser(dispatch)}>Explicitly fund / sign</button>}
       {pending && operation?.status !== "awaiting_signature" && <p className="muted-label">This operation is pending or ambiguous. It will not be resent. Reload or attach the same public transaction hash when available.</p>}
       {pending && operation?.status !== "awaiting_signature" && operation?.callsId !== null && <div className="commerce-journey__recovery">
         <label htmlFor={`${identifier}-transaction-hash`}>Public transaction hash (optional recovery)</label>
@@ -617,13 +486,13 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
       </div>}
       {submitted && <div className="commerce-journey__decision">
         <p className="detail-section__lede">Inspect the exact bytes and digest, then choose one buyer decision.</p>
-        <div className="detail-actions"><button className="button button--primary" type="button" disabled={busy || authority === null} onClick={() => void decide("approve")}>Approve and settle</button><button className="button button--ghost button--small" type="button" disabled={busy || authority === null} onClick={() => void decide("dispute")}>Dispute result</button></div>
+        <div className="detail-actions"><button className="button button--primary" type="button" disabled={busy || authority === null || !walletAuthenticated || chainId !== EOA_BUYER_CHAIN_ID} onClick={() => void decide("approve")}>Approve and settle</button><button className="button button--ghost button--small" type="button" disabled={busy || authority === null || !walletAuthenticated || chainId !== EOA_BUYER_CHAIN_ID} onClick={() => void decide("dispute")}>Dispute result</button></div>
       </div>}
       {completed && !reviewSent && <div className="commerce-journey__review">
         <p className="eyebrow">Verified-purchase review</p>
         <select value={reviewScore} onChange={(event) => setReviewScore(event.target.value)} aria-label="Review score"><option value="5">5 · Excellent</option><option value="4">4 · Good</option><option value="3">3 · Mixed</option><option value="2">2 · Poor</option><option value="1">1 · Failed</option></select>
         <textarea value={reviewComment} maxLength={2_000} onChange={(event) => setReviewComment(event.target.value)} placeholder="Optional buyer note" aria-label="Review comment" />
-        <button className="button button--ghost button--small" type="button" disabled={busy || (quote?.quoteId ?? commerceJobId) === null || (quote?.quoteId ?? commerceJobId) === undefined} onClick={() => void createReview()}>Save verified review</button>
+        <button className="button button--ghost button--small" type="button" disabled={busy || !walletAuthenticated || (quote?.quoteId ?? commerceJobId) === null || (quote?.quoteId ?? commerceJobId) === undefined} onClick={() => void createReview()}>Save verified review</button>
       </div>}
       {completed && reviewSent && <p className="muted-label">Verified-purchase review saved for this completed job.</p>}
     </div>
