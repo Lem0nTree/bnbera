@@ -44,6 +44,7 @@ type EnabledReferenceProviderRunnerConfig = ReferenceProviderRunnerConfig & {
   readonly enabled: true;
   readonly identity: Erc8004Identity;
   readonly jobKey: Erc8183JobKey;
+  readonly expectedOwnerAddress: string;
   readonly providerAddress: string;
   readonly providerEndpoint: string;
   readonly authoritySecretReference: string;
@@ -57,6 +58,7 @@ function enabledReferenceProviderConfig(input: ReferenceProviderRunnerConfig): E
     !config.enabled ||
     config.identity === undefined ||
     config.jobKey === undefined ||
+    config.expectedOwnerAddress === undefined ||
     config.providerAddress === undefined ||
     config.providerEndpoint === undefined ||
     config.authoritySecretReference === undefined ||
@@ -166,7 +168,11 @@ export function referenceProviderIdentityRegistryFromStandardsLock(lock: unknown
 
 type IdentityProjectionRow = {
   readonly owner_address: string | null;
+  readonly owner_observed_block: number | string | null;
   readonly agent_wallet: string | null;
+  readonly agent_wallet_observed_block: number | string | null;
+  readonly agent_uri: string | null;
+  readonly agent_uri_observed_block: number | string | null;
   readonly observed_block: number | string | null;
   readonly observed_block_hash: string | null;
   readonly read_consistency: string | null;
@@ -179,12 +185,16 @@ type IdentityProjectionRow = {
  * needed by the provider runner.
  */
 export class PostgresReferenceProviderJobSelector implements ReferenceProviderJobSelector {
+  private readonly expectedOwnerAddress: `0x${string}`;
+
   public constructor(
     private readonly pool: Erc8183OperationQueryPool,
     private readonly jobs: Pick<PostgresErc8183JobRepository, "get">,
-    private readonly taskInput: ReferenceProviderTaskInput
+    private readonly taskInput: ReferenceProviderTaskInput,
+    expectedOwnerAddress: string
   ) {
     referenceProviderTaskInputSchema.parse(taskInput);
+    this.expectedOwnerAddress = normalizeAddress(expectedOwnerAddress, "expected reference identity owner");
   }
 
   public async select(input: {
@@ -199,7 +209,10 @@ export class PostgresReferenceProviderJobSelector implements ReferenceProviderJo
     if (job === null) return null;
     if (job.terms.providerAddress === null || normalizeAddress(job.terms.providerAddress, "job provider address") !== providerAddress) return null;
     const identityResult = await this.pool.query<IdentityProjectionRow>(`
-      SELECT owner_address, agent_wallet, observed_block, observed_block_hash, read_consistency
+      SELECT owner_address, owner_observed_block,
+             agent_wallet, agent_wallet_observed_block,
+             agent_uri, agent_uri_observed_block,
+             observed_block, observed_block_hash, read_consistency
       FROM erc8004_identities
       WHERE namespace = $1
         AND chain_id = $2
@@ -208,19 +221,35 @@ export class PostgresReferenceProviderJobSelector implements ReferenceProviderJo
       LIMIT 1
     `, [identity.namespace, identity.chainId, identity.identityRegistry.toLowerCase(), identity.agentId]);
     const row = identityResult.rows[0];
+    const observedBlock = typeof row?.observed_block === "string" ? Number(row.observed_block) : row?.observed_block;
+    const fieldBlocks = [row?.owner_observed_block, row?.agent_wallet_observed_block, row?.agent_uri_observed_block]
+      .map((value) => typeof value === "string" ? Number(value) : value);
+    const completeFieldProvenance = observedBlock !== null && observedBlock !== undefined && Number.isSafeInteger(observedBlock) && observedBlock >= 0 &&
+      fieldBlocks.every((value) => value !== null && value !== undefined && Number.isSafeInteger(value) && value >= 0 && value <= observedBlock);
     if (
       row === undefined ||
       row.read_consistency !== "finalized" ||
-      row.observed_block === null ||
+      observedBlock === null ||
+      observedBlock === undefined ||
+      !Number.isSafeInteger(observedBlock) ||
+      observedBlock < 0 ||
       row.observed_block_hash === null ||
-      !/^0x[0-9a-f]{64}$/iu.test(row.observed_block_hash)
+      !/^0x[0-9a-f]{64}$/iu.test(row.observed_block_hash) ||
+      !completeFieldProvenance ||
+      typeof row.agent_uri !== "string" || row.agent_uri.trim() === ""
     ) return null;
-    // Keep the ownership assertion in the runner. The selector is a read-only
-    // identity/job join; the runner still rejects mismatched owner/wallet
-    // evidence immediately before invoking the provider or authority.
+    const ownerAddress = row.owner_address === null
+      ? null
+      : normalizeAddress(row.owner_address, "reference identity owner");
+    if (ownerAddress === null || ownerAddress !== this.expectedOwnerAddress) {
+      throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The finalized ERC-8004 identity owner does not match the configured expected owner.", nextAction: "reload_identity" });
+    }
+    if (row.agent_wallet === null || normalizeAddress(row.agent_wallet, "reference identity agent wallet") !== providerAddress) {
+      throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The finalized ERC-8004 agent wallet does not match the configured provider actor.", nextAction: "reload_identity" });
+    }
     return {
       job,
-      identityOwnerAddress: row.owner_address ?? "0x0000000000000000000000000000000000000000",
+      identityOwnerAddress: ownerAddress,
       identityAgentWallet: row.agent_wallet,
       account: taskInput.account,
       protocol: taskInput.protocol,
@@ -279,7 +308,7 @@ export function createReferenceProviderWorkerComposition(input: {
   const jobs = new PostgresErc8183JobRepository(input.pool);
   const serviceOptions: Erc8183CommerceServiceOptions = { adapter, operations, approvals: jobs, jobs };
   const service = new Erc8183CommerceService(serviceOptions);
-  const selector = new PostgresReferenceProviderJobSelector(input.pool, jobs, input.taskInput);
+  const selector = new PostgresReferenceProviderJobSelector(input.pool, jobs, input.taskInput, enabledConfig.expectedOwnerAddress);
   const runner = new Erc8183ReferenceProviderRunner({
     config: enabledConfig,
     selector,

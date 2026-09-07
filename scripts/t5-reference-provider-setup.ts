@@ -4,8 +4,10 @@
  * The default mode is read-only. It never registers an ERC-8004 identity,
  * writes a listing, or resolves the provider authority secret. `--publish`
  * remains separately guarded by T5_REFERENCE_PROVIDER_PUBLISH=true and only
- * calls the existing marketplace publication boundary after ownership and
- * finalized identity evidence have been observed.
+ * calls the existing marketplace publication boundary after the expected
+ * owner, provider wallet, URI and finalized identity evidence have been
+ * observed. Provider execution authority is resolved by the worker, not by
+ * this price/listing publication plan.
  */
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -23,6 +25,8 @@ type QueryPool = MarketplacePublicationPool;
 
 export type ReferenceProviderSetupConfig = {
   readonly identity: Erc8004Identity;
+  /** ERC-721 owner; deliberately independent from the provider wallet. */
+  readonly expectedOwnerAddress: string;
   readonly providerAddress: string;
   readonly cardUrl: string;
   readonly serviceUrl: string;
@@ -34,6 +38,7 @@ export type ReferenceProviderSetupReport = {
   readonly status: "ready_to_publish" | "blocked" | "published" | "withheld";
   readonly code: string;
   readonly identity: Erc8004Identity;
+  readonly expectedOwnerAddress: string;
   readonly providerAddress: string;
   readonly cardUrl: string;
   readonly serviceUrl: string;
@@ -45,6 +50,7 @@ export type ReferenceProviderSetupReport = {
     readonly identityRegistry: string;
     readonly agentId: string;
     readonly agentUri: string;
+    readonly ownerAddress: string;
     readonly agentWallet: string;
     readonly ownerActions: readonly ["register_agent_uri", "set_agent_wallet"];
     readonly broadcast: false;
@@ -60,8 +66,11 @@ type IdentityRow = {
   readonly identity_registry: string;
   readonly agent_id: string;
   readonly owner_address: string | null;
+  readonly owner_observed_block: number | string | null;
   readonly agent_wallet: string | null;
+  readonly agent_wallet_observed_block: number | string | null;
   readonly agent_uri: string | null;
+  readonly agent_uri_observed_block: number | string | null;
   readonly observed_block: number | string | null;
   readonly observed_block_hash: string | null;
   readonly read_consistency: string | null;
@@ -153,6 +162,12 @@ export async function referenceProviderConfigFromEnvironment(): Promise<Referenc
     identityRegistry: requiredAddress(typeof registry === "string" ? registry : null, "The standards-locked ERC-8004 identity registry"),
     agentId: agentId ?? "0"
   });
+  const expectedOwnerAddress = requiredAddress(
+    nonEmpty("T5_REFERENCE_PROVIDER_EXPECTED_OWNER_ADDRESS") ??
+      nonEmpty("T5_REFERENCE_PROVIDER_OWNER_ADDRESS") ??
+      nonEmpty("WALLET_ADDRESS"),
+    "The expected reference provider owner address"
+  );
   const providerAddress = requiredAddress(nonEmpty("T5_REFERENCE_PROVIDER_ADDRESS") ?? nonEmpty("WALLET_ADDRESS"), "The reference provider address");
   const secretReference = nonEmpty("T5_REFERENCE_PROVIDER_SECRET_REFERENCE");
   if (secretReference !== null && !referenceProviderSecretReferenceSchema.safeParse(secretReference).success) {
@@ -164,6 +179,7 @@ export async function referenceProviderConfigFromEnvironment(): Promise<Referenc
   const serviceUrl = requiredUrl(nonEmpty("T5_REFERENCE_PROVIDER_SERVICE_URL") ?? cardUrl, "The reference provider service URL");
   return {
     identity,
+    expectedOwnerAddress,
     providerAddress,
     cardUrl,
     serviceUrl,
@@ -178,6 +194,7 @@ function registrationPlan(config: ReferenceProviderSetupConfig): ReferenceProvid
     identityRegistry: config.identity.identityRegistry,
     agentId: config.identity.agentId,
     agentUri: config.cardUrl,
+    ownerAddress: config.expectedOwnerAddress,
     agentWallet: config.providerAddress,
     ownerActions: ["register_agent_uri", "set_agent_wallet"],
     broadcast: false,
@@ -188,7 +205,9 @@ function registrationPlan(config: ReferenceProviderSetupConfig): ReferenceProvid
 export async function inspectReferenceProviderSetup(pool: QueryPool, config: ReferenceProviderSetupConfig, options: { readonly publish?: boolean } = {}): Promise<ReferenceProviderSetupReport> {
   const result = await pool.query<IdentityRow>(
     `SELECT i.id, i.namespace, i.chain_id, i.identity_registry, i.agent_id,
-            i.owner_address, i.agent_wallet, i.agent_uri,
+            i.owner_address, i.owner_observed_block,
+            i.agent_wallet, i.agent_wallet_observed_block,
+            i.agent_uri, i.agent_uri_observed_block,
             i.observed_block, i.observed_block_hash, i.read_consistency
        FROM erc8004_identities i
       WHERE i.namespace = $1 AND i.chain_id = $2 AND i.identity_registry = $3 AND i.agent_id = $4
@@ -198,6 +217,7 @@ export async function inspectReferenceProviderSetup(pool: QueryPool, config: Ref
   const row = result.rows[0];
   const base = {
     identity: config.identity,
+    expectedOwnerAddress: config.expectedOwnerAddress,
     providerAddress: config.providerAddress,
     cardUrl: config.cardUrl,
     serviceUrl: config.serviceUrl,
@@ -211,25 +231,32 @@ export async function inspectReferenceProviderSetup(pool: QueryPool, config: Ref
   }
   // `owner_address` is the ERC-721 owner. `agent_wallet` is an independent
   // execution-wallet axis and must never be treated as proof of ownership.
-  const ownerMatches = row.owner_address?.toLowerCase() === config.providerAddress;
+  const ownerMatches = row.owner_address?.toLowerCase() === config.expectedOwnerAddress;
   if (!ownerMatches) {
-    return { ...base, status: "blocked", code: "IDENTITY_NOT_OWNED", diagnostics: ["The retained ERC-721 identity owner does not match the configured BNBEra provider address.", "The setup refuses to assign price or provider authority to this external identity."] };
+    return { ...base, status: "blocked", code: "IDENTITY_NOT_OWNED", diagnostics: ["The retained ERC-721 identity owner does not match the configured expected owner.", "The setup refuses to assign price or provider authority to this external identity."] };
   }
-  if (row.agent_uri === null || row.agent_uri.trim() === "") {
+  if (typeof row.agent_wallet !== "string" || row.agent_wallet.trim() === "") {
+    return { ...base, status: "blocked", code: "AGENT_WALLET_REQUIRED", diagnostics: ["The retained finalized identity has no observed agent wallet for the configured provider.", "The setup refuses to publish a price without an independent execution-wallet observation."] };
+  }
+  if (row.agent_wallet.toLowerCase() !== config.providerAddress) {
+    return { ...base, status: "blocked", code: "AGENT_WALLET_MISMATCH", diagnostics: ["The retained finalized agent wallet does not match the configured provider address.", "The setup keeps the ERC-721 owner and execution-wallet axes separate."] };
+  }
+  if (typeof row.agent_uri !== "string" || row.agent_uri.trim() === "") {
     return { ...base, status: "blocked", code: "AGENT_URI_REQUIRED", diagnostics: ["The owned identity has no observed agent card URI for the reference provider.", "Register the card URI and rerun ERC-8004 ingestion before publication."] };
   }
   if (row.agent_uri !== config.cardUrl) {
     return { ...base, status: "blocked", code: "AGENT_URI_MISMATCH", diagnostics: ["The owned identity points at a different public card URI.", "The setup refuses to relabel an existing identity as the BNBEra reference provider."] };
   }
   const observedBlock = typeof row.observed_block === "string" ? Number(row.observed_block) : row.observed_block;
-  if (row.read_consistency !== "finalized" || observedBlock === null || !Number.isSafeInteger(observedBlock) || observedBlock < 0 || row.observed_block_hash === null || !/^0x[0-9a-f]{64}$/iu.test(row.observed_block_hash)) {
+  const fieldBlocks = [row.owner_observed_block, row.agent_wallet_observed_block, row.agent_uri_observed_block]
+    .map((value) => typeof value === "string" ? Number(value) : value);
+  const completeFieldProvenance = observedBlock !== null && Number.isSafeInteger(observedBlock) && observedBlock >= 0 &&
+    fieldBlocks.every((value) => value !== null && Number.isSafeInteger(value) && value >= 0 && value <= observedBlock);
+  if (row.read_consistency !== "finalized" || observedBlock === null || !Number.isSafeInteger(observedBlock) || observedBlock < 0 || row.observed_block_hash === null || !/^0x[0-9a-f]{64}$/iu.test(row.observed_block_hash) || !completeFieldProvenance) {
     return { ...base, status: "blocked", code: "IDENTITY_READ_NOT_FINALIZED", diagnostics: ["Ownership and card URI are present, but the retained ERC-8004 read is not finalized with block provenance.", "Rerun the finalized registry ingestion before publication."] };
   }
   if (options.publish !== true) {
-    return { ...base, status: "ready_to_publish", code: "OWNED_IDENTITY_READY", diagnostics: ["Ownership is proven by the retained owner/agentWallet row. Publication remains opt-in and uses the existing publication boundary."] };
-  }
-  if (!config.secretReferenceConfigured) {
-    return { ...base, status: "withheld", code: "PROVIDER_SECRET_REFERENCE_REQUIRED", diagnostics: ["The owned reference provider has no configured secret-manager authority reference.", "Publication is withheld until the worker can resolve the provider authority without receiving a raw credential."] };
+    return { ...base, status: "ready_to_publish", code: "OWNED_IDENTITY_READY", diagnostics: ["Finalized owner, agent wallet, card URI and block provenance are present. Publication remains opt-in and uses the existing price/listing boundary; execution authority is checked separately by the worker."] };
   }
   const versions = await pool.query<ExistingVersionRow>(
     `SELECT av.public_metadata, av.capability_manifest

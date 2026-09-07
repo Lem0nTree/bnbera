@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
 import {
+  createReferenceProviderAuthorityResolver,
   runReferenceProviderWorker,
   sanitizeReferenceProviderRun,
   type ReferenceProviderWorkerDependencies
@@ -15,6 +16,8 @@ const ROUTER = "0xd7d36d66d2f1b608a0f943f722d27e3744f66f25";
 const POLICY = "0xd6a4217588f6b1f5657a92a3e94e6422ad771cea";
 const REGISTRY = "0x8004a818bfb912233c491871b3d84c89a494bd9e";
 const PROVIDER = "0x4444444444444444444444444444444444444444";
+const OWNER = "0x7777777777777777777777777777777777777777";
+const OTHER = "0x5555555555555555555555555555555555555555";
 const taskInput = {
   account: "0x3333333333333333333333333333333333333333",
   chainId: 97 as const,
@@ -42,6 +45,7 @@ function enabledEnvironment(): Record<string, string> {
     T5_REFERENCE_PROVIDER_AGENT_ID: "42",
     T5_REFERENCE_PROVIDER_COMMERCE_CONTRACT: COMMERCE,
     T5_REFERENCE_PROVIDER_JOB_ID: "7",
+    T5_REFERENCE_PROVIDER_EXPECTED_OWNER_ADDRESS: OWNER,
     T5_REFERENCE_PROVIDER_ADDRESS: PROVIDER,
     T5_REFERENCE_PROVIDER_SERVICE_URL: "https://provider.example/api/reference-provider/health-factor",
     T5_REFERENCE_PROVIDER_ROUTER_CONTRACT: ROUTER,
@@ -140,5 +144,14 @@ describe("T5 reference-provider worker runtime", () => {
     expect(composition.adapter.routerContract.toLowerCase()).toBe(ROUTER);
     expect(composition.adapter.policyContract.toLowerCase()).toBe(POLICY);
     expect(composition.runner).toBeDefined();
+  });
+
+  it("rejects an env-resolved signer whose derived address is not the configured provider", async () => {
+    const resolveAuthority = createReferenceProviderAuthorityResolver({
+      T5_REFERENCE_PROVIDER_ADDRESS: OTHER,
+      T5_REFERENCE_PROVIDER_PRIVATE_KEY: "0x0000000000000000000000000000000000000000000000000000000000000001"
+    });
+
+    await expect(resolveAuthority("env://T5_REFERENCE_PROVIDER_PRIVATE_KEY")).rejects.toMatchObject({ code: "UNAUTHORIZED_ACTOR" });
   });
 });

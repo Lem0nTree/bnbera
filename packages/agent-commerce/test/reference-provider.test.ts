@@ -4,6 +4,7 @@ import {
   CommerceError,
   Erc8183ReferenceProviderAdapter,
   Erc8183ReferenceProviderRunner,
+  PostgresReferenceProviderJobSelector,
   REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC,
   REFERENCE_PROVIDER_MAX_RESPONSE_BYTES,
   canonicalHealthFactorResultBytes,
@@ -29,6 +30,7 @@ const ROUTER = "0xd7d36d66d2f1b608a0f943f722d27e3744f66f25" as `0x${string}`;
 const POLICY = "0xd6a4217588f6b1f5657a92a3e94e6422ad771cea" as `0x${string}`;
 const CLIENT = "0x3333333333333333333333333333333333333333" as `0x${string}`;
 const PROVIDER = "0x4444444444444444444444444444444444444444" as `0x${string}`;
+const OWNER = "0x7777777777777777777777777777777777777777" as `0x${string}`;
 const OTHER = "0x5555555555555555555555555555555555555555" as `0x${string}`;
 const TOKEN = "0x6666666666666666666666666666666666666666" as `0x${string}`;
 const JOB_KEY: Erc8183JobKey = { chainId: 97, commerceContract: COMMERCE, jobId: "7" };
@@ -48,7 +50,10 @@ const SNAPSHOT = {
   observedBlockHash: `0x${"a".repeat(64)}`
 };
 
-const AUTHORITY = { wallet: { address: PROVIDER } } as unknown as Erc8183AltanaAuthority;
+const AUTHORITY = {
+  wallet: { address: PROVIDER },
+  signer: { type: "privateKey", address: PROVIDER, publicKey: "0x04", signDigest: vi.fn() }
+} as unknown as Erc8183AltanaAuthority;
 const PIN = {
   enabled: true as const,
   chainId: 97 as const,
@@ -147,6 +152,7 @@ const RUNNER_CONFIG = {
   chainId: 97 as const,
   identity: PROVIDER_BINDING.identity,
   jobKey: JOB_KEY,
+  expectedOwnerAddress: OWNER,
   providerAddress: PROVIDER,
   providerEndpoint: "https://provider.example/api/reference-provider/health-factor",
   authoritySecretReference: "secret://t5/reference-provider",
@@ -247,6 +253,34 @@ describe("BNBEra reference health-factor provider", () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
+  it("requires the resolved signer address to match the provider even when its wallet handle claims the provider", async () => {
+    const submit = vi.fn();
+    const resolveAuthority = vi.fn(async () => ({
+      wallet: { address: PROVIDER },
+      signer: { type: "privateKey", address: OTHER, publicKey: "0x04", signDigest: vi.fn() }
+    }) as unknown as Erc8183AltanaAuthority);
+    const provider = new Erc8183ReferenceProviderAdapter(
+      { submit } as unknown as Pick<Erc8183CommerceService, "submit">,
+      resolveAuthority
+    );
+
+    await expect(provider.submit({
+      idempotencyKey: referenceProviderIdempotencyKey(JOB_KEY),
+      jobKey: JOB_KEY,
+      providerBinding: PROVIDER_BINDING,
+      account: CLIENT,
+      protocol: "venus",
+      requestedAtUnix: 2_000_001,
+      lendingSnapshot: SNAPSHOT,
+      routerContract: ROUTER,
+      policyContract: POLICY,
+      providerAddress: PROVIDER,
+      requesterAddress: PROVIDER,
+      authoritySecretReference: "secret://t5/reference-provider"
+    })).rejects.toMatchObject({ code: "UNAUTHORIZED_ACTOR" });
+    expect(submit).not.toHaveBeenCalled();
+  });
+
   it("rejects unproven or zero debt snapshots instead of fabricating finance data", () => {
     expect(() => healthFactorLendingSnapshotSchema.parse({ ...SNAPSHOT, debtValueUsd: "0.0" })).toThrow(/positive debt/i);
     expect(() => healthFactorLendingSnapshotSchema.parse({ ...SNAPSHOT, sourceReference: "http://example.test/snapshot" })).toThrow(/HTTPS source/i);
@@ -266,6 +300,7 @@ describe("BNBEra reference health-factor provider", () => {
       T5_REFERENCE_PROVIDER_AGENT_ID: PROVIDER_BINDING.identity.agentId,
       T5_REFERENCE_PROVIDER_COMMERCE_CONTRACT: COMMERCE,
       T5_REFERENCE_PROVIDER_JOB_ID: JOB_KEY.jobId,
+      T5_REFERENCE_PROVIDER_EXPECTED_OWNER_ADDRESS: OWNER,
       T5_REFERENCE_PROVIDER_ADDRESS: PROVIDER,
       T5_REFERENCE_PROVIDER_SERVICE_URL: "https://provider.example/api/reference-provider/health-factor",
       T5_REFERENCE_PROVIDER_ROUTER_CONTRACT: ROUTER,
@@ -394,7 +429,7 @@ describe("BNBEra reference health-factor provider", () => {
     };
     const selector = { select: vi.fn(async () => ({
       job: ownedJob(),
-      identityOwnerAddress: PROVIDER,
+      identityOwnerAddress: OWNER,
       identityAgentWallet: PROVIDER,
       account: CLIENT,
       protocol: "venus",
@@ -448,7 +483,7 @@ describe("BNBEra reference health-factor provider", () => {
     });
     const runner = new Erc8183ReferenceProviderRunner({
       config: RUNNER_CONFIG,
-      selector: { select: vi.fn(async () => ({ job: ownedJob(), identityOwnerAddress: PROVIDER, identityAgentWallet: PROVIDER, account: CLIENT, protocol: "venus", requestedAtUnix: 2_000_001, lendingSnapshot: SNAPSHOT })) },
+      selector: { select: vi.fn(async () => ({ job: ownedJob(), identityOwnerAddress: OWNER, identityAgentWallet: PROVIDER, account: CLIENT, protocol: "venus", requestedAtUnix: 2_000_001, lendingSnapshot: SNAPSHOT })) },
       provider: { invoke: vi.fn(async () => ({ result: providerResult.result, resultBytes: canonicalHealthFactorResultBytes(providerResult.result), resultDigest: providerResult.resultDigest })) },
       service: { submit, reconcile } as never,
       operations: { getByIdempotencyKey: vi.fn(async (idempotencyKey: string) => stored.get(idempotencyKey) ?? null) },
@@ -469,7 +504,7 @@ describe("BNBEra reference health-factor provider", () => {
     const resolveAuthority = vi.fn();
     const runner = new Erc8183ReferenceProviderRunner({
       config: RUNNER_CONFIG,
-      selector: { select: vi.fn(async () => ({ job: ownedJob(OTHER), identityOwnerAddress: PROVIDER, identityAgentWallet: PROVIDER, account: CLIENT, protocol: "venus", requestedAtUnix: 2_000_001, lendingSnapshot: SNAPSHOT })) },
+      selector: { select: vi.fn(async () => ({ job: ownedJob(OTHER), identityOwnerAddress: OWNER, identityAgentWallet: PROVIDER, account: CLIENT, protocol: "venus", requestedAtUnix: 2_000_001, lendingSnapshot: SNAPSHOT })) },
       provider,
       service: { submit, reconcile: vi.fn() } as never,
       operations: { getByIdempotencyKey: vi.fn(async () => null) },
@@ -482,11 +517,26 @@ describe("BNBEra reference health-factor provider", () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
+  it("rejects a selected identity owned by a different ERC-8004 owner", async () => {
+    const provider = { invoke: vi.fn() };
+    const runner = new Erc8183ReferenceProviderRunner({
+      config: RUNNER_CONFIG,
+      selector: { select: vi.fn(async () => ({ job: ownedJob(), identityOwnerAddress: OTHER, identityAgentWallet: PROVIDER, account: CLIENT, protocol: "venus", requestedAtUnix: 2_000_001, lendingSnapshot: SNAPSHOT })) },
+      provider,
+      service: { submit: vi.fn(), reconcile: vi.fn() } as never,
+      operations: { getByIdempotencyKey: vi.fn(async () => null) },
+      resolveAuthority: vi.fn()
+    });
+
+    await expect(runner.run()).rejects.toMatchObject({ code: "UNAUTHORIZED_ACTOR" });
+    expect(provider.invoke).not.toHaveBeenCalled();
+  });
+
   it("requires an observed ERC-8004 agent wallet and enforces the provider budget cap", async () => {
     const provider = { invoke: vi.fn() };
     const selector = { select: vi.fn(async () => ({
       job: ownedJob(PROVIDER, `${BigInt(REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC) + 1n}`),
-      identityOwnerAddress: PROVIDER,
+      identityOwnerAddress: OWNER,
       identityAgentWallet: PROVIDER,
       account: CLIENT,
       protocol: "venus",
@@ -509,7 +559,7 @@ describe("BNBEra reference health-factor provider", () => {
       config: RUNNER_CONFIG,
       selector: { select: vi.fn(async () => ({
         job: ownedJob(),
-        identityOwnerAddress: PROVIDER,
+        identityOwnerAddress: OWNER,
         identityAgentWallet: null,
         account: CLIENT,
         protocol: "venus",
@@ -522,5 +572,78 @@ describe("BNBEra reference health-factor provider", () => {
       resolveAuthority: vi.fn()
     });
     await expect(walletMissing.run()).rejects.toMatchObject({ code: "UNAUTHORIZED_ACTOR" });
+
+    const walletWrong = new Erc8183ReferenceProviderRunner({
+      config: RUNNER_CONFIG,
+      selector: { select: vi.fn(async () => ({
+        job: ownedJob(),
+        identityOwnerAddress: OWNER,
+        identityAgentWallet: OTHER,
+        account: CLIENT,
+        protocol: "venus",
+        requestedAtUnix: 2_000_001,
+        lendingSnapshot: SNAPSHOT
+      })) },
+      provider,
+      service: { submit: vi.fn(), reconcile: vi.fn() } as never,
+      operations: { getByIdempotencyKey: vi.fn(async () => null) },
+      resolveAuthority: vi.fn()
+    });
+    await expect(walletWrong.run()).rejects.toMatchObject({ code: "UNAUTHORIZED_ACTOR" });
+  });
+
+  it("selects a distinct owner/provider pair only from finalized identity evidence", async () => {
+    const jobs = { get: vi.fn(async () => ownedJob()) };
+    const pool = {
+      query: vi.fn(async () => ({ rows: [{
+        owner_address: OWNER,
+        owner_observed_block: "123",
+        agent_wallet: PROVIDER,
+        agent_wallet_observed_block: "123",
+        agent_uri: "https://provider.example/card",
+        agent_uri_observed_block: "123",
+        observed_block: "123",
+        observed_block_hash: `0x${"a".repeat(64)}`,
+        read_consistency: "finalized"
+      }] }))
+    };
+    const selector = new PostgresReferenceProviderJobSelector(pool as never, jobs as never, {
+      account: CLIENT,
+      chainId: 97,
+      protocol: "venus",
+      requestedAtUnix: 2_000_001,
+      lendingSnapshot: SNAPSHOT
+    }, OWNER);
+
+    await expect(selector.select({ identity: PROVIDER_BINDING.identity, jobKey: JOB_KEY, providerAddress: PROVIDER })).resolves.toMatchObject({
+      identityOwnerAddress: OWNER,
+      identityAgentWallet: PROVIDER
+    });
+  });
+
+  it("rejects provisional or incomplete identity evidence before provider invocation", async () => {
+    const jobs = { get: vi.fn(async () => ownedJob()) };
+    const pool = {
+      query: vi.fn(async () => ({ rows: [{
+        owner_address: OWNER,
+        owner_observed_block: "123",
+        agent_wallet: PROVIDER,
+        agent_wallet_observed_block: "123",
+        agent_uri: "https://provider.example/card",
+        agent_uri_observed_block: "123",
+        observed_block: "123",
+        observed_block_hash: `0x${"a".repeat(64)}`,
+        read_consistency: "provisional"
+      }] }))
+    };
+    const selector = new PostgresReferenceProviderJobSelector(pool as never, jobs as never, {
+      account: CLIENT,
+      chainId: 97,
+      protocol: "venus",
+      requestedAtUnix: 2_000_001,
+      lendingSnapshot: SNAPSHOT
+    }, OWNER);
+
+    await expect(selector.select({ identity: PROVIDER_BINDING.identity, jobKey: JOB_KEY, providerAddress: PROVIDER })).resolves.toBeNull();
   });
 });

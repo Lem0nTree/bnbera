@@ -82,6 +82,8 @@ export const referenceProviderRunnerConfigSchema = z.object({
   chainId: z.literal(97).default(97),
   identity: erc8004IdentitySchema.optional(),
   jobKey: erc8183JobKeySchema.optional(),
+  /** The ERC-721 owner is independent from the provider execution wallet. */
+  expectedOwnerAddress: nonZeroAddressSchema.optional(),
   providerAddress: nonZeroAddressSchema.optional(),
   providerEndpoint: publicHttpUrlSchema.optional(),
   authoritySecretReference: referenceProviderSecretReferenceSchema.optional(),
@@ -98,6 +100,7 @@ export const referenceProviderRunnerConfigSchema = z.object({
   }
   if (value.identity === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["identity"], message: "An enabled reference provider requires one configured ERC-8004 identity." });
   if (value.jobKey === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["jobKey"], message: "An enabled reference provider requires one configured ERC-8183 job." });
+  if (value.expectedOwnerAddress === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["expectedOwnerAddress"], message: "An enabled reference provider requires the expected ERC-8004 owner address." });
   if (value.providerAddress === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["providerAddress"], message: "An enabled reference provider requires one configured provider wallet." });
   if (value.providerEndpoint === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["providerEndpoint"], message: "An enabled reference provider requires its existing health-factor endpoint." });
   if (value.authoritySecretReference === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["authoritySecretReference"], message: "An enabled reference provider requires a secret reference for its signing authority." });
@@ -114,6 +117,15 @@ function requiredReferenceProviderEnvironment(env: Readonly<Record<string, strin
   return value;
 }
 
+function requiredReferenceProviderEnvironmentAny(env: Readonly<Record<string, string | undefined>>, names: readonly string[]): string {
+  for (const name of names) {
+    const value = env[name]?.trim();
+    if (value !== undefined && value !== "") return value;
+  }
+  const first = names[0] ?? "the expected owner address";
+  throw new CommerceError({ code: "COMMERCE_DISABLED", message: `The enabled reference provider is missing ${first}.`, nextAction: "configure_reference_provider" });
+}
+
 /**
  * Parse only public worker configuration and secret references from the
  * existing environment boundary. Raw private keys are deliberately not read.
@@ -128,6 +140,12 @@ export function referenceProviderRunnerConfigFromEnvironment(env: Readonly<Recor
   const agentId = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_AGENT_ID");
   const commerceContract = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_COMMERCE_CONTRACT");
   const jobId = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_JOB_ID");
+  const expectedOwnerAddress = requiredReferenceProviderEnvironmentAny(env, [
+    "T5_REFERENCE_PROVIDER_EXPECTED_OWNER_ADDRESS",
+    "T5_REFERENCE_PROVIDER_OWNER_ADDRESS",
+    // The registration harness already uses WALLET_ADDRESS for the owner.
+    "WALLET_ADDRESS"
+  ]);
   const providerAddress = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_ADDRESS");
   const providerEndpoint = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_SERVICE_URL");
   const routerContract = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_ROUTER_CONTRACT");
@@ -141,6 +159,7 @@ export function referenceProviderRunnerConfigFromEnvironment(env: Readonly<Recor
     chainId,
     identity: { namespace: "eip155", chainId, identityRegistry, agentId },
     jobKey: { chainId, commerceContract, jobId },
+    expectedOwnerAddress,
     providerAddress,
     providerEndpoint,
     authoritySecretReference,
@@ -154,6 +173,7 @@ type EnabledReferenceProviderRunnerConfig = ReferenceProviderRunnerConfig & {
   readonly enabled: true;
   readonly identity: Erc8004Identity;
   readonly jobKey: Erc8183JobKey;
+  readonly expectedOwnerAddress: string;
   readonly providerAddress: string;
   readonly providerEndpoint: string;
   readonly authoritySecretReference: ReferenceProviderSecretReference;
@@ -164,7 +184,7 @@ type EnabledReferenceProviderRunnerConfig = ReferenceProviderRunnerConfig & {
 function enabledRunnerConfig(config: ReferenceProviderRunnerConfig): EnabledReferenceProviderRunnerConfig {
   const parsed = referenceProviderRunnerConfigSchema.parse(config);
   if (!parsed.enabled) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The reference provider worker is disabled by default.", nextAction: "enable_local_testnet_worker" });
-  if (parsed.identity === undefined || parsed.jobKey === undefined || parsed.providerAddress === undefined || parsed.providerEndpoint === undefined || parsed.authoritySecretReference === undefined || parsed.routerContract === undefined || parsed.policyContract === undefined) {
+  if (parsed.identity === undefined || parsed.jobKey === undefined || parsed.expectedOwnerAddress === undefined || parsed.providerAddress === undefined || parsed.providerEndpoint === undefined || parsed.authoritySecretReference === undefined || parsed.routerContract === undefined || parsed.policyContract === undefined) {
     throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The enabled reference provider worker is incompletely configured.", nextAction: "configure_reference_provider" });
   }
   return parsed as EnabledReferenceProviderRunnerConfig;
@@ -441,6 +461,17 @@ export class Erc8183ReferenceProviderAdapter {
     if (authorityAddress !== providerAddress) {
       throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The resolved provider authority does not match the configured provider address." });
     }
+    // A wallet handle is not independent proof of the key that will sign the
+    // relay request. For a server-side wallet authority, require both the
+    // wallet address and the derived signer address to equal the configured
+    // ERC-8183 provider actor before entering the write boundary. Session
+    // authorities expose only their already-bound wallet address.
+    if ("wallet" in authority) {
+      const signerAddress = normalizeAddress(authority.signer.address, "provider signer address");
+      if (signerAddress !== providerAddress) {
+        throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The resolved provider signer does not match the configured provider address." });
+      }
+    }
     const operation = await this.service.submit({
       idempotencyKey: input.idempotencyKey,
       jobId: input.jobKey.jobId,
@@ -540,8 +571,11 @@ function assertSelectedOwnedJob(selection: ReferenceProviderOwnedJob, config: En
   if (job.state !== "funded") throw new CommerceError({ code: "STALE_JOB", message: "The configured reference job is not awaiting provider submission.", retriable: true, nextAction: "reconcile_job" });
   if (job.terms.providerAddress === null || normalizeAddress(job.terms.providerAddress, "job provider address") !== providerAddress) throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The selected reference job provider actor does not match the configured authority.", nextAction: "authenticate_actor" });
   if (job.providerBinding === null || !sameErc8004Identity(job.providerBinding.identity, config.identity)) throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The selected reference job identity is not the configured owned ERC-8004 identity.", nextAction: "reload_identity" });
-  if (normalizeAddress(selection.identityOwnerAddress, "reference identity owner") !== providerAddress || selection.identityAgentWallet === null || normalizeAddress(selection.identityAgentWallet, "reference identity agent wallet") !== providerAddress) {
-    throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The configured ERC-8004 identity is not owned and wallet-bound to the provider authority.", nextAction: "reload_identity" });
+  if (normalizeAddress(selection.identityOwnerAddress, "reference identity owner") !== normalizeAddress(config.expectedOwnerAddress, "expected reference identity owner")) {
+    throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The configured ERC-8004 identity owner does not match the expected owner.", nextAction: "reload_identity" });
+  }
+  if (selection.identityAgentWallet === null || normalizeAddress(selection.identityAgentWallet, "reference identity agent wallet") !== providerAddress) {
+    throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The configured ERC-8004 identity agent wallet does not match the provider authority.", nextAction: "reload_identity" });
   }
   if (!/^[1-9][0-9]*$/u.test(job.terms.budgetAtomic) || BigInt(job.terms.budgetAtomic) > BigInt(config.maxBudgetAtomic) || BigInt(job.terms.budgetAtomic) > BigInt(REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC)) {
     throw new CommerceError({ code: "INVALID_AMOUNT", message: "The reference provider job exceeds its bounded local testnet budget cap." });

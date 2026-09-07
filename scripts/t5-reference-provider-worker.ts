@@ -26,6 +26,7 @@ import {
   type ReferenceProviderRunResult,
   type ReferenceProviderTaskInput
 } from "../packages/agent-commerce/src/index.ts";
+import { normalizeAddress } from "../packages/agent-commerce/src/validation.ts";
 import { createDb } from "../packages/db/src/client.ts";
 
 type WorkerEnvironment = Readonly<Record<string, string | undefined>>;
@@ -119,17 +120,43 @@ export function createReferenceProviderAuthorityResolver(env: WorkerEnvironment)
     if (rawKey === undefined || !/^0x[0-9a-f]{64}$/iu.test(rawKey)) {
       throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The configured provider authority secret reference could not be resolved.", nextAction: "configure_secret_reference" });
     }
+    const configuredProvider = nonEmpty(env, "T5_REFERENCE_PROVIDER_ADDRESS");
+    if (configuredProvider === undefined) {
+      throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The enabled reference provider is missing its configured provider address.", nextAction: "configure_reference_provider" });
+    }
+    let providerAddress: `0x${string}`;
+    try {
+      providerAddress = normalizeAddress(configuredProvider, "configured provider address");
+    } catch {
+      throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The configured provider address is invalid.", nextAction: "configure_reference_provider" });
+    }
     let signer: ReturnType<typeof signerFromPrivateKey>;
     try {
       signer = signerFromPrivateKey(rawKey as Hex);
     } catch {
       throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The configured provider authority secret reference is invalid.", nextAction: "configure_secret_reference" });
     }
+    let signerAddress: `0x${string}`;
+    try {
+      signerAddress = normalizeAddress(signer.address, "derived provider signer address");
+    } catch {
+      throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The configured provider authority signer address is invalid.", nextAction: "configure_secret_reference" });
+    }
+    if (signerAddress !== providerAddress) {
+      throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The derived provider signer does not match the configured provider address.", nextAction: "configure_secret_reference" });
+    }
     try {
       const client = createClient({ chains: [BNB_TESTNET], defaultChainId: 97 });
       const wallet = await client.createWallet({ signer });
+      if (normalizeAddress(wallet.address, "derived provider wallet address") !== providerAddress) {
+        throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The derived provider wallet does not match the configured provider address.", nextAction: "configure_secret_reference" });
+      }
       return { wallet, signer };
-    } catch {
+    } catch (cause) {
+      // Do not expose SDK errors or any value derived from the private key.
+      // The only durable authority evidence is the public signer/wallet
+      // address already recorded by the commerce operation boundary.
+      if (cause instanceof CommerceError) throw cause;
       throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The configured provider authority wallet could not be created.", nextAction: "configure_secret_reference" });
     }
   };
