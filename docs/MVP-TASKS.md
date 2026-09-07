@@ -1,6 +1,6 @@
 # MVP tasks and gates
 
-Active backlog for [MVP-MASTER-PLAN.md](MVP-MASTER-PLAN.md). Merged GitHub `main` baseline: `41f9d4521ca4391b9fdfe9fe1d949d5652ceb3b5`. The local retained `main` checkout also contains follow-up reputation projection fix `84c2c6a`; that local commit is not treated as a GitHub merge claim. Current unmerged T5 checkout: `task/t5-browser-commerce` at `df92d4931de6197f0fbaef64c1e97486e1775b5c`; reconciled 2026-09-07. Two implementation agents maximum; coordinator reviews each handoff before dispatching its dependent replacement.
+Active backlog for [MVP-MASTER-PLAN.md](MVP-MASTER-PLAN.md). Merged GitHub `main` baseline: `41f9d4521ca4391b9fdfe9fe1d949d5652ceb3b5`. The local retained `main` checkout also contains follow-up reputation projection fix `84c2c6a`; that local commit is not treated as a GitHub merge claim. Current unmerged T5 checkout: `task/t5-browser-commerce` at `19aff27ad47687b8320672fba3d19ad77b3eb1d1`; reconciled 2026-09-07. Two implementation agents maximum; coordinator reviews each handoff before dispatching its dependent replacement.
 
 Status key: **Completed** means the source and stated retained/live evidence meet the accepted scope; **Pending** means implementation or verification remains without the required acceptance evidence; **Blocked** names an external or safety prerequisite; **Planned** has no accepted implementation yet. A branch test is never a substitute for a live gate. Scope qualifiers distinguish retained/local acceptance from a public or paid claim.
 
@@ -14,7 +14,7 @@ This table distinguishes code merged to GitHub `main`, retained-runtime evidence
 | T2 | Completed (retained scope; follow-ups pending) | Real enrichment, multi-category evidence, persistent vectors, deterministic fallback, marketplace read models and provenance-separated ERC-8004 Reputation Registry ingestion/display are merged. The bounded live read advanced the checkpoint and observed zero feedback events, shown as unknown rather than a fabricated score. | **Pending:** grow qualified four-category supply. **Blocked:** production semantic release until the standards lock is released. |
 | T3 | Completed (retained/local scope) | Retained database pipeline, restart-safe cron behavior, local API/SSR path and `MVP-STATUS.md` evidence were accepted for the demonstrated scope. No public HTTPS claim is inferred. | **Pending follow-up:** keep stable authorized HTTPS/deployed-browser evidence aligned before making a final public-preview claim. |
 | T4 | Completed (backend/canary scope; G2 pending) | PR #18 is merged. The pinned SDK boundary, safe APIs, PostgreSQL lifecycle, reconciliation and one distinct-actor chain-97 hire -> submit -> explicit buyer approval -> settlement canary passed. | **Blocked until T5:** keep `releaseEnabled=false`; T4 does not prove useful work by a discovered marketplace agent. |
-| T5 | Pending (branch implementation; live acceptance) | Adds exact registry-log/identity-ordering fixes, guarded 2206 reference registration, root-backed browser passkey bootstrap/recovery, quote/hire/reload/approval/review UI and APIs, persisted results/reviews, and a disabled-by-default reference-provider worker. Focused branch tests pass. | **Blocked:** agent 2206's current `http://localhost` card URI is rejected by safe ingestion. **Pending:** authorized HTTPS tunnel/card, finalized reingestion, then browser -> chain useful result -> settlement -> review evidence. |
+| T5 | Pending (interactive live acceptance; 2206 marketplace sub-gate passed) | Adds exact registry-log/identity-ordering fixes, guarded 2206 reference registration, root-backed browser passkey bootstrap/recovery, quote/hire/reload/approval/review UI and APIs, persisted results/reviews, and a disabled-by-default reference-provider worker. Focused branch tests pass. The authorized quick tunnel/card, finalized reingestion and publication evidence for 2206 now pass. | Complete the real interactive WebAuthn/passkey buyer activation/funding/hire, provider submit, 900-second dispute wait, buyer settle/review and reload/duplicate/unknown-outcome evidence. The quick tunnel is canary-only with no uptime guarantee; `releaseEnabled=false` remains. |
 | T6 | Planned | Altana boundaries and pinned candidate package exist; no live authority proof. | Implement browser-controlled grant/status/revoke and prove allowed, revoked, expired and over-cap behavior. |
 | T7 | Planned | No-code Creator is planned; no end-to-end Creator exists. | Use the pinned BNB Agent Studio CLI/runtime integration for one audited template, then register, publish and hire the created agent. |
 | T8 | Planned | Publisher abstractions exist only. | Publish and verify one profile plus one completed-job bundle on Greenfield. |
@@ -25,14 +25,14 @@ This table distinguishes code merged to GitHub `main`, retained-runtime evidence
 | Gate | Status | Tasks | Current acceptance boundary |
 | --- | --- | --- | --- |
 | G1 — Persistent marketplace | Completed (accepted demonstrated scope) | T1–T3 | T1/T2/T3 retained/local acceptance is complete. Stable public HTTPS/deployed-browser alignment remains a final public-preview follow-up and is not claimed here. |
-| G2 — Paid hiring | Pending; live tunnel required | T4–T5 | T4 backend/canary is accepted. T5 must prove agent 2206's useful callable result, exact settlement and verified review from an authenticated browser, including reload/duplicate and unknown-outcome checks. |
+| G2 — Paid hiring | Pending; interactive browser acceptance required | T4–T5 | T4 backend/canary is accepted. The 2206 tunnel/card/reingestion/publication sub-gate passed; T5 must still prove the useful callable result, exact settlement and verified review from an authenticated browser, including reload/duplicate and unknown-outcome checks. |
 | G3 — No-code Creator | Planned | T6–T7 | No accepted Altana grant/revoke/deny or Agent Studio create/list/hire flow. |
 | G4 — Greenfield | Planned | T8–T9 | No accepted public profile/result objects or final walkthrough. |
 
 ### Immediate critical path
 
 1. Preserve the accepted T1–T3/G1 scope and close any final public-preview follow-up without weakening the truthful listing gate.
-2. Make agent 2206's card/service reachable through an authorized HTTPS tunnel, reingest it, then complete T5's browser-to-chain paid journey. Do not call G2 complete from T4 evidence alone.
+2. Preserve the completed 2206 authorized tunnel/card and finalized reingestion/publication sub-gate, then complete T5's interactive browser-to-chain paid journey. Do not call G2 complete from T4 or marketplace/tunnel evidence alone.
 3. Complete T6, then T7. **T7 is the task that uses BNB Agent Studio to let a user create an agent; T6 supplies the user-controlled Altana authority used during and after deployment.**
 4. Complete the bounded T8 integration and T9 submission evidence.
 
@@ -79,7 +79,7 @@ Use these items as the bounded handoff for the next implementation agent. `[x] *
 - [x] Add the minimal job APIs and bounded health-factor task/result contract required by T5. This deterministic fixture proves escrow/data plumbing, not execution by a discovered marketplace agent.
 - [x] Prepare distinct buyer/provider testnet actors, required gas and capped testnet U funding without exposing keys.
 - [x] Complete one authorized `<= 0.01 U` hire -> submit -> explicit approval -> settlement cycle, PostgreSQL reload, same-key duplicate protection and a deterministic unknown-outcome no-rebroadcast test.
-- [ ] **Blocked until T5:** Keep `releaseEnabled=false` until T5 supplies authenticated browser authority and a useful result from a callable marketplace agent.
+- [ ] **Pending release gate:** Keep `releaseEnabled=false` until T5 supplies authenticated browser authority and a useful result from a callable marketplace agent.
 
 ### T5 remaining
 
@@ -89,8 +89,8 @@ Use these items as the bounded handoff for the next implementation agent. `[x] *
 - [x] Implement fresh passkey activation through the SDK's browser-owned empty-call `execute([])` path, which supplies `initialRegisterKey`; persist the public relay calls ID before send and recover/reconcile read-only after reload or an unknown response.
 - [x] Add exact ERC-8004 registry-log decoding and identity upsert ordering fixes plus a guarded owner-authorized registration harness for reference identity 2206. The harness is plan/read-only by default and does not itself prove a registration or listing.
 - [x] Add the guarded reference health-factor provider and disabled-by-default PostgreSQL worker; it resolves only a secret reference and uses the existing ERC-8183 submission boundary.
-- [ ] **Blocked:** Replace agent 2206's rejected `http://localhost` card/service URI with an authorized HTTPS tunnel/card, run finalized reingestion and publish only after ownership, capability and healthy service evidence pass.
-- [ ] **Pending:** Complete the authorized live browser -> chain-97 ERC-8183 hire/fund -> callable 2206 useful result -> exact digest/receipt verification -> buyer approval -> settlement -> verified-purchase review run, including reload, duplicate-submit and unknown-outcome recovery evidence. Do not mark T5 or G2 complete before this passes.
+- [x] **Completed (2206 marketplace/tunnel sub-gate):** Serve the 2206 card and invocation through the authorized quick HTTPS tunnel, register the URI, run finalized reingestion and publish only after ownership, capability and healthy service evidence pass. Evidence: URI transaction `0xe023...c9b` at block `129625704`; finalized sync `129619955–129625757` with 65 observations across 8 identities; 2206 is verified/live/published as a health-factor service with healthy card/invocation; persisted vector/hybrid evidence from the prior run remains available; the fixed `0.001 U` local ERC-8183 activation offer is enabled.
+- [ ] **Pending:** Complete the real interactive WebAuthn/passkey buyer activation/funding/hire -> provider submit -> 900-second dispute wait -> buyer settlement -> verified-purchase review run, including reload, duplicate-submit and unknown-outcome recovery evidence. Do not mark T5 or G2 complete before this passes. The quick tunnel is canary-only with no uptime guarantee, and `releaseEnabled=false` remains.
 - [ ] **Pending:** Capture the first real Agent Advantage comparison and record any unavailable category honestly.
 
 ### T6 remaining
@@ -172,7 +172,7 @@ Done: G1 accepted for the actual demonstrated scope and public preview kept runn
 
 ## G2 — Paid hiring (T4–T5)
 
-Status: Pending; live tunnel acceptance is required. T4 backend/canary is accepted; T5 branch implementation is test-covered but does not pass the gate until agent 2206 completes the browser-to-chain useful-result, settlement and review run.
+Status: Pending; the 2206 marketplace/tunnel sub-gate passed, while interactive browser acceptance remains. T4 backend/canary is accepted; T5 does not pass the gate until agent 2206 completes the browser-to-chain useful-result, settlement and review run.
 
 ### T4 — ERC-8183 escrow backend
 
@@ -192,17 +192,18 @@ Done: real authorized testnet hire, submit and buyer settlement were confirmed; 
 
 ### T5 — Hire UI, result, jobs and reviews
 
-Status: Pending: implementation is present in unmerged `task/t5-browser-commerce` (`df92d49`), while live acceptance remains release-gated.
+Status: Pending: implementation is present in unmerged `task/t5-browser-commerce` (`19aff27`), the 2206 marketplace/tunnel sub-gate passed, and interactive live acceptance remains release-gated.
 
 Owner: WEB. Parallel with T4 after their API contract is agreed; real acceptance depends on T4. Paths: existing detail CTA, job/result routes, review/read-model projection.
 
-Current branch evidence: commerce 54/54, web 55/55, ingestion 115/115, and reference-registration/worker scripts 12/12 focused tests pass. These tests establish implementation seams only, not the live 2206 tunnel gate.
+Current branch evidence: commerce 54/54, web 55/55, ingestion 115/115, and reference-registration/worker scripts 12/12 focused tests pass. The authorized quick-tunnel marketplace evidence also passed: URI transaction `0xe023...c9b` at block `129625704`; finalized sync `129619955–129625757` with 65 observations across 8 identities; 2206 verified/live/published health-factor status with healthy card/invocation; persisted vector/hybrid evidence from the prior run; and the fixed `0.001 U` local ERC-8183 activation offer enabled. These checks establish the marketplace/tunnel sub-gate only, not the interactive WebAuthn/passkey-to-chain commerce gate; the quick tunnel is canary-only with no uptime guarantee and `releaseEnabled=false` remains.
 
 - Add task form -> quote/price confirmation -> wallet funding -> progress -> result -> buyer approval -> confirmed settlement. Preserve state on reload. The branch now contains this browser-owned path and safe dispatch/recovery APIs; live chain proof is pending.
 - Count only confirmed completed marketplace jobs; link the receipt/result. Allow one authenticated buyer review per completed job. Keep external reputation separate. The persisted projection and one-review guard are implemented and test-covered.
 - Bind each verified-purchase review to the completed ERC-8183 job, exact ERC-8004 identity/version and result digest. Project three labeled reputation views on cards/detail: raw ERC-8004 feedback, recognized reviewer/validator evidence, and BNBEra verified-job reviews; revoked feedback leaves active aggregates without erasing history.
-- Verify agent 2206 first through an authorized HTTPS tunnel/card, then complete the same useful activation/result journey across the four category candidates from T2. An unavailable category remains an explicit submission blocker, not a fake listing.
-- Record G2 evidence and ensure the public preview stays usable. No accepted live tunnel evidence exists at this reconciliation.
+- [x] Verify agent 2206 through the authorized HTTPS tunnel/card, finalized reingestion and publication; the marketplace sub-gate passed with healthy card/invocation and verified/live/published health-factor status.
+- [ ] Complete the same useful activation/result journey across the four category candidates from T2. An unavailable category remains an explicit submission blocker, not a fake listing.
+- Record the remaining G2 evidence and ensure the public preview stays usable. The current quick tunnel is canary-only with no uptime guarantee and is not a final public-preview claim.
 - Capture the first of the three required Agent Advantage comparisons: same task with the marketplace agent and without it, including elapsed time, cost, output and quality assessment. T9 completes the report; at least one comparison must be trading, stock/equities or security-related.
 
 Acceptance target (not yet met): a user completes the real paid journey inside the app; job count and review update correctly; errors and cancellation are intelligible. G2 requires T4 and T5; four-category coverage has its own explicit row in the status document.
