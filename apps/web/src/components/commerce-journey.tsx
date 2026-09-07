@@ -236,7 +236,7 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : "The browser passkey authority could not be prepared.";
       setError(recover && /has no keys registered|never executed a transaction/iu.test(message)
-        ? "This passkey wallet has not completed its first on-chain registration yet. Recovery is unavailable until its first hire is completed; use the same browser's Create passkey wallet flow for the authenticated bootstrap."
+        ? "This passkey wallet has not completed its first on-chain registration yet. Recovery and server sign-in stay unavailable until an authorized first on-chain action registers its admin key; creating the passkey alone does not bootstrap that registration."
         : message);
     } finally { setBusy(false); }
   };

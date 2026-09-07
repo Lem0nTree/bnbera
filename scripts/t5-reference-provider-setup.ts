@@ -209,9 +209,11 @@ export async function inspectReferenceProviderSetup(pool: QueryPool, config: Ref
   if (row === undefined) {
     return { ...base, status: "blocked", code: "OWNED_IDENTITY_REQUIRED", diagnostics: ["No retained ERC-8004 identity matches the requested full identity tuple.", "Complete the explicit owner-authorized testnet registration/setAgentWallet flow, then rerun ingestion before publication."] };
   }
-  const ownerMatches = row.owner_address?.toLowerCase() === config.providerAddress || row.agent_wallet?.toLowerCase() === config.providerAddress;
+  // `owner_address` is the ERC-721 owner. `agent_wallet` is an independent
+  // execution-wallet axis and must never be treated as proof of ownership.
+  const ownerMatches = row.owner_address?.toLowerCase() === config.providerAddress;
   if (!ownerMatches) {
-    return { ...base, status: "blocked", code: "IDENTITY_NOT_OWNED", diagnostics: ["The retained identity owner and agentWallet do not match the configured BNBEra provider address.", "The setup refuses to assign price or provider authority to this external identity."] };
+    return { ...base, status: "blocked", code: "IDENTITY_NOT_OWNED", diagnostics: ["The retained ERC-721 identity owner does not match the configured BNBEra provider address.", "The setup refuses to assign price or provider authority to this external identity."] };
   }
   if (row.agent_uri === null || row.agent_uri.trim() === "") {
     return { ...base, status: "blocked", code: "AGENT_URI_REQUIRED", diagnostics: ["The owned identity has no observed agent card URI for the reference provider.", "Register the card URI and rerun ERC-8004 ingestion before publication."] };
