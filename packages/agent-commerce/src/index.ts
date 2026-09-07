@@ -5,6 +5,7 @@ export * from "./lifecycle.js";
 export * from "./operations.js";
 export * from "./provider.js";
 export * from "./reference-provider.js";
+export * from "./reference-provider-runtime.js";
 export * from "./api.js";
 export * from "./postgres-jobs.js";
 export * from "./marketplace-projection.js";

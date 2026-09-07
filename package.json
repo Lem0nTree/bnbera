@@ -23,6 +23,7 @@
     "ops:erc8004-registry-sync": "tsx scripts/erc8004-registry-sync.ts",
     "ops:erc8004-reputation-sync": "tsx scripts/erc8004-reputation-sync.ts",
     "ops:t5-reference-provider-setup": "tsx scripts/t5-reference-provider-setup.ts",
+    "ops:t5-reference-provider-worker": "tsx scripts/t5-reference-provider-worker.ts",
     "ops:t5-reference-registration": "tsx scripts/t5-reference-registration.ts",
     "ops:t4-canary": "tsx scripts/t4-operator-canary.ts",
     "ops:standards-check": "tsx scripts/standards-check.ts",
