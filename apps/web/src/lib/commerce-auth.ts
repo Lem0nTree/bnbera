@@ -1,6 +1,7 @@
 import { randomBytes, createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import pg from "pg";
-import { BNB, BNB_TESTNET } from "@altananetwork/sdk";
+import { BNB_TESTNET } from "@altananetwork/sdk";
 import {
   authCookieName,
   createAltanaAdminKeyReader,
@@ -39,8 +40,8 @@ type AuthRuntime = {
   readonly databaseSsl: boolean;
   readonly appOrigin: string;
   readonly rpId: string;
-  readonly chainId: 56 | 97;
-  readonly network: typeof BNB | typeof BNB_TESTNET;
+  readonly chainId: 97;
+  readonly network: typeof BNB_TESTNET;
 };
 
 type CreatedSession = {
@@ -53,6 +54,78 @@ type AuthGlobals = {
 };
 
 const authGlobals = globalThis as typeof globalThis & { __bnberaCommerceAuth?: AuthGlobals };
+
+const altanaSdkPackage = "@altananetwork/sdk";
+const altanaSdkVersion = "0.9.0";
+const altanaSdkIntegrity = "sha512-1RLOTvjQm5CHcIFDh/cN78prUkw59+v6qRDy43xKEOadmLyztpoHJIE1H+4Pisq4AbG+09tW8qMJ1UyuI/JBzw==";
+const altanaVerificationBlock = 129_582_452;
+const altanaVerificationStatus = "verified-read-only-runtime-at-block-129582452";
+const zeroEip1967Slot = `0x${"0".repeat(64)}`;
+
+type JsonRecord = Readonly<Record<string, unknown>>;
+
+function jsonRecord(value: unknown, label: string): JsonRecord {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${label} is not an object`);
+  }
+  return value as JsonRecord;
+}
+
+function jsonString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim() === "") throw new Error(`${label} is not a string`);
+  return value;
+}
+
+function sameAddress(left: unknown, right: string, label: string): void {
+  if (typeof left !== "string" || left.toLowerCase() !== right.toLowerCase()) throw new Error(`${label} does not match`);
+}
+
+function failClosedConfiguration(cause?: unknown): never {
+  throw authError("AUTH_CONFIGURATION_INVALID", "Authentication is temporarily unavailable.", "try_again", true, cause);
+}
+
+/**
+ * Validate the checked-in Altana testnet evidence against the SDK network
+ * object. This is deliberately read-only: the auth path must not trust an
+ * environment-provided address, RPC or relay override.
+ */
+export function assertAltanaAuthStandardsLock(lock: unknown, network: typeof BNB_TESTNET = BNB_TESTNET): void {
+  try {
+    const root = jsonRecord(lock, "standards lock");
+    const toolchain = jsonRecord(root.toolchain, "toolchain");
+    const sdk = jsonRecord(toolchain.altanaSdk, "Altana SDK lock");
+    if (sdk.package !== altanaSdkPackage || sdk.version !== altanaSdkVersion || sdk.integrity !== altanaSdkIntegrity) {
+      throw new Error("Altana SDK package pin does not match the reviewed runtime");
+    }
+
+    const altana = jsonRecord(root.altana, "Altana lock");
+    const testnet = jsonRecord(altana.testnet, "Altana testnet lock");
+    if (testnet.chainId !== network.chainId || testnet.chainId !== 97) throw new Error("Altana testnet chain does not match");
+    sameAddress(testnet.keyStore, network.keyStore, "Altana KeyStore");
+    sameAddress(testnet.controller, network.keyStoreController, "Altana controller");
+    sameAddress(testnet.controllerKeyStore, network.keyStore, "Altana controller KeyStore linkage");
+    if (jsonString(testnet.publicRpcUrl, "Altana public RPC") !== network.publicRpcUrl) throw new Error("Altana public RPC does not match");
+    if (jsonString(testnet.relay, "Altana relay") !== network.relayUrl) throw new Error("Altana relay does not match");
+    if (testnet.verificationBlock !== altanaVerificationBlock) throw new Error("Altana verification block is not the reviewed read");
+    if (jsonString(testnet.verificationStatus, "Altana verification status") !== altanaVerificationStatus) throw new Error("Altana verification is not complete");
+    if (jsonString(testnet.deploymentKind, "Altana deployment kind") !== "direct") throw new Error("Altana deployments are not direct");
+    if (jsonString(testnet.eip1967ImplementationSlot, "Altana implementation slot") !== zeroEip1967Slot || jsonString(testnet.eip1967BeaconSlot, "Altana beacon slot") !== zeroEip1967Slot) {
+      throw new Error("Altana direct-deployment proxy slots are not empty");
+    }
+    const relayGet = jsonRecord(testnet.relayGet, "Altana relay GET evidence");
+    if (relayGet.status !== 405) throw new Error("Altana relay GET evidence does not report 405");
+  } catch (cause) {
+    failClosedConfiguration(cause);
+  }
+}
+
+export function readAltanaAuthStandardsLock(): unknown {
+  try {
+    return JSON.parse(readFileSync(new URL("../../../../config/standards.lock.json", import.meta.url), "utf8")) as unknown;
+  } catch (cause) {
+    return failClosedConfiguration(cause);
+  }
+}
 
 function authError(
   code: string,
@@ -93,9 +166,6 @@ function runtimeFromEnvironment(env: StringEnvironment = process.env): AuthRunti
   } catch (cause) {
     throw authError("AUTH_CONFIGURATION_INVALID", "Authentication is temporarily unavailable.", "try_again", true, cause);
   }
-  if (runtime.databaseUrl === undefined || runtime.databaseUrl.trim() === "") {
-    throw authError("AUTH_DATABASE_UNAVAILABLE", "Authentication is temporarily unavailable.", "try_again", true);
-  }
   let appUrl: URL;
   try {
     appUrl = new URL(runtime.appUrl);
@@ -105,15 +175,10 @@ function runtimeFromEnvironment(env: StringEnvironment = process.env): AuthRunti
   if (runtime.siweDomain.toLowerCase() !== appUrl.host.toLowerCase()) {
     throw authError("AUTH_CONFIGURATION_INVALID", "Authentication is temporarily unavailable.", "try_again", true);
   }
-  const chainId: 56 | 97 = runtime.bscChainId === 56 ? 56 : 97;
-  const network = chainId === 56 ? BNB : BNB_TESTNET;
-  if (network.chainId !== chainId) {
-    throw authError("AUTH_CONFIGURATION_INVALID", "Authentication is temporarily unavailable.", "try_again", true);
-  }
 
-  // The active standards lock still marks Altana deployment verification as
-  // pending. Keep this entire chain-backed boundary disabled until an operator
-  // explicitly enables the reviewed runtime; tests can inject a reader.
+  // This is intentionally an explicit local/testnet enablement. Mainnet
+  // Altana custody remains pending in the standards lock and cannot be enabled
+  // by changing BSC_CHAIN_ID or an untrusted request field.
   if (env.T5_ALTANA_AUTH_ENABLED !== "true") {
     throw authError(
       "AUTH_CONFIGURATION_BLOCKED",
@@ -122,13 +187,26 @@ function runtimeFromEnvironment(env: StringEnvironment = process.env): AuthRunti
     );
   }
 
+  if (runtime.bscChainId !== BNB_TESTNET.chainId) {
+    throw authError(
+      "AUTH_CONFIGURATION_BLOCKED",
+      "Altana passkey authentication is enabled only for the reviewed BNB testnet runtime.",
+      "switch_network"
+    );
+  }
+  assertAltanaAuthStandardsLock(readAltanaAuthStandardsLock(), BNB_TESTNET);
+
+  if (runtime.databaseUrl === undefined || runtime.databaseUrl.trim() === "") {
+    throw authError("AUTH_DATABASE_UNAVAILABLE", "Authentication is temporarily unavailable.", "try_again", true);
+  }
+
   return {
     databaseUrl: runtime.databaseUrl,
     databaseSsl: runtime.databaseSsl,
     appOrigin: appUrl.origin,
     rpId: appUrl.hostname.toLowerCase(),
-    chainId,
-    network
+    chainId: 97,
+    network: BNB_TESTNET
   };
 }
 
@@ -144,6 +222,11 @@ function getPool(runtime: AuthRuntime): PgPool {
   });
   authGlobals.__bnberaCommerceAuth = { pool: { key, pool } };
   return pool;
+}
+
+/** Shared persistent pool for auth and the server-side commerce composition. */
+export function getCommerceAuthDatabasePool(): PgPool {
+  return getPool(runtimeFromEnvironment());
 }
 
 /** Test/process shutdown hook. Production keeps the pool cached between routes. */
@@ -406,9 +489,9 @@ export async function getAuthenticatedSession(request: Request): Promise<Authent
         AND revoked_at IS NULL
         AND expires_at > NOW()
         AND wallet_address IS NOT NULL
-        AND chain_id IN (56, 97)
+        AND chain_id = $2
       LIMIT 1`,
-    [digestSessionToken(token)]
+    [digestSessionToken(token), runtime.chainId]
   );
   const row = result.rows[0];
   if (row === undefined || row.wallet_address === null || row.chain_id === null) return null;

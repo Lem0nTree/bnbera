@@ -2,11 +2,13 @@
  * Server-only ERC-8183 application composition.
  *
  * This module is intentionally an adapter seam, not an authentication system:
- * the caller must provide a server-authenticated wallet/session resolver. The
- * current web app has no such resolver, so its default composition remains a
- * truthful, explicit blocker and cannot be enabled by request data.
+ * the caller must provide a server-authenticated identity resolver. Browser
+ * signing remains outside this server composition; server-side SDK authority
+ * is still a separate, explicit boundary.
  */
 import { evmAddressSchema, type CommerceJobStatus } from "@bnbera/domain";
+import { readFile } from "node:fs/promises";
+import { AppError } from "@bnbera/config";
 import {
   CommerceError,
   Erc8183AltanaAdapter,
@@ -34,14 +36,21 @@ import {
   type Erc8183SettleResult,
   type Erc8183ClaimRefundResult
 } from "@bnbera/agent-commerce";
-import type { Erc8183SubmitInput } from "@bnbera/agent-commerce";
+import {
+  parseEnabledDeploymentPin,
+  type Erc8183SubmitInput
+} from "@bnbera/agent-commerce";
 import { commerceBrowserDispatchSchema, type CommerceBrowserDispatch } from "./commerce-contract";
+import {
+  getCommerceAuthDatabasePool,
+  requireAuthenticatedCommerceIdentity
+} from "./commerce-auth";
 import {
   PostgresCommerceReservationStore,
   type CommerceQuoteSnapshot
 } from "./commerce-reservations";
 
-/** Stable blocker exposed by the current app until an auth/authority adapter exists. */
+/** Stable blocker for server-side SDK writes until a signer authority exists. */
 export const T4_AUTHORITY_BOUNDARY_BLOCKER = "T4_AUTHENTICATED_ALTANA_AUTHORITY_BOUNDARY_UNAVAILABLE" as const;
 
 export function commerceAuthorityBoundaryError(): CommerceError {
@@ -444,7 +453,7 @@ export class Erc8183CommerceComposition {
     try {
       identity = await this.identityResolver.resolve(request);
     } catch (cause) {
-      if (cause instanceof CommerceError) throw cause;
+      if (cause instanceof CommerceError || cause instanceof AppError) throw cause;
       throw new CommerceError({
         code: "UNAUTHORIZED_ACTOR",
         message: "The server-authenticated requester identity could not be resolved.",
@@ -751,14 +760,83 @@ export function createProductionCommerceComposition(options: Erc8183CommerceComp
   return new Erc8183CommerceComposition(options);
 }
 
+type LockRecord = Readonly<Record<string, unknown>>;
+
+function lockRecord(value: unknown, label: string): LockRecord {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw invalidComposition(`The standards lock has no valid ${label} record.`, "verify_standards_lock");
+  }
+  return value as LockRecord;
+}
+
+/** Build the application ERC-8183 pin only from the checked-in lock. */
+export function commercePinFromStandardsLock(lock: unknown): EnabledErc8183DeploymentPin {
+  const root = lockRecord(lock, "root");
+  const networks = lockRecord(root.networks, "networks");
+  const network = lockRecord(networks["97"], "BSC testnet");
+  const deployment = lockRecord(network.erc8183, "BSC testnet ERC-8183 deployment");
+  const abiHashes = lockRecord(deployment.abiHashes, "ERC-8183 ABI hashes");
+  const riskLimits = lockRecord(deployment.riskLimits, "ERC-8183 risk limits");
+  return parseEnabledDeploymentPin({
+    enabled: deployment.enabled,
+    chainId: 97,
+    specRevision: deployment.specRevision,
+    commerceContract: deployment.commerceProxy,
+    paymentToken: deployment.paymentToken,
+    paymentDecimals: deployment.paymentDecimals,
+    abiHash: abiHashes.commerce,
+    evaluatorProfile: "verified-policy-v1",
+    confirmationThreshold: 1,
+    minExpiryLeadSeconds: 60,
+    maxExpiryHorizonSeconds: 86_400,
+    minBudgetAtomic: "1",
+    maxBudgetAtomic: riskLimits.maxBudgetAtomic
+  });
+}
+
+async function readCommerceStandardsLock(): Promise<unknown> {
+  try {
+    return JSON.parse(await readFile(new URL("../../../../config/standards.lock.json", import.meta.url), "utf8")) as unknown;
+  } catch {
+    throw invalidComposition("The checked-in standards lock could not be loaded.", "verify_standards_lock");
+  }
+}
+
 /**
- * Current web wiring has no authenticated session/Altana authority adapter.
- * Route handlers call this function and return its stable 503 blocker. T6
- * may later supply a resolver to createProductionCommerceComposition without
- * changing the API request contract.
+ * Compose the browser-safe T5 boundary. The request supplies only public
+ * quote/action identifiers; identity and the parent quote are resolved from
+ * the authenticated Postgres session and reservation store. No signer,
+ * serialized session, authority object, provider, price, or lock can come
+ * from request data. Browser signing remains an explicit external SDK call.
  */
-export function getCommerceComposition(): Promise<Erc8183CommerceComposition> {
-  return Promise.reject(commerceAuthorityBoundaryError());
+export async function getCommerceComposition(): Promise<Erc8183CommerceComposition> {
+  if (process.env.T5_ALTANA_AUTH_ENABLED !== "true") {
+    return Promise.reject(commerceAuthorityBoundaryError());
+  }
+
+  const standardsLock = await readCommerceStandardsLock();
+  try {
+    const pool = getCommerceAuthDatabasePool();
+    const nodeEnvironment = process.env.NODE_ENV === "production"
+      ? "production"
+      : process.env.NODE_ENV === "test"
+        ? "test"
+        : "development";
+    return createProductionCommerceComposition({
+      standardsLock,
+      pin: commercePinFromStandardsLock(standardsLock),
+      pool,
+      identityResolver: { resolve: requireAuthenticatedCommerceIdentity },
+      // Server-side signer/session authority is intentionally not wired for
+      // T5. Mutating SDK calls are browser-owned; provider/refund workers must
+      // use a separately authenticated authority boundary before enablement.
+      developmentCanaryEnabled: process.env.T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED === "true",
+      runtimeEnvironment: nodeEnvironment
+    });
+  } catch (cause) {
+    if (cause instanceof CommerceError) throw cause;
+    throw invalidComposition("The authenticated commerce dependencies are unavailable.", "configure_auth_boundary");
+  }
 }
 
 export type CommerceReadOperationStatus = Erc8183CommerceOperationStatus;

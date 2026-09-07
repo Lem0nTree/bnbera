@@ -28,6 +28,98 @@ type JourneyProps = {
 
 const POLL_INTERVAL_MS = 4_000;
 
+type BrowserPasskeySigner = Signer & {
+  readonly type: "passkey";
+  readonly credential: { readonly id: string };
+};
+
+type PasskeyChallengeResponse = {
+  readonly challenge: string;
+  readonly rpId: string;
+  readonly userVerification: "required";
+  readonly timeout: number;
+};
+
+function decodeBase64Url(value: string): Uint8Array {
+  const padded = value.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  const binary = window.atob(padded);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function encodeBase64Url(value: ArrayBuffer): string {
+  const bytes = new Uint8Array(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return window.btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+}
+
+function passkeyCredential(signer: Signer): { readonly id: string } {
+  if (signer.type !== "passkey") throw new Error("The browser authority is not a passkey signer.");
+  const credential = (signer as BrowserPasskeySigner).credential;
+  if (credential === undefined || typeof credential.id !== "string" || credential.id.length === 0) {
+    throw new Error("The browser passkey credential is unavailable.");
+  }
+  return credential;
+}
+
+/**
+ * Establish the server session separately from the SDK signer. The API only
+ * receives a WebAuthn assertion and the public wallet address; signer/session
+ * authority never crosses the browser/server boundary.
+ */
+async function authenticateBrowserPasskey(walletAddress: string, signer: Signer): Promise<void> {
+  const credential = passkeyCredential(signer);
+  const challengeResponse = await fetch("/api/auth/passkey/challenge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({ walletAddress, chainId: BNB_TESTNET.chainId })
+  });
+  const challenge = await parseResponse<PasskeyChallengeResponse>(challengeResponse);
+  if (typeof PublicKeyCredential === "undefined" || typeof navigator.credentials?.get !== "function") {
+    throw new Error("This browser does not provide the WebAuthn assertion API required for commerce sign-in.");
+  }
+  const assertionCredential = await navigator.credentials.get({
+    publicKey: {
+      challenge: decodeBase64Url(challenge.challenge),
+      rpId: challenge.rpId,
+      allowCredentials: [{ id: decodeBase64Url(credential.id), type: "public-key" }],
+      userVerification: challenge.userVerification,
+      timeout: challenge.timeout
+    }
+  });
+  if (!(assertionCredential instanceof PublicKeyCredential)) throw new Error("The browser did not return a passkey assertion.");
+  if (!(assertionCredential.response instanceof AuthenticatorAssertionResponse)) throw new Error("The browser did not return a WebAuthn assertion.");
+  const assertion = assertionCredential.response;
+  const rawId = encodeBase64Url(assertionCredential.rawId);
+  if (assertionCredential.id !== rawId || assertion.userHandle === null) {
+    throw new Error("The browser passkey assertion is missing its wallet binding.");
+  }
+  const response = await fetch("/api/auth/passkey/assertion", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify({
+      walletAddress,
+      chainId: BNB_TESTNET.chainId,
+      response: {
+        id: assertionCredential.id,
+        rawId,
+        type: assertionCredential.type,
+        authenticatorAttachment: assertionCredential.authenticatorAttachment ?? undefined,
+        clientExtensionResults: assertionCredential.getClientExtensionResults(),
+        response: {
+          clientDataJSON: encodeBase64Url(assertion.clientDataJSON),
+          authenticatorData: encodeBase64Url(assertion.authenticatorData),
+          signature: encodeBase64Url(assertion.signature),
+          userHandle: encodeBase64Url(assertion.userHandle)
+        }
+      }
+    })
+  });
+  await parseResponse(response);
+}
+
 function publicStorageKey(identifier: string): string {
   return `bnbera:commerce:operation:${identifier}`;
 }
@@ -138,6 +230,7 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
       const result = recover
         ? await client.recoverFromPasskey({ chainId: BNB_TESTNET.chainId })
         : await client.createPasskeyWallet({ name: "BNBEra commerce" });
+      await authenticateBrowserPasskey(result.address, result.signer);
       setAuthority({ wallet: result, signer: result.signer });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The browser passkey authority could not be prepared.");

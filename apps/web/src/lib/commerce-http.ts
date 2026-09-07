@@ -82,6 +82,7 @@ export function parseCommerceParentJobId(value: string): string {
 function statusForCommerceError(error: CommerceError | AppError): number {
   if (error instanceof AppError) {
     if (error.code === "COMMERCE_JOB_INVALID" || error.code === "COMMERCE_OPERATION_INVALID" || error.code === "COMMERCE_REQUEST_INVALID") return 400;
+    if (error.code === "AUTH_REQUIRED" || error.code === "SESSION_COOKIE_INVALID") return 401;
     return 503;
   }
   switch (error.code) {

@@ -120,6 +120,20 @@ describe("T4 commerce server composition", () => {
     expect(body.error.message).not.toMatch(/private.?key|password|secret|DATABASE_URL/iu);
   });
 
+  it("returns a stable 503 when the local T5 composition has no database", async () => {
+    vi.stubEnv("T5_ALTANA_AUTH_ENABLED", "true");
+    vi.stubEnv("DATABASE_URL", "");
+    try {
+      const response = await statusRoute(new Request("http://localhost/api/commerce/7"), { params: Promise.resolve({ jobId: "7" }) });
+      const body = await response.json() as { readonly status: string; readonly error: { readonly code: string; readonly message: string } };
+      expect(response.status).toBe(503);
+      expect(body).toMatchObject({ status: "error", error: { code: "COMMERCE_DISABLED" } });
+      expect(body.error.message).not.toMatch(/private.?key|password|secret|DATABASE_URL/iu);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("requires an authoritative standards-lock snapshot before constructing a writer", () => {
     expect(() => createProductionCommerceComposition({
       standardsLock: null,
