@@ -49,26 +49,38 @@ function ReputationFeedbackRecord({ feedback }: { readonly feedback: ReputationF
         <StatusBadge value={feedback.revoked ? "Revoked" : "Active"} tone={feedback.revoked ? "danger" : "success"} />
         <span className="muted-label">ERC-8004 feedback #{feedback.feedbackIndex}</span>
       </div>
+      <div className="detail-kv"><span>Reputation registry</span><span><code>{feedback.reputationRegistry}</code></span></div>
       <div className="detail-kv"><span>Reviewer</span><span><code>{feedback.reviewerAddress}</code></span></div>
       <div className="detail-kv"><span>Fixed-point value</span><span><code>{feedback.value}</code> · {feedback.valueDecimals} decimals</span></div>
       <div className="detail-kv"><span>Tags</span><span>{tags.length > 0 ? tags.map(([label, value]) => `${label}: ${value}`).join(" · ") : "Not observed"}</span></div>
+      <div className="detail-kv"><span>Endpoint</span><span>{feedback.endpoint || "Not observed"}</span></div>
+      <div className="detail-kv"><span>Feedback transaction / log</span><span><code>{feedback.feedbackTransactionHash}</code> · log {feedback.feedbackLogIndex}</span></div>
       <div className="detail-kv"><span>Feedback block / time</span><span>#{feedback.feedbackBlockNumber} · {formatObservedAt(feedback.feedbackObservedAt)}</span></div>
       <div className="detail-kv"><span>Feedback block hash</span><span><code>{feedback.feedbackBlockHash}</code></span></div>
       <div className="detail-kv"><span>Feedback URI</span><span><FeedbackUri value={feedback.feedbackUri} /></span></div>
       <div className="detail-kv"><span>Feedback hash</span><span><code>{feedback.feedbackHash ?? "Not observed"}</code></span></div>
       {feedback.revoked && (
-        <div className="detail-kv"><span>Revocation provenance</span><span><code>{feedback.revocationTransactionHash}</code> · block #{feedback.revocationBlockNumber} · {formatObservedAt(feedback.revocationObservedAt)}</span></div>
+        <>
+          <div className="detail-kv"><span>Revocation transaction / log</span><span><code>{feedback.revocationTransactionHash}</code> · log {feedback.revocationLogIndex}</span></div>
+          <div className="detail-kv"><span>Revocation block / time</span><span>#{feedback.revocationBlockNumber} · {formatObservedAt(feedback.revocationObservedAt)}</span></div>
+          <div className="detail-kv"><span>Revocation block hash</span><span><code>{feedback.revocationBlockHash}</code></span></div>
+        </>
       )}
     </div>
   );
 }
 
 function ReputationFeedbackView({ label, view }: { readonly label: string; readonly view: ReputationView }) {
-  if (view.feedback.length === 0) return null;
   return (
     <div className="detail-section__body">
-      <div className="detail-actions"><strong>{label}</strong><span className="muted-label">{view.count ?? 0} active · {view.feedback.length} recorded</span></div>
-      {view.feedback.map((feedback) => <ReputationFeedbackRecord key={`${feedback.feedbackTransactionHash}-${feedback.feedbackLogIndex}-${feedback.feedbackBlockHash}`} feedback={feedback} />)}
+      <div className="detail-actions">
+        <strong>{label}</strong>
+        <StatusBadge value={titleCase(view.status)} tone={statusTone(view.status)} />
+        {view.count !== null && <span className="muted-label">{view.count} active · {view.feedback.length} recorded</span>}
+      </div>
+      {view.feedback.length > 0
+        ? view.feedback.map((feedback) => <ReputationFeedbackRecord key={`${feedback.feedbackTransactionHash}-${feedback.feedbackLogIndex}-${feedback.feedbackBlockHash}`} feedback={feedback} />)
+        : <p className="detail-section__lede">{view.reason ?? "No feedback records are available in this view."}</p>}
     </div>
   );
 }
@@ -229,6 +241,7 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
           </div>
           <ReputationFeedbackView label="Raw permissionless feedback provenance" view={agent.metrics.reputation.rawPermissionless} />
           <ReputationFeedbackView label="Recognized reviewer / validator provenance" view={agent.metrics.reputation.recognizedReviewers} />
+          <ReputationFeedbackView label="BNBEra verified-purchase review provenance" view={agent.metrics.reputation.verifiedPurchases} />
         </section>
 
         <section className="detail-section">

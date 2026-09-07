@@ -201,14 +201,16 @@ export type ReputationSyncResult = {
 export function normalizeReputationCheckpoint(input: ReputationCheckpoint): ReputationCheckpoint {
   const identityRegistry = address(input.identityRegistry, "identity registry");
   const reputationRegistry = address(input.reputationRegistry, "reputation registry");
-  if (!Number.isSafeInteger(input.chainId) || input.chainId <= 0 || !Number.isSafeInteger(input.confirmationThreshold) || input.confirmationThreshold < 0 || !Number.isSafeInteger(input.cursorVersion) || input.cursorVersion < 1 || input.indexerVersion.trim().length === 0 || input.indexerVersion.length > 64) {
+  const indexerVersion = typeof input.indexerVersion === "string" ? input.indexerVersion.trim() : "";
+  if (!Number.isSafeInteger(input.chainId) || input.chainId <= 0 || !Number.isSafeInteger(input.confirmationThreshold) || input.confirmationThreshold < 0 || !Number.isSafeInteger(input.cursorVersion) || input.cursorVersion < 1 || indexerVersion.length === 0 || indexerVersion.length > 64) {
     throw ingestionError("REPUTATION_SYNC_CONFIG_INVALID", "The reputation checkpoint is invalid.", "repair_reputation_checkpoint");
   }
   for (const [field, value] of [["last scanned block", input.lastScannedBlock], ["last finalized block", input.lastFinalizedBlock]] as const) safeBlock(value, field);
-  hash(input.lastScannedBlockHash, "last scanned block hash");
-  hash(input.lastFinalizedBlockHash, "last finalized block hash");
+  const lastScannedBlockHash = hash(input.lastScannedBlockHash, "last scanned block hash");
+  const lastFinalizedBlockHash = hash(input.lastFinalizedBlockHash, "last finalized block hash");
   if (input.lastFinalizedBlock > input.lastScannedBlock) throw ingestionError("REPUTATION_SYNC_CONFIG_INVALID", "A finalized reputation block cannot exceed the scanned block.", "repair_reputation_checkpoint");
-  return { ...input, identityRegistry, reputationRegistry, indexerVersion: input.indexerVersion.trim() };
+  const lastReconciliationAt = input.lastReconciliationAt === null ? null : safeDate(input.lastReconciliationAt, "reconciliation");
+  return { ...input, identityRegistry, reputationRegistry, indexerVersion, lastScannedBlockHash, lastFinalizedBlockHash, lastReconciliationAt };
 }
 
 export function projectReputationFeedback(
@@ -356,7 +358,8 @@ export class ReputationIngestionService {
         const ancestorHash = await reader.getTrustedBlockHash(commonAncestor);
         if (ancestorHash === null) throw ingestionError("REORG_RECONCILIATION_REQUIRED", "The reputation common-ancestor hash is unavailable.", "retry_reputation_read", undefined, true);
         const orphanedBefore = (await repository.listReputationEvents({ chainId: options.chainId, identityRegistry, reputationRegistry, fromBlock: commonAncestor + 1, state: "orphaned" })).length;
-        await repository.markReputationOrphaned({ chainId: options.chainId, identityRegistry, reputationRegistry, fromBlock: commonAncestor + 1, occurredAt: now() });
+        const orphanedIdentityKeys = await repository.markReputationOrphaned({ chainId: options.chainId, identityRegistry, reputationRegistry, fromBlock: commonAncestor + 1, occurredAt: now() });
+        for (const identityKey of orphanedIdentityKeys) affected.add(identityKey);
         orphanedEventCount = Math.max(0, (await repository.listReputationEvents({ chainId: options.chainId, identityRegistry, reputationRegistry, fromBlock: commonAncestor + 1, state: "orphaned" })).length - orphanedBefore);
         checkpoint = {
           ...checkpoint,
@@ -377,20 +380,24 @@ export class ReputationIngestionService {
     let scannedBlock = checkpoint?.lastScannedBlock ?? null;
     let insertedEventCount = 0;
     if (fromBlock <= scanThroughBlock) {
-      if (scanThroughBlock - fromBlock + 1 > maxBlockRange) throw ingestionError("REPUTATION_SYNC_RANGE_EXCEEDED", "The reputation sync range exceeds its bounded read window.", "advance_reputation_checkpoint");
+      // A first run may begin at the registry deployment block while the
+      // chain head is millions of blocks ahead. Advance one bounded window
+      // per run so the durable checkpoint can make progress instead of
+      // requiring an unsafe/unbounded historical RPC request.
+      const boundedThroughBlock = Math.min(scanThroughBlock, fromBlock + maxBlockRange - 1);
       scannedFromBlock = fromBlock;
-      scannedThroughBlock = scanThroughBlock;
-      scannedBlock = scanThroughBlock;
-      const scannedHash = await reader.getTrustedBlockHash(scanThroughBlock);
+      scannedThroughBlock = boundedThroughBlock;
+      scannedBlock = boundedThroughBlock;
+      const scannedHash = await reader.getTrustedBlockHash(boundedThroughBlock);
       if (scannedHash === null) throw ingestionError("REORG_RECONCILIATION_REQUIRED", "The reputation scan-head hash is unavailable.", "retry_reputation_read", undefined, true);
-      const events = [...await reader.getReputationEvents({ chainId: options.chainId, identityRegistry, reputationRegistry, fromBlock, toBlock: scanThroughBlock, ...(finalizedTag === null ? {} : { blockTag: finalizedTag }) })].sort(compareEventPosition);
+      const events = [...await reader.getReputationEvents({ chainId: options.chainId, identityRegistry, reputationRegistry, fromBlock, toBlock: boundedThroughBlock, ...(finalizedTag === null ? {} : { blockTag: finalizedTag }) })].sort(compareEventPosition);
       if (events.length > maxEvents) throw ingestionError("REPUTATION_SYNC_EVENT_LIMIT_EXCEEDED", "The reputation provider returned more events than the bounded sync limit.", "reduce_reputation_range");
       for (const event of events) {
         const { payloadDigest: suppliedPayloadDigest, ...eventWithoutDigest } = event;
         const normalized = normalizeReputationEventWithDigest(eventWithoutDigest);
         if (suppliedPayloadDigest !== normalized.payloadDigest) throw ingestionError("REPUTATION_DUPLICATE_CONFLICT", "The reputation event payload digest is inconsistent.", "reconcile_reputation");
-        if (normalized.blockNumber < fromBlock || normalized.blockNumber > scanThroughBlock) throw ingestionError("CHAIN_PROVIDER_INVALID", "The reputation reader returned an event outside the requested range.", "review_reputation_reader");
-        if (normalized.identity.chainId !== options.chainId || normalized.identity.identityRegistry !== identityRegistry || normalized.reputationRegistry !== reputationRegistry) throw ingestionError("IDENTITY_CONFLICT", "A reputation event belongs to a different configured network or registry.", "review_reputation_configuration");
+        if (normalized.blockNumber < fromBlock || normalized.blockNumber > boundedThroughBlock) throw ingestionError("CHAIN_PROVIDER_INVALID", "The reputation reader returned an event outside the requested range.", "review_reputation_reader");
+        if (normalized.identity.namespace !== "eip155" || normalized.identity.chainId !== options.chainId || normalized.identity.identityRegistry !== identityRegistry || normalized.reputationRegistry !== reputationRegistry) throw ingestionError("IDENTITY_CONFLICT", "A reputation event belongs to a different configured network or registry.", "review_reputation_configuration");
         const existingIdentity = await repository.findIdentity(normalized.identity);
         if (existingIdentity === null) await repository.upsertIdentity({ identity: normalized.identity, originType: "discovered" });
         const before = await repository.listReputationEvents({ chainId: options.chainId, identityRegistry, reputationRegistry, fromBlock: normalized.blockNumber, toBlock: normalized.blockNumber });
@@ -402,7 +409,7 @@ export class ReputationIngestionService {
         }
         affected.add(erc8004IdentityKey(normalized.identity));
       }
-      const finalityThrough = Math.min(finalizedBlock, scanThroughBlock);
+      const finalityThrough = Math.min(finalizedBlock, boundedThroughBlock);
       const finalizedHash = await reader.getTrustedBlockHash(finalityThrough);
       if (finalizedHash === null) throw ingestionError("REORG_RECONCILIATION_REQUIRED", "The finalized reputation block hash is unavailable.", "retry_reputation_read", undefined, true);
       const promoted = await repository.markReputationCanonical({ chainId: options.chainId, identityRegistry, reputationRegistry, throughBlock: finalityThrough, canonicalizedAt: now() });

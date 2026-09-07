@@ -390,7 +390,7 @@ export interface ReputationRepository {
     readonly reputationRegistry: string;
     readonly fromBlock: number;
     readonly occurredAt: Date;
-  }): Promise<void>;
+  }): Promise<readonly IdentityKey[]>;
   listReputationFeedback(
     identity: Erc8004Identity,
     options?: { readonly includeRevoked?: boolean }

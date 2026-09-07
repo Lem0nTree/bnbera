@@ -9,7 +9,7 @@ This table distinguishes code merged to GitHub `main`, retained-runtime evidence
 | Task | Status | Current result | Remaining acceptance |
 | --- | --- | --- | --- |
 | T1 | Implemented; retained acceptance passed | Independent locked discovery and health cron, durable cursor/retry state, bounded work and freshness expiry are merged. | Reinstall from the final deployed checkout and keep operational evidence with T3. |
-| T2 | Core implemented; reputation remains | Real enrichment, multi-category evidence, persistent vectors, deterministic fallback and marketplace read models are merged. Retained processing produced a small truthful set of qualified listings; most discovered registrations did not pass service/capability/health gates. | Add provenance-safe ERC-8004 reputation ingestion/display, continue bounded supply growth, and keep production semantic mode disabled until its standards lock is released. |
+| T2 | Core and reputation implemented; supply growth remains | Real enrichment, multi-category evidence, persistent vectors, deterministic fallback, marketplace read models and provenance-separated ERC-8004 Reputation Registry ingestion/display are implemented. A bounded live read advanced the checkpoint but observed zero feedback events, which is shown as unknown rather than a fabricated score. | Continue bounded qualified-supply growth and keep production semantic mode disabled until its standards lock is released. |
 | T3 | In progress | Retained database pipeline, restart-safe cron behavior and local API path have been exercised. | Deploy a stable public HTTPS preview and verify browser -> API -> PostgreSQL plus restart, stale-health and fallback behavior at the deployed SHA. Create `MVP-STATUS.md`. |
 | T4 | Backend and authorized canary complete | PR #18 is merged. The pinned SDK boundary, safe APIs, PostgreSQL lifecycle, reconciliation and one distinct-actor chain-97 hire -> submit -> explicit buyer approval -> settlement canary passed. | Keep release disabled. T5 must connect authenticated browser authority and prove a useful result from a callable marketplace agent; T4 alone does not pass G2. |
 | T5 | Open | Existing detail page has a read-only/disabled activation surface. | Complete the browser hire/result/approval/settlement journey, confirmed-job projection and verified-purchase review. |
@@ -40,8 +40,8 @@ Use these unchecked items as the bounded handoff for the next implementation age
 ### T2 remaining
 
 - [x] Merge enrichment, evidence-based multi-category classification, vector persistence, semantic canary/fallback and marketplace projections.
-- [ ] Ingest non-revoked ERC-8004 Reputation Registry feedback with complete provenance.
-- [ ] Display raw feedback, recognized reviewer/validator evidence and T5 verified-purchase reviews as separate views.
+- [x] Ingest ERC-8004 Reputation Registry feedback and revocations with full identity, reviewer/index, fixed-point value, tags, URI/hash, block/time and reorg provenance. Revoked entries remain in history and leave active aggregates.
+- [x] Display raw permissionless feedback, recognized reviewer/validator evidence and T5 verified-purchase reviews as separate views, with truthful unknown/unavailable states and no trusted aggregate over raw feedback.
 - [ ] Continue bounded discovery to improve qualified four-category depth without weakening capability, service or health gates.
 - [ ] Release-enable semantic retrieval only after the shared standards lock has production evidence; deterministic fallback remains valid meanwhile.
 
@@ -124,7 +124,7 @@ Done: cron runs against retained data for 30 minutes, survives process restart, 
 
 ### T2 — Enriched listing, search and real metrics
 
-Status: core merged; bounded supply growth and ERC-8004 reputation projection remain.
+Status: core plus ERC-8004 reputation ingestion/display implemented; bounded qualified-supply growth and semantic-provider release remain.
 
 Owner: WEB/DATA. Parallel with T1; disjoint files agreed by coordinator. Paths: marketplace read/publication model, web API/components, scoped enrichment adapters. Shared schema/lock changes assigned to one owner.
 
@@ -136,6 +136,8 @@ Owner: WEB/DATA. Parallel with T1; disjoint files agreed by coordinator. Paths: 
 - Build a bounded four-category real-supply inventory. Check labels on representative agents and ambiguous cases; show truthful empty categories until qualified supply exists. Reuse external supply before proposing a new reference agent.
 
 Done: a real listing shows persisted enrichment and truthful metrics; semantic search retrieves it; refresh does not churn versions; unsupported skills are not described as tested. UI works for all four categories with explicit coverage gaps. Source-owned evidence changes coordinate with T1.
+
+Reputation acceptance: the standards-locked bounded sync advances durable checkpoints, preserves reorg/revocation history and projects three provenance-separated views through the marketplace API and detail UI. The current bounded live sample observed zero feedback events; this is valid empty-chain evidence and the UI reports unknown rather than zero or a trusted rating.
 
 ### T3 — G1 acceptance and running public preview
 

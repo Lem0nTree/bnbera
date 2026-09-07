@@ -101,6 +101,33 @@ const uptimeSchema = z.object({
   source: z.string().trim().min(1).max(160).nullable()
 });
 
+const defaultMarketplaceReputation = {
+  rawPermissionless: {
+    status: "unknown" as const,
+    count: null,
+    feedback: [],
+    source: null,
+    observedAt: null,
+    reason: "No canonical ERC-8004 feedback has been observed."
+  },
+  recognizedReviewers: {
+    status: "unavailable" as const,
+    count: null,
+    feedback: [],
+    source: null,
+    observedAt: null,
+    reason: "No recognized reviewer or validator allowlist is configured."
+  },
+  verifiedPurchases: {
+    status: "unavailable" as const,
+    count: null,
+    feedback: [],
+    source: null,
+    observedAt: null,
+    reason: "BNBEra verified-purchase reviews are enabled by G2."
+  }
+} satisfies z.input<typeof marketplaceReputationSchema>;
+
 const marketplaceMetricsSchema = z.object({
   uptime: uptimeSchema,
   reviews: z.object({
@@ -110,7 +137,10 @@ const marketplaceMetricsSchema = z.object({
     source: z.string().trim().min(1).max(160).nullable(),
     observedAt: z.string().datetime({ offset: true }).nullable()
   }),
-  reputation: marketplaceReputationSchema,
+  // Accept responses produced before the reputation projection was added,
+  // while normalizing the missing field to an explicit unavailable/unknown
+  // view at this boundary.
+  reputation: marketplaceReputationSchema.default(defaultMarketplaceReputation),
   completedJobs: z.object({
     status: z.enum(["available", "unavailable", "unknown"]),
     completedCount: z.number().int().nonnegative().nullable(),

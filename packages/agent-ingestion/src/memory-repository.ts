@@ -526,13 +526,16 @@ export class InMemoryIngestionRepository implements IngestionRepository, ScanDis
     readonly reputationRegistry: string;
     readonly fromBlock: number;
     readonly occurredAt: Date;
-  }): Promise<void> {
+  }): Promise<readonly IdentityKey[]> {
     const identityRegistry = normalizeEvmAddress(input.identityRegistry);
     const reputationRegistry = normalizeEvmAddress(input.reputationRegistry);
+    const affected = new Set<IdentityKey>();
     for (const [key, event] of this.reputationEvents) {
       if (event.identity.chainId !== input.chainId || event.identity.identityRegistry !== identityRegistry || event.reputationRegistry !== reputationRegistry || event.blockNumber < input.fromBlock || event.confirmationState === "orphaned") continue;
       this.reputationEvents.set(key, { ...event, confirmationState: "orphaned", orphanedAt: input.occurredAt });
+      affected.add(erc8004IdentityKey(event.identity));
     }
+    return [...affected].sort();
   }
 
   async listReputationFeedback(identity: Erc8004Identity, options: { readonly includeRevoked?: boolean } = {}): Promise<readonly ReputationFeedback[]> {
