@@ -325,6 +325,32 @@ describe("T5 commerce server composition", () => {
     expect(prepareEoaStep).toHaveBeenCalledTimes(4);
   });
 
+  it("rechecks a confirmed create when receipt persistence preceded job ID attachment", async () => {
+    const persisted = eoaOperation("create", "confirmed", null);
+    const attached = eoaOperation("create", "confirmed", "7");
+    const next = eoaOperation("register", "awaiting_signature", "7");
+    const verifyEoaReceipt = vi.fn(async () => ({
+      receipt: { status: "success" as const, blockNumber: 12n, blockHash: `0x${"d".repeat(64)}`, transactionHash: `0x${"b".repeat(64)}`, logs: [] },
+      job: { id: "7", client: BUYER, provider: OTHER, evaluator: ROUTER, hook: ROUTER, description: "health factor", budgetAtomic: "1000", expiredAtUnix: 2_000_600, submittedAtUnix: 2_000_001, status: "OPEN", chainDeliverable: `0x${"0".repeat(64)}` },
+      jobId: "7",
+      logIndex: 0
+    }));
+    const attachJobId = vi.fn(async () => attached as never);
+    const prepareEoaStep = vi.fn(() => ({}) as never);
+    const reserveExternal = vi.fn(async () => ({ operation: next as never, replayed: false, dispatchable: true }));
+    const composition = testComposition({
+      adapter: { pin: PIN, routerContract: ROUTER, policyContract: POLICY, paymentToken: TOKEN, verifyEoaReceipt },
+      operations: { get: vi.fn(async () => persisted), attachJobId },
+      service: { prepareEoaStep, reserveExternal },
+      reads: { get: vi.fn(async () => null) }
+    });
+    const result = await composition.operationStatus(new Request("http://localhost"), persisted.operationId as string);
+    expect(verifyEoaReceipt).toHaveBeenCalledOnce();
+    expect(verifyEoaReceipt).toHaveBeenCalledWith(expect.objectContaining({ step: "create", jobId: null, transactionHash: `0x${"b".repeat(64)}` }));
+    expect(attachJobId).toHaveBeenCalledWith({ operationId: persisted.operationId, jobId: "7" });
+    expect(result.operation.kind).toBe("register");
+  });
+
   it("denies a parent/listing binding mismatch without reaching the SDK", async () => {
     const hire = vi.fn();
     const mismatched = parent({ providerAddress: BUYER });

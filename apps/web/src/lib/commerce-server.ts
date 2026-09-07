@@ -840,7 +840,7 @@ export class Erc8183CommerceComposition {
     // A durable confirmed receipt is sufficient evidence for the setup steps.
     // Do not re-read the job as OPEN after a later fund call has legitimately
     // advanced it; the fund/terminal steps retain receipt-based repair below.
-    if (["confirmed", "reconciled"].includes(operation.status) && this.isEarlyEoaStep(step)) return this.advanceEoa(operation);
+    if (["confirmed", "reconciled"].includes(operation.status) && operation.jobId !== null && this.isEarlyEoaStep(step)) return this.advanceEoa(operation);
     const transactionHash = suppliedHash ?? operation.transactionHash;
     if (transactionHash === undefined || transactionHash === null) {
       if (operation.status === "awaiting_signature") return { operation, replayed: true, dispatch: browserDispatchFor(operation, this.adapter), read: await this.optionalJob(operation.jobId) };
@@ -963,7 +963,7 @@ export class Erc8183CommerceComposition {
     if (this.eoaStep(operation) !== null) {
       let current = operation;
       const step = this.eoaStep(operation);
-      if (["confirmed", "reconciled"].includes(operation.status) && step !== null && this.isEarlyEoaStep(step)) return this.advanceEoa(operation);
+      if (["confirmed", "reconciled"].includes(operation.status) && operation.jobId !== null && step !== null && this.isEarlyEoaStep(step)) return this.advanceEoa(operation);
       if (operation.transactionHash !== null && ["submitted", "unknown", "confirmed", "reconciled"].includes(operation.status)) {
         const result = await this.confirmEoa(operation);
         current = result.operation;
