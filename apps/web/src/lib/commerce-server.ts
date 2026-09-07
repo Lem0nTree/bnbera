@@ -8,6 +8,8 @@
  */
 import { evmAddressSchema, type CommerceJobStatus } from "@bnbera/domain";
 import { readFile } from "node:fs/promises";
+import { privateKeyToAddress } from "viem/accounts";
+import type { Hex } from "viem";
 import { AppError } from "@bnbera/config";
 import {
   CommerceError,
@@ -19,6 +21,8 @@ import {
   PostgresErc8183OperationRepository,
   erc8183JobKeySchema,
   erc8183ProviderBindingSchema,
+  referenceProviderRunnerConfigFromEnvironment,
+  referenceProviderSecretReferenceSchema,
   type Erc8183AltanaAuthority,
   type Erc8183CommerceServiceOptions,
   type Erc8183JobKey,
@@ -50,6 +54,12 @@ import {
 } from "./commerce-auth";
 import {
   PostgresCommerceReservationStore,
+  assertCommerceProviderReadiness,
+  createReferenceProviderReadinessResolver,
+  type CommerceProviderReadinessInput,
+  type CommerceProviderReadinessResolver,
+  type CommerceProviderReadiness,
+  type ReferenceProviderReadinessConfig,
   type CommerceQuoteSnapshot
 } from "./commerce-reservations";
 
@@ -128,8 +138,10 @@ export interface CommerceEligibleHireListing {
   readonly listingStatus: "published";
   readonly verificationStatus: "verified";
   readonly runtimeStatus: "live";
-  readonly authorityStatus: "active";
+  readonly authorityStatus: "none" | "active" | "expired" | "revoked";
   readonly version: { readonly id: string; readonly number: number };
+  /** Finalized public facts passed to the configured readiness seam. */
+  readonly readiness?: CommerceProviderReadinessInput;
 }
 
 export interface CommerceParentHireRecord {
@@ -171,6 +183,8 @@ export interface Erc8183CommerceCompositionOptions {
   readonly authorityResolver?: CommerceAuthorityResolver;
   /** Optional override for tests or a later marketplace repository. */
   readonly parentHireResolver?: CommerceParentHireResolver;
+  /** Required for external (`authorityStatus=none`) provider hires. */
+  readonly providerReadinessResolver?: CommerceProviderReadinessResolver;
   /** Explicit constructor-only development/test canary opt-in. */
   readonly developmentCanaryEnabled?: boolean;
   readonly runtimeEnvironment?: "development" | "test" | "production";
@@ -290,8 +304,11 @@ function assertParentHireAuthorization(
   }
 
   const listing = parent.listing;
-  if (listing.listingStatus !== "published" || listing.verificationStatus !== "verified" || listing.runtimeStatus !== "live" || listing.authorityStatus !== "active") {
+  if (listing.listingStatus !== "published" || listing.verificationStatus !== "verified" || listing.runtimeStatus !== "live") {
     throw new CommerceError({ code: "STALE_JOB", message: "The provider marketplace listing is not currently eligible for execution.", nextAction: "reload_listing" });
+  }
+  if (listing.authorityStatus === "expired" || listing.authorityStatus === "revoked") {
+    throw new CommerceError({ code: "STALE_JOB", message: "The provider marketplace listing authority is expired or revoked.", nextAction: "reload_listing" });
   }
   try {
     evmAddressSchema.parse(parent.providerAddress);
@@ -467,6 +484,7 @@ export class Erc8183CommerceComposition {
   private readonly authorityResolver: CommerceAuthorityResolver | undefined;
   private readonly parentHireResolver: CommerceParentHireResolver;
   private readonly reservationResolver: PostgresCommerceReservationStore | undefined;
+  private readonly providerReadinessResolver: CommerceProviderReadinessResolver | undefined;
 
   public constructor(options: Erc8183CommerceCompositionOptions) {
     if (options.standardsLock === undefined || options.standardsLock === null) {
@@ -478,6 +496,7 @@ export class Erc8183CommerceComposition {
     }
     this.identityResolver = options.identityResolver;
     this.authorityResolver = options.authorityResolver;
+    this.providerReadinessResolver = options.providerReadinessResolver;
     this.adapter = new Erc8183AltanaAdapter({
       pin: options.pin,
       standardsLock: options.standardsLock,
@@ -489,7 +508,7 @@ export class Erc8183CommerceComposition {
     this.marketplace = new PostgresErc8183MarketplaceProjection(options.pool);
     this.reservationResolver = options.parentHireResolver instanceof PostgresCommerceReservationStore
       ? options.parentHireResolver
-      : new PostgresCommerceReservationStore(options.pool, options.pin);
+      : new PostgresCommerceReservationStore(options.pool, options.pin, options.providerReadinessResolver);
     this.parentHireResolver = options.parentHireResolver ?? this.reservationResolver;
     const serviceOptions: Erc8183CommerceServiceOptions = {
       adapter: this.adapter,
@@ -580,7 +599,28 @@ export class Erc8183CommerceComposition {
         cause
       });
     }
-    return assertParentHireAuthorization(parent, input, identity, this.adapter.pin);
+    const authorized = assertParentHireAuthorization(parent, input, identity, this.adapter.pin);
+    await this.assertExternalProviderReadiness(authorized);
+    return authorized;
+  }
+
+  private async assertExternalProviderReadiness(parent: CommerceParentHireRecord): Promise<void> {
+    if (parent.listing.authorityStatus !== "none") return;
+    if (this.providerReadinessResolver === undefined) {
+      throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The external provider has no configured readiness resolver.", nextAction: "configure_provider_readiness" });
+    }
+    const input = parent.listing.readiness;
+    if (input === undefined) {
+      throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The external provider reservation has no readiness evidence.", nextAction: "reload_listing" });
+    }
+    let result: CommerceProviderReadiness;
+    try {
+      result = await this.providerReadinessResolver.resolve(input);
+    } catch (cause) {
+      if (cause instanceof CommerceError) throw cause;
+      throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The external provider readiness check failed closed.", nextAction: "configure_provider_readiness", cause });
+    }
+    assertCommerceProviderReadiness(input, result);
   }
 
   /** Create a buyer-scoped quote/reservation without invoking a chain SDK. */
@@ -903,6 +943,17 @@ export class Erc8183CommerceComposition {
   public async claimExternalDispatch(request: Request, operationId: string): Promise<CommerceBrowserIntentResult> {
     const existing = await this.assertBrowserOperationActor(request, operationId);
     if (this.eoaStep(existing) === null) throw new CommerceError({ code: "INVALID_JOB", message: "The legacy browser relay operation does not support WalletConnect dispatch claims.", nextAction: "reconcile_transaction" });
+    if (this.eoaStep(existing) === "fund") {
+      const identity = await this.identity(request);
+      const commerceJobId = existing.context?.parameters?.commerceJobId;
+      if (typeof commerceJobId !== "string" || commerceJobId.trim() === "") {
+        throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The browser funding operation has no parent commerce reservation.", nextAction: "manual_review" });
+      }
+      // This is the final server check immediately before the browser is
+      // handed a fund send. A quote may be valid while the provider changes
+      // owner, wallet, endpoint, freshness or configuration afterwards.
+      await this.resolveParentHire(identity, { commerceJobId });
+    }
     const claimed = await this.operations.claimExternalDispatch({ operationId });
     return {
       operation: claimed.operation,
@@ -1094,6 +1145,85 @@ export function commercePinFromStandardsLock(lock: unknown): EnabledErc8183Deplo
   });
 }
 
+/**
+ * Resolve only the public signer address for an `env://` secret reference.
+ * The private key is read for the duration of this function call and is never
+ * returned, persisted, logged or attached to a commerce error.
+ */
+function referenceProviderSignerAddressResolver(
+  env: Readonly<Record<string, string | undefined>>
+): ReferenceProviderReadinessConfig["resolveSignerAddress"] {
+  return async (reference) => {
+    let parsedReference: string;
+    try {
+      parsedReference = referenceProviderSecretReferenceSchema.parse(reference);
+    } catch {
+      throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The configured provider authority secret reference is invalid.", nextAction: "configure_secret_reference" });
+    }
+    const match = /^env:\/\/([A-Za-z_][A-Za-z0-9_]*)$/u.exec(parsedReference);
+    if (match === null || match[1] === undefined) {
+      throw new CommerceError({ code: "COMMERCE_DISABLED", message: "This application has no resolver for the configured provider secret-manager scheme.", nextAction: "configure_secret_reference" });
+    }
+    const rawKey = env[match[1]]?.trim();
+    if (rawKey === undefined || !/^0x[0-9a-f]{64}$/iu.test(rawKey)) {
+      throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The configured provider authority secret reference could not be resolved.", nextAction: "configure_secret_reference" });
+    }
+    try {
+      return privateKeyToAddress(rawKey as Hex);
+    } catch {
+      throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The configured provider authority secret is invalid.", nextAction: "configure_secret_reference" });
+    }
+  };
+}
+
+/**
+ * Compose the one external reference-provider readiness seam from the same
+ * guarded public environment configuration used by the provider worker.
+ * Missing/disabled configuration intentionally returns no resolver so the
+ * marketplace remains readable while external funding stays fail-closed.
+ */
+function referenceProviderReadinessFromEnvironment(
+  pin: EnabledErc8183DeploymentPin,
+  env: Readonly<Record<string, string | undefined>>
+): CommerceProviderReadinessResolver | undefined {
+  const config = referenceProviderRunnerConfigFromEnvironment(env);
+  if (!config.enabled) return undefined;
+  const identity = config.identity;
+  const jobKey = config.jobKey;
+  const expectedOwnerAddress = config.expectedOwnerAddress;
+  const providerAddress = config.providerAddress;
+  const providerEndpoint = config.providerEndpoint;
+  const authoritySecretReference = config.authoritySecretReference;
+  if (
+    identity === undefined ||
+    jobKey === undefined ||
+    expectedOwnerAddress === undefined ||
+    providerAddress === undefined ||
+    providerEndpoint === undefined ||
+    authoritySecretReference === undefined ||
+    config.chainId !== 97 ||
+    jobKey.chainId !== pin.chainId ||
+    jobKey.commerceContract.toLowerCase() !== pin.commerceContract.toLowerCase()
+  ) {
+    throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The configured reference provider does not match the standards-locked ERC-8183 deployment.", nextAction: "verify_standards_lock" });
+  }
+  const resolverConfig: ReferenceProviderReadinessConfig = {
+    enabled: true,
+    identity,
+    expectedOwnerAddress,
+    providerAddress,
+    providerEndpoint,
+    authoritySecretReference,
+    chainId: 97,
+    commerceContract: pin.commerceContract,
+    paymentToken: pin.paymentToken,
+    paymentDecimals: pin.paymentDecimals,
+    maxBudgetAtomic: config.maxBudgetAtomic,
+    resolveSignerAddress: referenceProviderSignerAddressResolver(env)
+  };
+  return createReferenceProviderReadinessResolver(resolverConfig);
+}
+
 async function readCommerceStandardsLock(): Promise<unknown> {
   try {
     return JSON.parse(await readFile(new URL("../../../../config/standards.lock.json", import.meta.url), "utf8")) as unknown;
@@ -1131,11 +1261,14 @@ export async function getCommerceComposition(): Promise<Erc8183CommerceCompositi
   const standardsLock = await readCommerceStandardsLock();
   try {
     const pool = getCommerceAuthDatabasePool();
+    const pin = commercePinFromStandardsLock(standardsLock);
+    const providerReadinessResolver = referenceProviderReadinessFromEnvironment(pin, process.env);
     return createProductionCommerceComposition({
       standardsLock,
-      pin: commercePinFromStandardsLock(standardsLock),
+      pin,
       pool,
       identityResolver: { resolve: requireAuthenticatedCommerceIdentity },
+      ...(providerReadinessResolver === undefined ? {} : { providerReadinessResolver }),
       // Server-side signer/session authority is intentionally not wired for
       // T5. Mutating SDK calls are browser-owned; provider/refund workers must
       // use a separately authenticated authority boundary before enablement.

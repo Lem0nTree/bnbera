@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { DataModeBadge, StateAxisGrid, StatusBadge } from "@bnbera/ui";
+import { erc8004IdentityKey } from "@bnbera/domain";
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
 import { categoryLabel, compactAddress, formatObservedAt, joinOrFallback, statusTone, titleCase } from "@/lib/presentation";
 import { ActivationPanel } from "./activation-panel";
@@ -60,7 +61,7 @@ export function AgentCard({ agent }: { readonly agent: MarketplaceAgentReadModel
           </Link>
         </div>
       </div>
-      <ActivationPanel activation={agent.activation} identifier={agent.slug} />
+      <ActivationPanel activation={agent.activation} identityKey={erc8004IdentityKey(identity)} />
       <p className="fixture-caption">{titleCase(agent.dataProvenance.label)} · {agent.dataProvenance.details}</p>
     </article>
   );

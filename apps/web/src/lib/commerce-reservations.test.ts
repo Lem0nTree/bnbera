@@ -1,15 +1,20 @@
-import { describe, expect, it } from "vitest";
-import { canonicalSha256Hex } from "@bnbera/domain";
+import { describe, expect, it, vi } from "vitest";
+import { canonicalSha256Hex, erc8004IdentityKey } from "@bnbera/domain";
+import { CommerceError } from "@bnbera/agent-commerce";
 import {
   commerceQuoteRequestSchema,
+  createReferenceProviderReadinessResolver,
   parsePersistedPricing,
   PostgresCommerceReservationStore,
+  type CommerceProviderReadinessInput,
+  type CommerceProviderReadinessResolver,
   type CommerceQuoteSnapshot
 } from "./commerce-reservations";
 
 const COMMERCE = "0xa206c0517b6371c6638cd9e4a42cc9f02a33b0de";
 const TOKEN = "0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565";
 const PROVIDER = "0x2222222222222222222222222222222222222222";
+const OWNER = "0x3333333333333333333333333333333333333333";
 const REGISTRY = "0x1111111111111111111111111111111111111111";
 const AGENT_ID = "42";
 const AGENT_UUID = "00000000-0000-4000-8000-000000000010";
@@ -40,8 +45,12 @@ const listingRow = {
   chain_id: 97,
   identity_registry: REGISTRY,
   agent_identity_id: AGENT_ID,
+  owner_address: OWNER,
+  owner_observed_block: 123,
   agent_wallet: PROVIDER,
+  agent_wallet_observed_block: 123,
   identity_observed_block: 123,
+  identity_observed_block_hash: `0x${"a".repeat(64)}`,
   identity_read_consistency: "finalized",
   listing_status: "published",
   verification_status: "verified",
@@ -66,6 +75,55 @@ const listingRow = {
   service_observed_at: "2026-09-07T00:00:00.000Z",
   probe_observed_at: new Date().toISOString()
 };
+
+function readinessInput(overrides: Partial<CommerceProviderReadinessInput> = {}): CommerceProviderReadinessInput {
+  const now = Math.floor(Date.now() / 1_000);
+  return {
+    identity: { namespace: "eip155", chainId: 97, identityRegistry: REGISTRY, agentId: AGENT_ID },
+    ownerAddress: OWNER,
+    ownerObservedBlock: 123,
+    agentWallet: PROVIDER,
+    agentWalletObservedBlock: 123,
+    identityObservedBlock: 123,
+    identityObservedBlockHash: `0x${"a".repeat(64)}`,
+    identityReadConsistency: "finalized",
+    providerAddress: PROVIDER,
+    service: {
+      kind: "a2a",
+      url: "https://provider.example/a2a",
+      protocolVersion: "1.0",
+      observedAt: new Date(now * 1_000).toISOString(),
+      probeObservedAt: new Date(now * 1_000).toISOString()
+    },
+    chainId: 97,
+    commerceContract: COMMERCE,
+    paymentToken: TOKEN,
+    paymentDecimals: 18,
+    priceAtomic: "100",
+    authorityStatus: "none",
+    version: { id: VERSION_UUID, number: 1 },
+    ...overrides
+  };
+}
+
+function readinessResolver(overrides: Partial<Parameters<typeof createReferenceProviderReadinessResolver>[0]> = {}) {
+  return createReferenceProviderReadinessResolver({
+    enabled: true,
+    identity: readinessInput().identity,
+    expectedOwnerAddress: OWNER,
+    providerAddress: PROVIDER,
+    providerEndpoint: "https://provider.example/a2a",
+    authoritySecretReference: "env://T5_REFERENCE_PROVIDER_PRIVATE_KEY",
+    chainId: 97,
+    commerceContract: COMMERCE,
+    paymentToken: TOKEN,
+    paymentDecimals: 18,
+    maxBudgetAtomic: PIN.maxBudgetAtomic,
+    resolveSignerAddress: vi.fn(async () => PROVIDER),
+    nowUnix: () => Math.floor(Date.now() / 1_000),
+    ...overrides
+  });
+}
 
 function quoteSnapshot(): CommerceQuoteSnapshot {
   return {
@@ -142,6 +200,79 @@ describe("ERC-8183 quote reservations", () => {
       identity: listingRow.agent_identity_id
     }).success).toBe(false);
     expect(commerceQuoteRequestSchema.parse({ agentIdentifier: "agent", task: "health factor" })).toEqual({ agentIdentifier: "agent", task: "health factor" });
+  });
+
+  it("quotes an external listing with no Creator authority when provider readiness is valid", async () => {
+    const externalListing = { ...listingRow, authority_status: "none" };
+    const resolver = readinessResolver();
+    const client = {
+      query: async (text: string) => text.includes("FROM commerce_jobs") ? { rows: [] } : { rows: [], rowCount: 1 },
+      release: () => undefined
+    };
+    const store = new PostgresCommerceReservationStore({
+      query: async (text: string) => text.includes("FROM agents a") ? { rows: [externalListing] } : { rows: [] },
+      connect: async () => client
+    } as never, PIN, resolver);
+
+    await expect(store.quote({
+      buyerUserId: BUYER,
+      agentIdentifier: erc8004IdentityKey(readinessInput().identity),
+      task: "health factor"
+    })).resolves.toMatchObject({
+      identity: readinessInput().identity,
+      providerAddress: PROVIDER,
+      priceAtomic: "100"
+    });
+  });
+
+  it.each([
+    ["wrong signer", readinessResolver({ resolveSignerAddress: vi.fn(async () => OWNER) }), readinessInput(), "UNAUTHORIZED_ACTOR"],
+    ["wrong identity", readinessResolver(), readinessInput({ identity: { ...readinessInput().identity, agentId: "43" } }), "UNAUTHORIZED_ACTOR"],
+    ["wrong endpoint", readinessResolver(), readinessInput({ service: { ...readinessInput().service, url: "https://other.example/a2a" } }), "ONCHAIN_MISMATCH"],
+    ["disabled provider", readinessResolver({ enabled: false }), readinessInput(), "COMMERCE_DISABLED"],
+    ["stale probe", readinessResolver(), readinessInput({ service: { ...readinessInput().service, probeObservedAt: new Date((Math.floor(Date.now() / 1_000) - 121) * 1_000).toISOString() } }), "STALE_JOB"],
+    ["changed agent wallet", readinessResolver(), readinessInput({ agentWallet: "0x4444444444444444444444444444444444444444" }), "UNAUTHORIZED_ACTOR"],
+    ["expired listing", readinessResolver(), readinessInput({ authorityStatus: "expired" }), "STALE_JOB"]
+  ] as const)("denies provider readiness for %s", async (_label, resolver, input, code) => {
+    await expect(resolver.resolve(input)).rejects.toMatchObject({ code });
+  });
+
+  it("revalidates provider readiness between quote and funding resolution", async () => {
+    const externalListing = { ...listingRow, authority_status: "none" };
+    let persisted: ReturnType<typeof reservationRow> | undefined;
+    const validResolver = readinessResolver();
+    const resolve = vi.fn(async (input: CommerceProviderReadinessInput) => validResolver.resolve(input));
+    resolve.mockImplementationOnce(async (input) => validResolver.resolve(input));
+    resolve.mockImplementationOnce(async () => {
+      throw new CommerceError({ code: "STALE_JOB", message: "The provider readiness changed before funding.", nextAction: "reload_listing" });
+    });
+    const client = {
+      query: async (text: string) => text.includes("FROM commerce_jobs") ? { rows: persisted === undefined ? [] : [persisted] } : { rows: [], rowCount: 1 },
+      release: () => undefined
+    };
+    const store = new PostgresCommerceReservationStore({
+      query: async (text: string) => {
+        if (text.includes("FROM agents a")) return { rows: [externalListing] };
+        if (text.includes("FROM commerce_jobs")) return { rows: persisted === undefined ? [] : [persisted] };
+        return { rows: [] };
+      },
+      connect: async () => client
+    } as never, PIN, { resolve } satisfies CommerceProviderReadinessResolver);
+    const quote = await store.quote({
+      buyerUserId: BUYER,
+      agentIdentifier: erc8004IdentityKey(readinessInput().identity),
+      task: "health factor"
+    });
+    persisted = reservationRow(quote);
+    await expect(store.resolve({
+      commerceJobId: quote.quoteId,
+      buyerUserId: BUYER,
+      chainId: 97,
+      commerceContract: COMMERCE,
+      paymentToken: TOKEN,
+      paymentDecimals: 18
+    })).rejects.toMatchObject({ code: "STALE_JOB" });
+    expect(resolve).toHaveBeenCalledTimes(2);
   });
 
   it("resolves a reservation only for its buyer and current published listing", async () => {
