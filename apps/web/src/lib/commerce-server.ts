@@ -1110,19 +1110,21 @@ async function readCommerceStandardsLock(): Promise<unknown> {
  * from request data. Browser signing remains an explicit external SDK call.
  */
 export async function getCommerceComposition(): Promise<Erc8183CommerceComposition> {
-  const nodeEnvironment = process.env.NODE_ENV === "production"
+  const production = process.env.NODE_ENV === "production" || process.env.BNBERA_ENV === "production";
+  const nodeEnvironment = production
     ? "production"
     : process.env.NODE_ENV === "test"
       ? "test"
       : "development";
   if (
-    nodeEnvironment === "production" ||
+    production ||
+    process.env.T5_WALLETCONNECT_AUTH_ENABLED !== "true" ||
     process.env.T5_COMMERCE_LOCAL_ACTIVATION !== "true" ||
     process.env.T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED !== "true"
   ) {
     return Promise.reject(invalidComposition(
-      "ERC-8183 browser activation is limited to the explicitly enabled local development canary; the standards-lock release gate remains closed.",
-      "enable_local_development_canary"
+      "ERC-8183 WalletConnect EOA browser activation is limited to the explicitly enabled local development canary; the standards-lock release gate remains closed.",
+      process.env.T5_WALLETCONNECT_AUTH_ENABLED === "true" ? "enable_local_development_canary" : "enable_walletconnect_auth"
     ));
   }
 

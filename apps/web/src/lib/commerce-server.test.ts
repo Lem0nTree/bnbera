@@ -13,6 +13,7 @@ import {
   type CommerceParentHireRecord,
   Erc8183CommerceComposition
 } from "./commerce-server";
+import { closeCommerceAuthDatabaseForTests } from "./commerce-auth";
 import { GET as statusRoute } from "../../app/api/commerce/[jobId]/route";
 
 const BUYER = "0x3333333333333333333333333333333333333333";
@@ -148,12 +149,34 @@ function eoaOperation(step: "create" | "register" | "set_budget" | "approve" | "
 
 describe("T5 commerce server composition", () => {
   it("exposes the local-canary blocker without requiring Altana buyer authority", async () => {
-    await expect(getCommerceComposition()).rejects.toMatchObject({
-      code: "COMMERCE_DISABLED",
-      message: expect.stringContaining("local development canary"),
-      nextAction: "enable_local_development_canary"
-    });
-    expect(commerceAuthorityBoundaryError().message).toContain(T4_AUTHORITY_BOUNDARY_BLOCKER);
+    vi.stubEnv("T5_ALTANA_AUTH_ENABLED", "false");
+    vi.stubEnv("T5_WALLETCONNECT_AUTH_ENABLED", "true");
+    vi.stubEnv("T5_COMMERCE_LOCAL_ACTIVATION", "false");
+    vi.stubEnv("T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED", "false");
+    try {
+      await expect(getCommerceComposition()).rejects.toMatchObject({
+        code: "COMMERCE_DISABLED",
+        message: expect.stringContaining("local development canary"),
+        nextAction: "enable_local_development_canary"
+      });
+      expect(commerceAuthorityBoundaryError().message).toContain(T4_AUTHORITY_BOUNDARY_BLOCKER);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("enables the local T5 composition from WalletConnect without Altana", async () => {
+    vi.stubEnv("T5_ALTANA_AUTH_ENABLED", "false");
+    vi.stubEnv("T5_WALLETCONNECT_AUTH_ENABLED", "true");
+    vi.stubEnv("T5_COMMERCE_LOCAL_ACTIVATION", "true");
+    vi.stubEnv("T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED", "true");
+    vi.stubEnv("DATABASE_URL", "postgresql://localhost/bnbera");
+    try {
+      await expect(getCommerceComposition()).resolves.toBeInstanceOf(Erc8183CommerceComposition);
+    } finally {
+      await closeCommerceAuthDatabaseForTests();
+      vi.unstubAllEnvs();
+    }
   });
 
   it("returns the local-canary blocker through the status API without leaking server internals", async () => {
@@ -166,7 +189,9 @@ describe("T5 commerce server composition", () => {
   });
 
   it("returns a stable 503 when the local T5 composition has no database", async () => {
-    vi.stubEnv("T5_ALTANA_AUTH_ENABLED", "true");
+    vi.stubEnv("T5_WALLETCONNECT_AUTH_ENABLED", "true");
+    vi.stubEnv("T5_COMMERCE_LOCAL_ACTIVATION", "true");
+    vi.stubEnv("T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED", "true");
     vi.stubEnv("DATABASE_URL", "");
     try {
       const response = await statusRoute(new Request("http://localhost/api/commerce/7"), { params: Promise.resolve({ jobId: "7" }) });
@@ -174,6 +199,39 @@ describe("T5 commerce server composition", () => {
       expect(response.status).toBe(503);
       expect(body).toMatchObject({ status: "error", error: { code: "COMMERCE_DISABLED" } });
       expect(body.error.message).not.toMatch(/private.?key|password|secret|DATABASE_URL/iu);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not unlock the WalletConnect buyer canary from the future Altana flag", async () => {
+    vi.stubEnv("T5_ALTANA_AUTH_ENABLED", "true");
+    vi.stubEnv("T5_WALLETCONNECT_AUTH_ENABLED", "false");
+    vi.stubEnv("T5_COMMERCE_LOCAL_ACTIVATION", "true");
+    vi.stubEnv("T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED", "true");
+    try {
+      await expect(getCommerceComposition()).rejects.toMatchObject({
+        code: "COMMERCE_DISABLED",
+        message: expect.stringContaining("WalletConnect EOA"),
+        nextAction: "enable_walletconnect_auth"
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("keeps the buyer composition closed in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("BNBERA_ENV", "production");
+    vi.stubEnv("T5_ALTANA_AUTH_ENABLED", "false");
+    vi.stubEnv("T5_WALLETCONNECT_AUTH_ENABLED", "true");
+    vi.stubEnv("T5_COMMERCE_LOCAL_ACTIVATION", "true");
+    vi.stubEnv("T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED", "true");
+    try {
+      await expect(getCommerceComposition()).rejects.toMatchObject({
+        code: "COMMERCE_DISABLED",
+        nextAction: "enable_local_development_canary"
+      });
     } finally {
       vi.unstubAllEnvs();
     }

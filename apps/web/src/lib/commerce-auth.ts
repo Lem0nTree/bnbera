@@ -245,6 +245,22 @@ function altanaRuntimeFromEnvironment(env: StringEnvironment = process.env): Aut
   return runtime;
 }
 
+/**
+ * T5 buyer SIWE is a separately gated local canary. It must never inherit the
+ * future Creator/Altana passkey flag, and production stays closed even when a
+ * development flag is accidentally carried into the process environment.
+ */
+function walletConnectRuntimeFromEnvironment(env: StringEnvironment = process.env): AuthRuntime {
+  if (env.NODE_ENV === "production" || env.BNBERA_ENV === "production" || env.T5_WALLETCONNECT_AUTH_ENABLED !== "true") {
+    throw authError(
+      "AUTH_CONFIGURATION_BLOCKED",
+      "WalletConnect EOA authentication is not enabled for this local canary.",
+      "enable_walletconnect_auth"
+    );
+  }
+  return runtimeFromEnvironment(env);
+}
+
 function getPool(runtime: AuthRuntime): PgPool {
   const key = `${runtime.databaseUrl}\u0000${runtime.databaseSsl ? "ssl" : "plain"}`;
   const existing = authGlobals.__bnberaCommerceAuth?.pool;
@@ -553,7 +569,7 @@ export async function verifyEoaSiweRequest(
 
 export async function createEoaSiweChallenge(input: unknown): Promise<EoaSiweChallenge> {
   const request = parseEoaSiweChallengeRequest(input);
-  const runtime = runtimeFromEnvironment();
+  const runtime = walletConnectRuntimeFromEnvironment();
   if (request.chainId !== runtime.chainId) {
     throw authError("AUTH_CHAIN_MISMATCH", "Wallet authentication is for a different network.", "switch_network");
   }
@@ -586,7 +602,7 @@ export async function authenticateEoa(input: unknown, options?: {
   readonly now?: Date;
 }): Promise<{ readonly session: AuthenticatedSession; readonly setCookie: string }> {
   const request = parseEoaSiweAuthenticationRequest(input);
-  const runtime = runtimeFromEnvironment();
+  const runtime = walletConnectRuntimeFromEnvironment();
   if (request.chainId !== runtime.chainId) {
     throw authError("AUTH_CHAIN_MISMATCH", "Wallet authentication is for a different network.", "switch_network");
   }

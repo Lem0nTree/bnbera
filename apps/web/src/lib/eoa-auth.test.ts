@@ -2,7 +2,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 import type { NonceStore } from "@bnbera/auth";
 import { formatSiweMessage } from "./siwe-message";
-import { verifyEoaSiweRequest } from "./commerce-auth";
+import { createEoaSiweChallenge, verifyEoaSiweRequest } from "./commerce-auth";
 
 const account = privateKeyToAccount(`0x${"11".repeat(32)}`);
 const otherAccount = privateKeyToAccount(`0x${"22".repeat(32)}`);
@@ -42,6 +42,28 @@ async function signedRequest(overrides: Record<string, unknown> = {}) {
 }
 
 describe("EOA SIWE authentication", () => {
+  it("requires the explicit WalletConnect buyer flag, not the future Altana flag", async () => {
+    vi.stubEnv("T5_ALTANA_AUTH_ENABLED", "true");
+    vi.stubEnv("T5_WALLETCONNECT_AUTH_ENABLED", "false");
+    try {
+      await expect(createEoaSiweChallenge({ address: account.address, chainId: 97 })).rejects.toThrow(/WalletConnect EOA authentication is not enabled/i);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("keeps EOA authentication closed in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("BNBERA_ENV", "production");
+    vi.stubEnv("T5_ALTANA_AUTH_ENABLED", "false");
+    vi.stubEnv("T5_WALLETCONNECT_AUTH_ENABLED", "true");
+    try {
+      await expect(createEoaSiweChallenge({ address: account.address, chainId: 97 })).rejects.toThrow(/WalletConnect EOA authentication is not enabled/i);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("verifies an EOA signature and consumes the address-bound nonce", async () => {
     const store = nonceStore();
     const proof = await verifyEoaSiweRequest(await signedRequest(), context, store);
