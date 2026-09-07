@@ -20,10 +20,11 @@ describe("Altana KeyStore root-key reader", () => {
     const readContract = vi.fn(async ({ functionName, args }: { functionName: string; args?: readonly unknown[] }) => {
       if (functionName === "getKeys") return [rootId, sessionId];
       if (functionName === "getKey" && args?.[1] === rootId) {
-        return { validator: account, publicKey, metadata: "0x", nonce: 0n, lastUpdated: 0n, revoked: false, expiry: 0n, isRoot: true };
+        // viem decodes uint40 as a number (unlike uint64 fields).
+        return { validator: account, publicKey, metadata: "0x", nonce: 0n, lastUpdated: 0n, revoked: false, expiry: 0, isRoot: true };
       }
       if (functionName === "getKey") {
-        return { validator: account, publicKey: `0x${"22".repeat(64)}`, metadata: "0x", nonce: 0n, lastUpdated: 0n, revoked: false, expiry: 1n, isRoot: false };
+        return { validator: account, publicKey: `0x${"22".repeat(64)}`, metadata: "0x", nonce: 0n, lastUpdated: 0n, revoked: false, expiry: 1, isRoot: false };
       }
       return true;
     });
@@ -42,6 +43,44 @@ describe("Altana KeyStore root-key reader", () => {
       expiry: 0n
     }]);
     expect(readContract).toHaveBeenCalled();
+    expect(readContract.mock.calls.map(([call]) => call.functionName)).toEqual([
+      "getKeys", "getKey", "isValidKey", "getKey"
+    ]);
+  });
+
+  it("normalizes bigint expiry values and rejects an out-of-range uint40", async () => {
+    const readContract = vi.fn(async ({ functionName }: { functionName: string }): Promise<unknown> => {
+      if (functionName === "getKeys") return [rootId];
+      if (functionName === "getKey") {
+        return { validator: account, publicKey, metadata: "0x", nonce: 0n, lastUpdated: 0n, revoked: false, expiry: 0n, isRoot: true };
+      }
+      return true;
+    });
+    const reader = createAltanaAdminKeyReader(network, {
+      publicClient: {
+        getChainId: vi.fn(async () => 97),
+        readContract
+      } as unknown as Pick<PublicClient, "getChainId" | "readContract">
+    });
+    await expect(reader.read({ walletAddress: account, chainId: 97 })).resolves.toEqual([expect.objectContaining({ expiry: 0n })]);
+
+    readContract.mockImplementation(async ({ functionName }: { functionName: string }) => {
+      if (functionName === "getKeys") return [rootId];
+      if (functionName === "getKey") {
+        return { validator: account, publicKey, metadata: "0x", nonce: 0n, lastUpdated: 0n, revoked: false, expiry: 2 ** 40, isRoot: true };
+      }
+      return true;
+    });
+    await expect(reader.read({ walletAddress: account, chainId: 97 })).rejects.toThrow(/on-chain/);
+
+    readContract.mockImplementation(async ({ functionName }: { functionName: string }) => {
+      if (functionName === "getKeys") return [rootId];
+      if (functionName === "getKey") {
+        return { validator: account, publicKey, metadata: "0x", nonce: 0n, lastUpdated: 0n, revoked: false, expiry: -1n, isRoot: true };
+      }
+      return true;
+    });
+    await expect(reader.read({ walletAddress: account, chainId: 97 })).rejects.toThrow(/on-chain/);
   });
 
   it("fails closed when the RPC is on a different chain", async () => {

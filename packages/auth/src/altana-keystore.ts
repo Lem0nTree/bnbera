@@ -77,6 +77,10 @@ type KeyTuple = {
   readonly isRoot: boolean;
 };
 
+type RawKeyTuple = Omit<KeyTuple, "expiry"> & { readonly expiry: bigint | number };
+
+const uint40Max = (1n << 40n) - 1n;
+
 type AltanaKeyStoreClient = Pick<PublicClient, "getChainId" | "readContract">;
 
 function unavailable(cause?: unknown): AppError {
@@ -107,7 +111,7 @@ function keyTuple(value: unknown): KeyTuple {
     value = { validator, publicKey, metadata, nonce, lastUpdated, revoked, expiry, isRoot };
   }
   if (typeof value !== "object" || value === null) throw new Error("Altana KeyStore returned no key");
-  const candidate = value as Partial<KeyTuple>;
+  const candidate = value as Partial<RawKeyTuple>;
   if (
     typeof candidate.validator !== "string" ||
     typeof candidate.publicKey !== "string" ||
@@ -115,12 +119,20 @@ function keyTuple(value: unknown): KeyTuple {
     typeof candidate.nonce !== "bigint" ||
     typeof candidate.lastUpdated !== "bigint" ||
     typeof candidate.revoked !== "boolean" ||
-    typeof candidate.expiry !== "bigint" ||
+    (typeof candidate.expiry !== "bigint" && typeof candidate.expiry !== "number") ||
     typeof candidate.isRoot !== "boolean"
   ) {
     throw new Error("Altana KeyStore returned an invalid key");
   }
-  return candidate as KeyTuple;
+  const expiry = typeof candidate.expiry === "bigint"
+    ? candidate.expiry
+    : Number.isSafeInteger(candidate.expiry) && candidate.expiry >= 0
+      ? BigInt(candidate.expiry)
+      : null;
+  if (expiry === null || expiry < 0n || expiry > uint40Max) {
+    throw new Error("Altana KeyStore returned an invalid uint40 expiry");
+  }
+  return { ...candidate, expiry } as KeyTuple;
 }
 
 function createDefaultClient(network: AltanaReadNetwork): AltanaKeyStoreClient {
