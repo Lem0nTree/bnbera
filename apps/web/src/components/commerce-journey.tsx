@@ -307,16 +307,24 @@ export function CommerceJourney({ activation, identifier, commerceJobId = null }
       if (BNB_TESTNET.chainId !== PASSKEY_BOOTSTRAP_CHAIN_ID) throw new Error("The standards-locked passkey bootstrap network is not BNB testnet chain 97.");
       if (!recover && passkeyBootstrap !== null) throw new Error("A passkey wallet activation already exists. Recover or reconcile it before creating another wallet.");
       if (recover && passkeyBootstrap !== null && passkeyBootstrap.status !== "confirmed") {
-        if (passkeyBootstrap.callsId === null) throw new Error("This passkey wallet has not started activation yet. Finish activation in the original browser tab; no second wallet will be created.");
-        const reconciled = await reconcileSavedPasskeyBootstrap(passkeyBootstrap);
-        if (reconciled.status !== "confirmed") return;
+        if (passkeyBootstrap.callsId === null && passkeyBootstrap.status !== "unknown") throw new Error("This passkey wallet has not started activation yet. Finish activation in the original browser tab; no second wallet will be created.");
+        if (passkeyBootstrap.callsId !== null) {
+          const reconciled = await reconcileSavedPasskeyBootstrap(passkeyBootstrap);
+          if (reconciled.status !== "confirmed") return;
+        }
       }
       const client = createClient({ chains: [BNB_TESTNET], defaultChainId: BNB_TESTNET.chainId });
+      // A missing-ID unknown marker can only use the SDK's read-only recovery:
+      // recoverFromPasskey reads KeyStore and refuses wallets without a root
+      // admin key. It never rebroadcasts the lost first execute.
       const result = recover
         ? await client.recoverFromPasskey({ chainId: BNB_TESTNET.chainId })
         : await client.createPasskeyWallet({ name: "BNBEra commerce" });
       const nextAuthority: BrowserAuthority = { wallet: result, signer: result.signer };
       if (recover) {
+        if (passkeyBootstrap !== null && nextAuthority.wallet.address.toLowerCase() !== passkeyBootstrap.walletAddress.toLowerCase()) {
+          throw new Error("The recovered passkey does not match the saved activation wallet; no server sign-in was attempted.");
+        }
         await authenticateBrowserAuthority(nextAuthority);
       } else {
         const initial = createUnregisteredPasskeyBootstrapRecord(result.address);

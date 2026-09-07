@@ -24,7 +24,10 @@ function record(overrides: Partial<PasskeyBootstrapRecord> = {}): PasskeyBootstr
 describe("fresh passkey bootstrap", () => {
   it("confirms the SDK first action and persists only public relay evidence", async () => {
     const persisted: PasskeyBootstrapRecord[] = [];
-    const execute = vi.fn(async () => ({ callsId: CALLS, status: "CONFIRMED" as const, transactionHash: TX, statusCode: 200 }));
+    const execute = vi.fn(async () => {
+      expect(persisted.at(-1)).toMatchObject({ callsId: null, transactionHash: null, status: "unknown" });
+      return { callsId: CALLS, status: "CONFIRMED" as const, transactionHash: TX, statusCode: 200 };
+    });
     const outcome = await activateFreshPasskeyWallet({
       walletAddress: WALLET,
       walletState: "new_unregistered",
@@ -40,9 +43,10 @@ describe("fresh passkey bootstrap", () => {
     expect(outcome.record).toMatchObject({ walletAddress: WALLET.toLowerCase(), callsId: CALLS, transactionHash: TX, status: "confirmed" });
     expect(execute).toHaveBeenCalledOnce();
     expect(execute).toHaveBeenCalledWith();
-    expect(persisted).toHaveLength(1);
-    expect(serializePasskeyBootstrapRecord(persisted[0] as PasskeyBootstrapRecord)).not.toMatch(/signer|credential|private/iu);
-    expect(parsePasskeyBootstrapRecord(serializePasskeyBootstrapRecord(persisted[0] as PasskeyBootstrapRecord))).toMatchObject({ callsId: CALLS, transactionHash: TX });
+    expect(persisted).toHaveLength(2);
+    expect(persisted[0]).toMatchObject({ callsId: null, transactionHash: null, status: "unknown" });
+    expect(serializePasskeyBootstrapRecord(persisted.at(-1) as PasskeyBootstrapRecord)).not.toMatch(/signer|credential|private/iu);
+    expect(parsePasskeyBootstrapRecord(serializePasskeyBootstrapRecord(persisted.at(-1) as PasskeyBootstrapRecord))).toMatchObject({ callsId: CALLS, transactionHash: TX });
   });
 
   it("reconciles a saved pending calls ID after reload without resending", async () => {
@@ -110,6 +114,28 @@ describe("fresh passkey bootstrap", () => {
     expect(second.status).toBe("unknown");
     expect(execute).toHaveBeenCalledOnce();
     expect(second.message).toMatch(/reconcile/iu);
+  });
+
+  it("keeps a missing-ID unknown marker across reloads without resubmitting", async () => {
+    const saved = serializePasskeyBootstrapRecord(record({ status: "unknown", updatedAt: 2_000 }));
+    const reloaded = parsePasskeyBootstrapRecord(saved);
+    const execute = vi.fn(async () => ({ callsId: RETRY_CALLS, status: "CONFIRMED" as const }));
+    const readStatus = vi.fn();
+
+    const outcome = await activateFreshPasskeyWallet({
+      walletAddress: WALLET,
+      walletState: "new_unregistered",
+      record: reloaded,
+      execute,
+      readStatus,
+      persist: () => undefined,
+      now: () => 3_000
+    });
+
+    expect(outcome.status).toBe("unknown");
+    expect(outcome.shouldAuthenticate).toBe(false);
+    expect(execute).not.toHaveBeenCalled();
+    expect(readStatus).not.toHaveBeenCalled();
   });
 
   it("fails closed when an execute result has no valid public calls ID", async () => {

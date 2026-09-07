@@ -252,6 +252,18 @@ export async function activateFreshPasskeyWallet(input: {
     // permits an explicit user retry. It cannot have committed the action.
   }
 
+  // Mark the intent before crossing into the SDK writer. If the browser loses
+  // the response before a calls ID is returned, a reload sees this durable
+  // unknown marker and can only perform read-only recovery; it must not send a
+  // second first action.
+  current = withRecord(current, {
+    callsId: null,
+    transactionHash: null,
+    status: "unknown",
+    statusCode: null
+  }, now());
+  input.persist(current);
+
   try {
     const result = await input.execute();
     current = executionRecord(current, result, now());
