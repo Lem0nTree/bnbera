@@ -29,3 +29,13 @@ export function shouldInvalidateEoaAuthority(
   if (previous === null) return false;
   return previous.address?.toLowerCase() !== current.address?.toLowerCase() || previous.chainId !== current.chainId;
 }
+
+/** A sequential writer must stop when its live wallet generation changes. */
+export function isEoaDispatchGenerationCurrent(
+  startedGeneration: number,
+  currentGeneration: number,
+  snapshot: EoaWalletSnapshot,
+  actorAddress: string
+): boolean {
+  return startedGeneration === currentGeneration && isEoaAuthorityCurrent(snapshot, { address: actorAddress, chainId: EOA_BUYER_CHAIN_ID });
+}

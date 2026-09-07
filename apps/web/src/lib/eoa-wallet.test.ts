@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   EOA_BUYER_CHAIN_ID,
+  isEoaDispatchGenerationCurrent,
   isEoaAuthorityCurrent,
   shouldInvalidateEoaAuthority,
   type EoaWalletSnapshot
@@ -28,5 +29,12 @@ describe("EOA buyer authority binding", () => {
     expect(shouldInvalidateEoaAuthority(previous, snapshot({ chainId: 56 }), authority)).toBe(true);
     expect(shouldInvalidateEoaAuthority(previous, snapshot({ connected: false, address: undefined, chainId: undefined }), authority)).toBe(true);
     expect(shouldInvalidateEoaAuthority(previous, snapshot(), authority)).toBe(false);
+  });
+
+  it("cancels a sequential send when the live account or chain generation changes", () => {
+    expect(isEoaDispatchGenerationCurrent(4, 4, snapshot(), ADDRESS)).toBe(true);
+    expect(isEoaDispatchGenerationCurrent(4, 5, snapshot(), ADDRESS)).toBe(false);
+    expect(isEoaDispatchGenerationCurrent(4, 4, snapshot({ address: OTHER_ADDRESS }), ADDRESS)).toBe(false);
+    expect(isEoaDispatchGenerationCurrent(4, 4, snapshot({ chainId: 56 }), ADDRESS)).toBe(false);
   });
 });

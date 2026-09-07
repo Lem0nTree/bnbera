@@ -73,6 +73,10 @@ describe("commerce API contract", () => {
     const callsId = `0x${"a".repeat(64)}`;
     expect(commerceExternalDispatchRequestSchema.safeParse({ operationId, callsId, signer: { address: actorAddress } }).success).toBe(false);
     expect(commerceExternalDispatchRequestSchema.parse({ operationId, callsId })).toEqual({ operationId, callsId });
+    expect(commerceExternalDispatchRequestSchema.parse({ operationId, claim: true })).toEqual({ operationId, claim: true });
+    expect(commerceExternalDispatchRequestSchema.parse({ operationId, walletRejected: true })).toEqual({ operationId, walletRejected: true });
+    expect(commerceExternalDispatchRequestSchema.safeParse({ operationId, claim: true, transactionHash: CHAIN_KECCAK }).success).toBe(false);
+    expect(commerceExternalDispatchRequestSchema.safeParse({ operationId, walletRejected: true, claim: true }).success).toBe(false);
     expect(commerceBrowserDispatchSchema.parse({
       operationId,
       action: "hire",

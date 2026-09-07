@@ -20,7 +20,7 @@ import type {
 } from "@/lib/commerce-contract";
 import { commerceQuoteSnapshotSchema, type CommerceQuoteResponse, type CommerceQuoteSnapshot } from "@/lib/commerce-quote-contract";
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
-import { isEoaAuthorityCurrent, shouldInvalidateEoaAuthority, EOA_BUYER_CHAIN_ID, type EoaWalletSnapshot } from "@/lib/eoa-wallet";
+import { isEoaDispatchGenerationCurrent, shouldInvalidateEoaAuthority, EOA_BUYER_CHAIN_ID, type EoaWalletSnapshot } from "@/lib/eoa-wallet";
 import { formatSiweMessage } from "@/lib/siwe-message";
 import { EoaWalletProvider, walletConnectProjectConfigured } from "./eoa-wallet-provider";
 
@@ -117,6 +117,23 @@ function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: 
   const { signMessageAsync, isPending: signPending } = useSignMessage();
   const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient();
+  const liveWalletRef = useRef<{ readonly address: string | undefined; readonly chainId: number | undefined; readonly connected: boolean; readonly authenticated: boolean; readonly walletClient: WalletClient | undefined }>({
+    address,
+    chainId,
+    connected: isConnected,
+    authenticated: walletAuthenticated,
+    walletClient
+  });
+  const publicClientRef = useRef(publicClient);
+  const walletGenerationRef = useRef(0);
+  const walletGenerationKeyRef = useRef<string | null>(null);
+  const walletGenerationKey = `${isConnected ? "1" : "0"}:${address?.toLowerCase() ?? ""}:${chainId ?? ""}:${walletAuthenticated ? "1" : "0"}`;
+  if (walletGenerationKeyRef.current !== walletGenerationKey) {
+    walletGenerationKeyRef.current = walletGenerationKey;
+    walletGenerationRef.current += 1;
+  }
+  liveWalletRef.current = { address, chainId, connected: isConnected, authenticated: walletAuthenticated, walletClient };
+  publicClientRef.current = publicClient;
 
   const walletSnapshot = useMemo<EoaWalletSnapshot>(() => ({
     connected: isConnected,
@@ -358,16 +375,24 @@ function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: 
   };
 
   const dispatchBrowser = async (nextDispatch: CommerceBrowserDispatch) => {
-    if (authority === null || !walletAuthenticated) { setError("Connect and sign in with the buyer wallet before signing this action."); return; }
+    const startGeneration = walletGenerationRef.current;
+    const initialWallet = liveWalletRef.current;
+    if (!initialWallet.authenticated || !isEoaDispatchGenerationCurrent(startGeneration, walletGenerationRef.current, { connected: initialWallet.connected, address: initialWallet.address, chainId: initialWallet.chainId }, nextDispatch.actorAddress)) { setError("Connect and sign in with the buyer wallet before signing this action."); return; }
     if (nextDispatch.chainId !== EOA_BUYER_CHAIN_ID) { setError("The persisted operation network is not BNB Smart Chain testnet."); return; }
-    if (!isEoaAuthorityCurrent(walletSnapshot, { address: authority.address, chainId: EOA_BUYER_CHAIN_ID }) || authority.address.toLowerCase() !== nextDispatch.actorAddress.toLowerCase()) {
+    if (initialWallet.address === undefined || initialWallet.address.toLowerCase() !== nextDispatch.actorAddress.toLowerCase()) {
       setError("The connected wallet does not match the authenticated operation actor; no call was sent.");
       return;
     }
-    if (walletClient === undefined || nextDispatch.to === undefined || nextDispatch.data === undefined || nextDispatch.valueAtomic === undefined) {
+    if (initialWallet.walletClient === undefined || nextDispatch.to === undefined || nextDispatch.data === undefined || nextDispatch.valueAtomic === undefined) {
       setError("The server did not return a complete pinned EOA call; no transaction was sent.");
       return;
     }
+    const liveWalletFor = (candidate: CommerceBrowserDispatch): { readonly address: string; readonly walletClient: WalletClient } => {
+      const live = liveWalletRef.current;
+      if (!live.authenticated || live.walletClient === undefined || !isEoaDispatchGenerationCurrent(startGeneration, walletGenerationRef.current, { connected: live.connected, address: live.address, chainId: live.chainId }, candidate.actorAddress)) throw new Error("The connected wallet or network changed; no further call was sent.");
+      if (live.address === undefined) throw new Error("The connected wallet account is unavailable; no further call was sent.");
+      return { address: live.address, walletClient: live.walletClient };
+    };
     setBusy(true);
     setError(null);
     let inFlight: { readonly operationId: string; readonly transactionHash?: string } | null = null;
@@ -375,40 +400,50 @@ function CommerceJourneyInner({ activation, identifier, commerceJobId = null }: 
       let current: CommerceBrowserDispatch | null = nextDispatch;
       while (current !== null) {
         if (current.chainId !== EOA_BUYER_CHAIN_ID || current.to === undefined || current.data === undefined || current.valueAtomic === undefined) throw new Error("The persisted EOA step is incomplete or on the wrong network.");
-        if (authority === null || authority.address.toLowerCase() !== current.actorAddress.toLowerCase() || address?.toLowerCase() !== current.actorAddress.toLowerCase()) throw new Error("The connected wallet changed; no further call was sent.");
         inFlight = { operationId: current.operationId };
+        liveWalletFor(current);
+        const claimResponse = await fetch("/api/commerce/dispatch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ operationId: current.operationId, claim: true })
+        });
+        const claimed: CommerceActionResponse = await parseResponse<CommerceActionResponse>(claimResponse);
+        applyAction(claimed);
+        if (claimed.dispatch === null) throw new Error("This wallet step is already in flight or unknown; it will not be resent.");
+        current = claimed.dispatch;
+        const live = liveWalletFor(current);
         let transactionHash: string;
         try {
-          transactionHash = await walletClient.sendTransaction({
-            account: authority.address as `0x${string}`,
+          transactionHash = await live.walletClient.sendTransaction({
+            account: live.address as `0x${string}`,
             to: current.to as `0x${string}`,
             data: current.data as `0x${string}`,
-            value: BigInt(current.valueAtomic),
+            value: BigInt(current.valueAtomic as string),
             chain: bscTestnet
           });
         } catch (cause) {
-          // A user rejection is still an unsigned intent and may be retried.
-          // Any other wallet error is unknown until the server records the
-          // step as such; never expose it as a fresh fundable dispatch.
-          if (!isUserRejected(cause)) {
+          // Only an explicit wallet rejection may release the pre-send CAS.
+          // Every other wallet failure leaves the claimed operation unknown.
+          if (isUserRejected(cause)) {
             try {
-              const recovery = await fetch("/api/commerce/dispatch", {
+              const rejection = await fetch("/api/commerce/dispatch", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ operationId: current.operationId })
+                body: JSON.stringify({ operationId: current.operationId, walletRejected: true })
               });
-              applyAction(await parseResponse<CommerceActionResponse>(recovery));
+              applyAction(await parseResponse<CommerceActionResponse>(rejection));
               inFlight = null;
             } catch {
-              // Keep the durable intent visible for a later actor-bound
-              // reload; the wallet error itself remains the user-facing clue.
+              // Keep the durable unknown claim; a failed release must not
+              // create another fundable dispatch.
             }
           }
           throw cause;
         }
         inFlight = { operationId: current.operationId, transactionHash };
         window.localStorage.setItem(`${storageKey}:tx:${current.operationId}`, transactionHash);
-        if (publicClient !== undefined) await publicClient.waitForTransactionReceipt({ hash: transactionHash as `0x${string}` });
+        const livePublicClient = publicClientRef.current;
+        if (livePublicClient !== undefined) await livePublicClient.waitForTransactionReceipt({ hash: transactionHash as `0x${string}` });
         const response: Response = await fetch("/api/commerce/dispatch", {
           method: "POST",
           headers: { "Content-Type": "application/json" },

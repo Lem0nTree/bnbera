@@ -120,8 +120,19 @@ export const commerceExternalDispatchRequestSchema = z.object({
   operationId: z.string().uuid(),
   /** Legacy relay identifier; EOA WalletConnect sends only transactionHash. */
   callsId: transactionHashSchema.optional(),
-  transactionHash: transactionHashSchema.optional()
-}).strict();
+  transactionHash: transactionHashSchema.optional(),
+  /** Claim an unsigned EOA step immediately before wallet signing. */
+  claim: z.literal(true).optional(),
+  /** Release an in-flight claim only after an explicit wallet rejection. */
+  walletRejected: z.literal(true).optional()
+}).strict().superRefine((value, context) => {
+  if (value.claim === true && (value.walletRejected === true || value.callsId !== undefined || value.transactionHash !== undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["claim"], message: "A dispatch claim cannot include rejection or transaction evidence." });
+  }
+  if (value.walletRejected === true && (value.claim === true || value.callsId !== undefined || value.transactionHash !== undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["walletRejected"], message: "A wallet rejection cannot include a claim or transaction evidence." });
+  }
+});
 export type CommerceExternalDispatchRequest = z.infer<typeof commerceExternalDispatchRequestSchema>;
 
 /** Immutable, safe-to-replay parameters for one browser SDK action. */

@@ -194,9 +194,8 @@ export class Erc8183OperationCoordinator {
 
   /**
    * Reserve a browser-owned SDK intent without executing it on the server.
-   * A replay is returned to the caller so a reload can inspect the existing
-   * operation; only an awaiting-signature row is dispatchable. Unknown and
-   * submitted rows are deliberately never made dispatchable again.
+   * The browser must claim the returned unsigned step immediately before
+   * signing; unknown and submitted rows are deliberately never replayed.
    */
   public async reserveExternal(input: {
     readonly operation: Erc8183PreparedOperation;
@@ -216,12 +215,6 @@ export class Erc8183OperationCoordinator {
         jobId: input.operation.jobId
       });
     }
-    // Mark the operation's one-shot browser slot in the same INSERT as the
-    // idempotency row. A replay can observe the intent, but never receives a
-    // dispatch, including after a process crashes between reserve and return.
-    const dispatchContext = input.operation.context === undefined
-      ? null
-      : { ...input.operation.context, dispatchClaimed: true };
     const reservation = await this.operations.reserve({
       idempotencyKey: input.idempotencyKey,
       requestDigest: input.operation.requestDigest,
@@ -230,12 +223,12 @@ export class Erc8183OperationCoordinator {
       jobId: input.operation.jobId,
       kind: input.operation.kind,
       signerRole: input.operation.signerRole,
-      context: dispatchContext
+      context: input.operation.context ?? null
     });
     return {
       operation: reservation.operation,
       replayed: reservation.replayed,
-      dispatchable: !reservation.replayed && reservation.operation.status === "awaiting_signature" && reservation.operation.context?.dispatchClaimed === true
+      dispatchable: !reservation.replayed && reservation.operation.status === "awaiting_signature" && reservation.operation.context?.dispatchClaimed !== true
     };
   }
 
