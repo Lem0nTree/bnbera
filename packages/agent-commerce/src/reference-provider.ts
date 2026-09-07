@@ -4,27 +4,55 @@ import {
   erc8183ManifestHash,
   type Erc8183DeliverableManifest
 } from "@altananetwork/sdk";
-import { canonicalSha256Hex } from "@bnbera/domain";
+import {
+  canonicalSha256Hex,
+  canonicalizeJson,
+  erc8004IdentitySchema,
+  sameErc8004Identity,
+  type Erc8004Identity
+} from "@bnbera/domain";
 import { z } from "zod";
 import { CommerceError } from "./errors.js";
 import type { Erc8183AltanaAuthority } from "./chain.js";
 import type { Erc8183CommerceService } from "./service.js";
+import type { Erc8183OperationRecord } from "./operations.js";
 import {
   canonicalHealthFactorResultBytes,
   createReferenceHealthFactorResult,
   createReferenceHealthFactorTask,
   healthFactorLendingSnapshotSchema,
+  healthFactorResultOutputSchema,
   type Erc8183ProviderResult,
+  type HealthFactorResultOutput,
   type HealthFactorLendingSnapshot
 } from "./provider.js";
 import {
+  erc8183JobRecordSchema,
   erc8183JobKeySchema,
   erc8183ProviderBindingSchema,
   nonZeroAddressSchema,
+  positiveDecimalUintSchema,
   type Erc8183JobKey,
+  type Erc8183JobRecord,
   type Erc8183ProviderBinding
 } from "./types.js";
-import { normalizeAddress } from "./validation.js";
+import { assertPinMatchesJob, normalizeAddress } from "./validation.js";
+
+/** A reference provider is never allowed to spend more than the reviewed T4 cap. */
+export const REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC = "10000000000000000";
+export const REFERENCE_PROVIDER_IDEMPOTENCY_PREFIX = "t5-reference-provider-submit";
+export const REFERENCE_PROVIDER_MAX_RESPONSE_BYTES = 64 * 1024;
+
+const publicHttpUrlSchema = z.string().trim().url().superRefine((value, ctx) => {
+  try {
+    const parsed = new URL(value);
+    if (parsed.username !== "" || parsed.password !== "" || parsed.hash !== "" || (parsed.protocol !== "https:" && parsed.protocol !== "http:")) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "The provider endpoint must be a credential-free HTTP(S) URL." });
+    }
+  } catch {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "The provider endpoint must be a valid URL." });
+  }
+});
 
 /** Secret-manager references only; the resolved signer never enters this package's public data. */
 export const referenceProviderSecretReferenceSchema = z
@@ -32,8 +60,115 @@ export const referenceProviderSecretReferenceSchema = z
   .trim()
   .min(1)
   .max(512)
-  .regex(/^(?:secret:\/\/|vault:\/\/|env:\/\/|arn:aws:secretsmanager:)/u, "The provider authority must be a secret reference.");
+  .regex(/^(?:(?:secret|vault|env):\/\/[^\s]+|arn:aws:secretsmanager:[^\s]+)$/u, "The provider authority must be a secret reference.");
 export type ReferenceProviderSecretReference = z.infer<typeof referenceProviderSecretReferenceSchema>;
+
+/**
+ * The idempotency identity is server-derived from the protocol job. A caller
+ * cannot select a second key to obtain a second provider submission.
+ */
+export function referenceProviderIdempotencyKey(jobKey: Erc8183JobKey): string {
+  const parsed = erc8183JobKeySchema.parse(jobKey);
+  return `${REFERENCE_PROVIDER_IDEMPOTENCY_PREFIX}:${parsed.chainId}:${parsed.commerceContract.toLowerCase()}:${parsed.jobId}`;
+}
+
+export const referenceProviderRunnerConfigSchema = z.object({
+  /** Defaults off. Enabling requires every local testnet guard below. */
+  enabled: z.boolean().default(false),
+  runtimeEnvironment: z.enum(["development", "test", "production"]).default("production"),
+  developmentCanaryEnabled: z.boolean().default(false),
+  /** Release remains disabled for this bounded reference worker. */
+  releaseEnabled: z.literal(false).default(false),
+  chainId: z.literal(97).default(97),
+  identity: erc8004IdentitySchema.optional(),
+  jobKey: erc8183JobKeySchema.optional(),
+  providerAddress: nonZeroAddressSchema.optional(),
+  providerEndpoint: publicHttpUrlSchema.optional(),
+  authoritySecretReference: referenceProviderSecretReferenceSchema.optional(),
+  routerContract: nonZeroAddressSchema.optional(),
+  policyContract: nonZeroAddressSchema.optional(),
+  maxBudgetAtomic: positiveDecimalUintSchema.default(REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC)
+}).strict().superRefine((value, ctx) => {
+  if (BigInt(value.maxBudgetAtomic) > BigInt(REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["maxBudgetAtomic"], message: "The reference provider cap cannot exceed 0.01 U." });
+  }
+  if (!value.enabled) return;
+  if (value.runtimeEnvironment === "production" || !value.developmentCanaryEnabled) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["developmentCanaryEnabled"], message: "The reference provider is local-development-only and requires the explicit testnet canary flag." });
+  }
+  if (value.identity === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["identity"], message: "An enabled reference provider requires one configured ERC-8004 identity." });
+  if (value.jobKey === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["jobKey"], message: "An enabled reference provider requires one configured ERC-8183 job." });
+  if (value.providerAddress === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["providerAddress"], message: "An enabled reference provider requires one configured provider wallet." });
+  if (value.providerEndpoint === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["providerEndpoint"], message: "An enabled reference provider requires its existing health-factor endpoint." });
+  if (value.authoritySecretReference === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["authoritySecretReference"], message: "An enabled reference provider requires a secret reference for its signing authority." });
+  if (value.routerContract === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routerContract"], message: "An enabled reference provider requires the existing router contract seam." });
+  if (value.policyContract === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["policyContract"], message: "An enabled reference provider requires the existing policy contract seam." });
+  if (value.identity !== undefined && value.identity.chainId !== 97) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["identity", "chainId"], message: "The reference identity must be on BSC testnet." });
+  if (value.jobKey !== undefined && value.jobKey.chainId !== 97) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["jobKey", "chainId"], message: "The reference job must be on BSC testnet." });
+});
+export type ReferenceProviderRunnerConfig = z.infer<typeof referenceProviderRunnerConfigSchema>;
+
+function requiredReferenceProviderEnvironment(env: Readonly<Record<string, string | undefined>>, name: string): string {
+  const value = env[name]?.trim();
+  if (value === undefined || value === "") throw new CommerceError({ code: "COMMERCE_DISABLED", message: `The enabled reference provider is missing ${name}.`, nextAction: "configure_reference_provider" });
+  return value;
+}
+
+/**
+ * Parse only public worker configuration and secret references from the
+ * existing environment boundary. Raw private keys are deliberately not read.
+ * An absent enable flag produces a disabled config without requiring any other
+ * environment value.
+ */
+export function referenceProviderRunnerConfigFromEnvironment(env: Readonly<Record<string, string | undefined>>): ReferenceProviderRunnerConfig {
+  if (env.T5_REFERENCE_PROVIDER_WORKER_ENABLED !== "true") return referenceProviderRunnerConfigSchema.parse({ enabled: false });
+  const chainIdText = env.T5_REFERENCE_PROVIDER_CHAIN_ID?.trim() || "97";
+  const chainId = Number(chainIdText);
+  const identityRegistry = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_IDENTITY_REGISTRY");
+  const agentId = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_AGENT_ID");
+  const commerceContract = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_COMMERCE_CONTRACT");
+  const jobId = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_JOB_ID");
+  const providerAddress = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_ADDRESS");
+  const providerEndpoint = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_SERVICE_URL");
+  const routerContract = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_ROUTER_CONTRACT");
+  const policyContract = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_POLICY_CONTRACT");
+  const authoritySecretReference = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_SECRET_REFERENCE");
+  return referenceProviderRunnerConfigSchema.parse({
+    enabled: true,
+    runtimeEnvironment: env.NODE_ENV === "test" ? "test" : env.NODE_ENV === "development" ? "development" : "production",
+    developmentCanaryEnabled: env.T5_REFERENCE_PROVIDER_LOCAL_TESTNET === "true",
+    releaseEnabled: false,
+    chainId,
+    identity: { namespace: "eip155", chainId, identityRegistry, agentId },
+    jobKey: { chainId, commerceContract, jobId },
+    providerAddress,
+    providerEndpoint,
+    authoritySecretReference,
+    routerContract,
+    policyContract,
+    ...(env.T5_REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC === undefined ? {} : { maxBudgetAtomic: env.T5_REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC })
+  });
+}
+
+type EnabledReferenceProviderRunnerConfig = ReferenceProviderRunnerConfig & {
+  readonly enabled: true;
+  readonly identity: Erc8004Identity;
+  readonly jobKey: Erc8183JobKey;
+  readonly providerAddress: string;
+  readonly providerEndpoint: string;
+  readonly authoritySecretReference: ReferenceProviderSecretReference;
+  readonly routerContract: string;
+  readonly policyContract: string;
+};
+
+function enabledRunnerConfig(config: ReferenceProviderRunnerConfig): EnabledReferenceProviderRunnerConfig {
+  const parsed = referenceProviderRunnerConfigSchema.parse(config);
+  if (!parsed.enabled) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The reference provider worker is disabled by default.", nextAction: "enable_local_testnet_worker" });
+  if (parsed.identity === undefined || parsed.jobKey === undefined || parsed.providerAddress === undefined || parsed.providerEndpoint === undefined || parsed.authoritySecretReference === undefined || parsed.routerContract === undefined || parsed.policyContract === undefined) {
+    throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The enabled reference provider worker is incompletely configured.", nextAction: "configure_reference_provider" });
+  }
+  return parsed as EnabledReferenceProviderRunnerConfig;
+}
 
 export const referenceHealthFactorInvocationSchema = z.object({
   schemaVersion: z.literal("bnbera.reference.health-factor.request/v1"),
@@ -52,6 +187,97 @@ export const referenceHealthFactorInvocationSchema = z.object({
   }
 });
 export type ReferenceHealthFactorInvocation = z.infer<typeof referenceHealthFactorInvocationSchema>;
+
+export type ReferenceHealthFactorProviderResponse = {
+  /** The exact UTF-8 bytes returned by the existing provider endpoint. */
+  readonly resultBytes: string;
+  readonly result: HealthFactorResultOutput;
+  readonly resultDigest: string;
+};
+
+const referenceHealthFactorProviderResponseSchema = z.object({
+  resultBytes: z.string().max(REFERENCE_PROVIDER_MAX_RESPONSE_BYTES),
+  result: healthFactorResultOutputSchema,
+  resultDigest: z.string().regex(/^[0-9a-f]{64}$/iu)
+}).strict();
+
+export interface ReferenceHealthFactorProviderClient {
+  invoke(input: ReferenceHealthFactorInvocation): Promise<ReferenceHealthFactorProviderResponse>;
+}
+
+function assertCredentialFreeProviderEndpoint(endpoint: string): string {
+  const parsed = publicHttpUrlSchema.safeParse(endpoint);
+  if (!parsed.success) throw new CommerceError({ code: "INVALID_JOB", message: "The reference provider endpoint is not a credential-free HTTP(S) URL." });
+  return parsed.data;
+}
+
+/**
+ * Call the existing HTTP health-factor provider and retain its exact response
+ * bytes. Non-canonical output, an absent/mismatched digest header, and an
+ * oversized response are rejected before anything reaches the Altana seam.
+ */
+export function createReferenceHealthFactorProviderClient(input: {
+  readonly endpoint: string;
+  readonly fetch?: typeof globalThis.fetch;
+  readonly maxResponseBytes?: number;
+}): ReferenceHealthFactorProviderClient {
+  const endpoint = assertCredentialFreeProviderEndpoint(input.endpoint);
+  const fetcher = input.fetch ?? globalThis.fetch;
+  if (typeof fetcher !== "function") throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The reference provider has no HTTP client.", nextAction: "configure_reference_provider" });
+  const maxResponseBytes = input.maxResponseBytes ?? REFERENCE_PROVIDER_MAX_RESPONSE_BYTES;
+  if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1 || maxResponseBytes > REFERENCE_PROVIDER_MAX_RESPONSE_BYTES) {
+    throw new CommerceError({ code: "INVALID_JOB", message: "The reference provider response cap is invalid." });
+  }
+
+  return {
+    async invoke(invocation): Promise<ReferenceHealthFactorProviderResponse> {
+      const parsedInvocation = referenceHealthFactorInvocationSchema.parse(invocation);
+      const body = canonicalizeJson(parsedInvocation);
+      let response: Response;
+      try {
+        response = await fetcher(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body
+        });
+      } catch (cause) {
+        throw new CommerceError({ code: "CHAIN_PROVIDER_INVALID", message: "The reference health-factor provider could not be reached.", retriable: true, nextAction: "retry_provider", cause });
+      }
+      if (!response.ok) throw new CommerceError({ code: "CHAIN_PROVIDER_INVALID", message: "The reference health-factor provider rejected the task.", retriable: true, nextAction: "retry_provider" });
+      const contentLength = response.headers.get("content-length");
+      if (contentLength !== null) {
+        if (!/^[0-9]+$/u.test(contentLength)) throw new CommerceError({ code: "CHAIN_PROVIDER_INVALID", message: "The reference provider returned an invalid content length.", nextAction: "inspect_provider_result" });
+        let declaredLength: bigint;
+        try {
+          declaredLength = BigInt(contentLength);
+        } catch (cause) {
+          throw new CommerceError({ code: "CHAIN_PROVIDER_INVALID", message: "The reference provider returned an invalid content length.", nextAction: "inspect_provider_result", cause });
+        }
+        if (declaredLength > BigInt(maxResponseBytes)) throw new CommerceError({ code: "INVALID_JOB", message: "The reference provider response exceeds the bounded result size." });
+      }
+      let bytes: Uint8Array;
+      try {
+        bytes = new Uint8Array(await response.arrayBuffer());
+      } catch (cause) {
+        throw new CommerceError({ code: "CHAIN_PROVIDER_INVALID", message: "The reference provider response could not be read.", retriable: true, nextAction: "retry_provider", cause });
+      }
+      if (bytes.byteLength > maxResponseBytes) throw new CommerceError({ code: "INVALID_JOB", message: "The reference provider response exceeds the bounded result size." });
+      const resultBytes = Buffer.from(bytes).toString("utf8");
+      let result: HealthFactorResultOutput;
+      try {
+        result = healthFactorResultOutputSchema.parse(JSON.parse(resultBytes) as unknown);
+      } catch (cause) {
+        throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reference provider returned an invalid health-factor result.", nextAction: "inspect_provider_result", cause });
+      }
+      const canonicalBytes = canonicalHealthFactorResultBytes(result);
+      if (resultBytes !== canonicalBytes) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reference provider did not return canonical result bytes.", nextAction: "inspect_provider_result" });
+      const resultDigest = canonicalSha256Hex(result);
+      const digestHeader = response.headers.get("X-BNBEra-Result-SHA256");
+      if (digestHeader === null || digestHeader.trim().toLowerCase() !== resultDigest) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reference provider result digest header does not match its exact bytes.", nextAction: "inspect_provider_result" });
+      return { resultBytes, result, resultDigest };
+    }
+  };
+}
 
 export type ReferenceProviderSubmission = {
   readonly task: ReturnType<typeof createReferenceHealthFactorTask>;
@@ -74,6 +300,10 @@ export type ReferenceProviderSubmissionInput = {
   readonly routerContract: `0x${string}`;
   readonly policyContract: `0x${string}`;
   readonly producedAtUnix?: number;
+  /** Exact output returned by the existing provider endpoint, when used by the worker. */
+  readonly providerResult?: HealthFactorResultOutput;
+  readonly providerResultBytes?: string;
+  readonly providerResultDigest?: string;
 };
 
 function dataTextUrl(value: string): string {
@@ -123,6 +353,25 @@ export function prepareReferenceProviderSubmission(input: ReferenceProviderSubmi
   // Keccak digest that commits the outer manifest, avoiding a circular hash.
   const provisional = createReferenceHealthFactorResult({ task, observedAtUnix: producedAtUnix });
   const resultBytes = canonicalHealthFactorResultBytes(provisional.result);
+  if (input.providerResult !== undefined || input.providerResultBytes !== undefined || input.providerResultDigest !== undefined) {
+    if (input.providerResult === undefined || input.providerResultBytes === undefined || input.providerResultDigest === undefined) {
+      throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "A provider response must include its result, exact bytes, and digest together." });
+    }
+    let providerResult: HealthFactorResultOutput;
+    let providerResultBytes: string;
+    let providerResultDigest: string;
+    try {
+      providerResult = healthFactorResultOutputSchema.parse(input.providerResult);
+      providerResultBytes = z.string().max(REFERENCE_PROVIDER_MAX_RESPONSE_BYTES).parse(input.providerResultBytes);
+      providerResultDigest = z.string().regex(/^[0-9a-f]{64}$/iu).parse(input.providerResultDigest);
+    } catch (cause) {
+      throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The existing health-factor provider returned an invalid result envelope.", nextAction: "inspect_provider_result", cause });
+    }
+    const providerBytes = canonicalHealthFactorResultBytes(providerResult);
+    if (providerResultBytes !== providerBytes || providerResultDigest.toLowerCase() !== canonicalSha256Hex(providerResult).toLowerCase() || providerResultBytes !== resultBytes) {
+      throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The existing health-factor provider returned bytes or a digest different from the validated task result.", nextAction: "inspect_provider_result" });
+    }
+  }
   const jobId = safeJobNumber(parsed.jobKey.jobId);
   const manifest: Erc8183DeliverableManifest = {
     version: 1,
@@ -182,12 +431,16 @@ export class Erc8183ReferenceProviderAdapter {
     if (providerAddress !== requesterAddress) {
       throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The reference provider requester does not match its configured provider address." });
     }
+    const expectedIdempotencyKey = referenceProviderIdempotencyKey(input.jobKey);
+    if (input.idempotencyKey !== expectedIdempotencyKey) {
+      throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "Reference provider submission idempotency is server-bound to the configured protocol job." });
+    }
+    const submission = prepareReferenceProviderSubmission(input);
     const authority = await this.resolveAuthority(reference);
     const authorityAddress = normalizeAddress("session" in authority ? authority.session.walletAddress : authority.wallet.address, "provider authority address");
     if (authorityAddress !== providerAddress) {
       throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The resolved provider authority does not match the configured provider address." });
     }
-    const submission = prepareReferenceProviderSubmission(input);
     const operation = await this.service.submit({
       idempotencyKey: input.idempotencyKey,
       jobId: input.jobKey.jobId,
@@ -202,5 +455,235 @@ export class Erc8183ReferenceProviderAdapter {
       providerBinding: input.providerBinding
     });
     return { submission, operation };
+  }
+}
+
+export type ReferenceProviderOwnedJob = {
+  /** Canonical persisted ERC-8183 projection; no ad-hoc job identity is accepted. */
+  readonly job: Erc8183JobRecord;
+  /** Finalized ERC-8004 owner evidence for the configured identity. */
+  readonly identityOwnerAddress: string;
+  /** The independent execution-wallet axis; delegated submission requires it. */
+  readonly identityAgentWallet: string | null;
+  readonly account: string;
+  readonly protocol: string;
+  readonly requestedAtUnix: number;
+  readonly lendingSnapshot: HealthFactorLendingSnapshot;
+};
+
+export interface ReferenceProviderJobSelector {
+  /** Implementations must query one exact full identity tuple and job key. */
+  select(input: {
+    readonly identity: Erc8004Identity;
+    readonly jobKey: Erc8183JobKey;
+    readonly providerAddress: string;
+  }): Promise<ReferenceProviderOwnedJob | null>;
+}
+
+export interface ReferenceProviderOperationStore {
+  getByIdempotencyKey(idempotencyKey: string): Promise<Erc8183OperationRecord | null>;
+}
+
+export interface ReferenceProviderRecoveryService {
+  submit: Erc8183CommerceService["submit"];
+  reconcile: Erc8183CommerceService["reconcile"];
+}
+
+export type ReferenceProviderRunStatus = "disabled" | "submitted" | "replayed" | "reconciled" | "pending" | "manual_review" | "reverted";
+
+export type ReferenceProviderRunResult = {
+  readonly status: ReferenceProviderRunStatus;
+  readonly idempotencyKey: string;
+  /** Durable operation evidence, including callsId/transactionHash when observed. */
+  readonly operation: Erc8183OperationRecord | null;
+  readonly submission?: ReferenceProviderSubmission;
+};
+
+function operationRunStatus(operation: Erc8183OperationRecord, replayed: boolean): ReferenceProviderRunStatus {
+  if (operation.status === "confirmed") return replayed ? "replayed" : "submitted";
+  if (operation.status === "reconciled") return "reconciled";
+  if (operation.status === "unknown" || operation.status === "submitted" || operation.status === "awaiting_signature") return "pending";
+  if (operation.status === "manual_review") return "manual_review";
+  return "reverted";
+}
+
+function assertOperationMatchesConfig(operation: Erc8183OperationRecord, config: EnabledReferenceProviderRunnerConfig, providerAddress: string, idempotencyKey: string): void {
+  const operationBinding = operation.context?.parameters?.providerBinding;
+  const parsedBinding = erc8183ProviderBindingSchema.safeParse(operationBinding);
+  if (
+    operation.idempotencyKey !== idempotencyKey ||
+    operation.kind !== "submit" ||
+    operation.signerRole !== "provider" ||
+    operation.context?.sdkAction !== "submit" ||
+    operation.chainId !== 97 ||
+    operation.commerceContract.toLowerCase() !== config.jobKey.commerceContract.toLowerCase() ||
+    operation.jobId !== config.jobKey.jobId ||
+    operation.context?.signerAddress.toLowerCase() !== providerAddress ||
+    !parsedBinding.success ||
+    !sameErc8004Identity(parsedBinding.data.identity, config.identity)
+  ) {
+    throw new CommerceError({ code: "IDEMPOTENCY_CONFLICT", message: "The persisted reference-provider operation is bound to a different job, chain, or provider actor." });
+  }
+}
+
+function assertSelectedOwnedJob(selection: ReferenceProviderOwnedJob, config: EnabledReferenceProviderRunnerConfig, providerAddress: string): Erc8183JobRecord {
+  let job: Erc8183JobRecord;
+  try {
+    job = erc8183JobRecordSchema.parse(selection.job);
+  } catch (cause) {
+    throw new CommerceError({ code: "RECONCILIATION_REQUIRED", message: "The configured reference job is not a valid canonical ERC-8183 projection.", nextAction: "reconcile_job", cause });
+  }
+  if (job.jobKey.chainId !== 97 || job.jobKey.commerceContract.toLowerCase() !== config.jobKey.commerceContract.toLowerCase() || job.jobKey.jobId !== config.jobKey.jobId) {
+    throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The selected reference job does not match the configured protocol job." });
+  }
+  assertPinMatchesJob(job.terms, job.deploymentPin);
+  if (job.state !== "funded") throw new CommerceError({ code: "STALE_JOB", message: "The configured reference job is not awaiting provider submission.", retriable: true, nextAction: "reconcile_job" });
+  if (job.terms.providerAddress === null || normalizeAddress(job.terms.providerAddress, "job provider address") !== providerAddress) throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The selected reference job provider actor does not match the configured authority.", nextAction: "authenticate_actor" });
+  if (job.providerBinding === null || !sameErc8004Identity(job.providerBinding.identity, config.identity)) throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The selected reference job identity is not the configured owned ERC-8004 identity.", nextAction: "reload_identity" });
+  if (normalizeAddress(selection.identityOwnerAddress, "reference identity owner") !== providerAddress || selection.identityAgentWallet === null || normalizeAddress(selection.identityAgentWallet, "reference identity agent wallet") !== providerAddress) {
+    throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The configured ERC-8004 identity is not owned and wallet-bound to the provider authority.", nextAction: "reload_identity" });
+  }
+  if (!/^[1-9][0-9]*$/u.test(job.terms.budgetAtomic) || BigInt(job.terms.budgetAtomic) > BigInt(config.maxBudgetAtomic) || BigInt(job.terms.budgetAtomic) > BigInt(REFERENCE_PROVIDER_MAX_BUDGET_ATOMIC)) {
+    throw new CommerceError({ code: "INVALID_AMOUNT", message: "The reference provider job exceeds its bounded local testnet budget cap." });
+  }
+  healthFactorLendingSnapshotSchema.parse(selection.lendingSnapshot);
+  if (!Number.isSafeInteger(selection.requestedAtUnix) || selection.requestedAtUnix <= 0) throw new CommerceError({ code: "INVALID_JOB", message: "The reference provider request timestamp is invalid." });
+  return job;
+}
+
+async function recoverReferenceProviderOperation(input: {
+  readonly operation: Erc8183OperationRecord;
+  readonly idempotencyKey: string;
+  readonly operations: ReferenceProviderOperationStore;
+  readonly service: Pick<ReferenceProviderRecoveryService, "reconcile">;
+}): Promise<ReferenceProviderRunResult> {
+  if (["confirmed", "reconciled", "reverted", "manual_review"].includes(input.operation.status)) {
+    return { status: operationRunStatus(input.operation, true), idempotencyKey: input.idempotencyKey, operation: input.operation };
+  }
+  try {
+    const reconciled = await input.service.reconcile(input.operation.operationId);
+    return { status: operationRunStatus(reconciled.operation, true), idempotencyKey: input.idempotencyKey, operation: reconciled.operation };
+  } catch (cause) {
+    if (!(cause instanceof CommerceError) || cause.code !== "TRANSACTION_UNKNOWN") throw cause;
+    const latest = await input.operations.getByIdempotencyKey(input.idempotencyKey);
+    return { status: latest === null ? "pending" : operationRunStatus(latest, true), idempotencyKey: input.idempotencyKey, operation: latest ?? input.operation };
+  }
+}
+
+/**
+ * One bounded provider run. It performs no work unless explicitly enabled for
+ * local BSC testnet, selects one exact owned identity/job, calls the existing
+ * health-factor endpoint, and delegates the write/persistence boundary to the
+ * already-reviewed commerce service. A durable operation always wins over a
+ * fresh provider call, so reloads and unknown outcomes never rebroadcast.
+ */
+export class Erc8183ReferenceProviderRunner {
+  private readonly config: ReferenceProviderRunnerConfig;
+  private readonly selector: ReferenceProviderJobSelector;
+  private readonly provider: ReferenceHealthFactorProviderClient | undefined;
+  private readonly service: ReferenceProviderRecoveryService;
+  private readonly operations: ReferenceProviderOperationStore;
+  private readonly resolveAuthority: ReferenceProviderAuthorityResolver;
+
+  public constructor(input: {
+    readonly config: ReferenceProviderRunnerConfig;
+    readonly selector: ReferenceProviderJobSelector;
+    readonly provider?: ReferenceHealthFactorProviderClient;
+    readonly service: ReferenceProviderRecoveryService;
+    readonly operations: ReferenceProviderOperationStore;
+    readonly resolveAuthority: ReferenceProviderAuthorityResolver;
+  }) {
+    this.config = referenceProviderRunnerConfigSchema.parse(input.config);
+    this.selector = input.selector;
+    this.provider = input.provider;
+    this.service = input.service;
+    this.operations = input.operations;
+    this.resolveAuthority = input.resolveAuthority;
+  }
+
+  public async run(): Promise<ReferenceProviderRunResult> {
+    if (!this.config.enabled) return { status: "disabled", idempotencyKey: "disabled", operation: null };
+    const config = enabledRunnerConfig(this.config);
+    const providerAddress = normalizeAddress(config.providerAddress, "reference provider address");
+    const idempotencyKey = referenceProviderIdempotencyKey(config.jobKey);
+    const existing = await this.operations.getByIdempotencyKey(idempotencyKey);
+    if (existing !== null) {
+      assertOperationMatchesConfig(existing, config, providerAddress, idempotencyKey);
+      return recoverReferenceProviderOperation({ operation: existing, idempotencyKey, operations: this.operations, service: this.service });
+    }
+
+    const selection = await this.selector.select({ identity: config.identity, jobKey: config.jobKey, providerAddress });
+    if (selection === null) throw new CommerceError({ code: "UNKNOWN_JOB", message: "The configured owned reference identity/job was not found.", nextAction: "configure_reference_job" });
+    const job = assertSelectedOwnedJob(selection, config, providerAddress);
+    const binding = job.providerBinding;
+    if (binding === null) throw new CommerceError({ code: "UNAUTHORIZED_ACTOR", message: "The configured reference job has no provider identity binding." });
+    const invocation = referenceHealthFactorInvocationSchema.parse({
+      schemaVersion: "bnbera.reference.health-factor.request/v1",
+      jobKey: job.jobKey,
+      providerBinding: binding,
+      account: selection.account,
+      protocol: selection.protocol,
+      requestedAtUnix: selection.requestedAtUnix,
+      lendingSnapshot: selection.lendingSnapshot
+    });
+    const provider = this.provider ?? createReferenceHealthFactorProviderClient({ endpoint: config.providerEndpoint });
+    let providerResponse: ReferenceHealthFactorProviderResponse;
+    try {
+      providerResponse = referenceHealthFactorProviderResponseSchema.parse(await provider.invoke(invocation));
+    } catch (cause) {
+      if (cause instanceof CommerceError) throw cause;
+      throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The existing health-factor provider returned an invalid result envelope.", nextAction: "inspect_provider_result", cause });
+    }
+    const task = createReferenceHealthFactorTask({
+      jobKey: invocation.jobKey,
+      providerBinding: invocation.providerBinding,
+      account: invocation.account,
+      protocol: invocation.protocol,
+      requestedAtUnix: invocation.requestedAtUnix,
+      lendingSnapshot: invocation.lendingSnapshot
+    });
+    const expected = createReferenceHealthFactorResult({ task, observedAtUnix: providerResponse.result.observedAtUnix });
+    if (providerResponse.resultBytes !== canonicalHealthFactorResultBytes(expected.result) || providerResponse.resultDigest.toLowerCase() !== expected.resultDigest.toLowerCase()) {
+      throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The existing health-factor provider result is not bound to the selected task bytes.", nextAction: "inspect_provider_result" });
+    }
+    const submissionInput: ReferenceProviderSubmitInput = {
+      idempotencyKey,
+      jobKey: job.jobKey,
+      providerBinding: binding,
+      account: invocation.account,
+      protocol: invocation.protocol,
+      requestedAtUnix: invocation.requestedAtUnix,
+      lendingSnapshot: invocation.lendingSnapshot,
+      routerContract: config.routerContract as `0x${string}`,
+      policyContract: config.policyContract as `0x${string}`,
+      producedAtUnix: providerResponse.result.observedAtUnix,
+      providerResult: providerResponse.result,
+      providerResultBytes: providerResponse.resultBytes,
+      providerResultDigest: providerResponse.resultDigest,
+      providerAddress,
+      requesterAddress: providerAddress,
+      authoritySecretReference: config.authoritySecretReference
+    };
+    const adapter = new Erc8183ReferenceProviderAdapter(this.service, this.resolveAuthority);
+    try {
+      const submitted = await adapter.submit(submissionInput);
+      return { status: operationRunStatus(submitted.operation.operation, false), idempotencyKey, operation: submitted.operation.operation, submission: submitted.submission };
+    } catch (cause) {
+      if (!(cause instanceof CommerceError) || cause.code !== "TRANSACTION_UNKNOWN") throw cause;
+      const operation = await this.operations.getByIdempotencyKey(idempotencyKey);
+      if (operation === null) {
+        throw new CommerceError({
+          code: "RECONCILIATION_REQUIRED",
+          message: "The provider submit outcome is unknown and has no durable operation row; no retry is safe.",
+          nextAction: "manual_review",
+          ...(cause.relayCallsId === undefined ? {} : { relayCallsId: cause.relayCallsId }),
+          ...(cause.transactionHash === undefined ? {} : { transactionHash: cause.transactionHash })
+        });
+      }
+      assertOperationMatchesConfig(operation, config, providerAddress, idempotencyKey);
+      // Reconcile the persisted operation once. This path intentionally has no
+      // retry branch: an unknown provider write must never be rebroadcast.
+      return recoverReferenceProviderOperation({ operation, idempotencyKey, operations: this.operations, service: this.service });
+    }
   }
 }
