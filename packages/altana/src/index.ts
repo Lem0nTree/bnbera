@@ -5,3 +5,5 @@ export * from "./ephemeral-session.ts";
 export * from "./evidence.ts";
 export * from "./lifecycle.ts";
 export * from "./authority.ts";
+export * from "./erc8004-operation.ts";
+export * from "./pancakeswap-operation.ts";
