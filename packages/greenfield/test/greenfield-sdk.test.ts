@@ -15,6 +15,7 @@ function sdkFixture(options: {
   readonly unknownCreate?: boolean;
   readonly providerFailure?: boolean;
   readonly malformedMetadata?: boolean;
+  readonly thrownMetadataError?: "official-missing" | "generic-404";
   readonly metadataDelay?: number;
   readonly privateKeyValue?: string;
 } = {}) {
@@ -53,6 +54,12 @@ function sdkFixture(options: {
         metadataCalls += 1;
         if (options.providerFailure) return { code: 0, statusCode: 503, body: {} };
         if (options.malformedMetadata) return { code: 0, statusCode: 200, body: {} };
+        if (options.thrownMetadataError === "official-missing") {
+          throw { code: "90010", statusCode: 404, message: "the specified object does not exist" };
+        }
+        if (options.thrownMetadataError === "generic-404") {
+          throw { code: "OTHER_NOT_FOUND", statusCode: 404, message: "the specified object does not exist" };
+        }
         if (!objectExists || metadataCalls <= (options.metadataDelay ?? 0)) return { code: 0, statusCode: 404, body: {} };
         return {
           code: 0,
@@ -384,6 +391,21 @@ describe("official Greenfield SDK adapter boundary", () => {
     const fixture = sdkFixture({ providerFailure: true });
     await expect(fixture.publisher.inspectObject({ objectName: "evidence/x" })).rejects.toMatchObject({ code: "PROVIDER_FAILED" });
     expect(fixture.counts().createCalls).toBe(0);
+  });
+
+  it("recognizes the official thrown absent-object response as missing", async () => {
+    const fixture = sdkFixture({ thrownMetadataError: "official-missing" });
+    await expect(fixture.publisher.inspectObject({ objectName: "evidence/x" })).resolves.toMatchObject({
+      status: "missing",
+      objectReference: null,
+      creationTransactionHash: null,
+      sealTransactionHash: null
+    });
+  });
+
+  it("does not classify an unrelated thrown 404 as missing", async () => {
+    const fixture = sdkFixture({ thrownMetadataError: "generic-404" });
+    await expect(fixture.publisher.inspectObject({ objectName: "evidence/x" })).rejects.toMatchObject({ code: "PROVIDER_FAILED" });
   });
 
   it("rejects malformed successful metadata instead of treating it as missing", async () => {

@@ -479,6 +479,11 @@ function notFoundError(error: unknown): boolean {
   return /(?:\b404\b|not[ -]?found|does not exist|\bno such bucket\b)/i.test(message);
 }
 
+function officialMissingObjectError(error: unknown): boolean {
+  const source = recordValue(error);
+  return source?.statusCode === 404 && source.code === "90010";
+}
+
 function publicReadVisibility(value: unknown): boolean {
   if (numericField(value) === 1 || value === "VISIBILITY_TYPE_PUBLIC_READ" || value === "PUBLIC_READ" || value === "public-read") {
     return true;
@@ -1298,6 +1303,7 @@ export class GreenfieldSdkPublisher implements GreenfieldPublisher {
       return object;
     } catch (error) {
       if (error instanceof PublicationProviderError) throw error;
+      if (officialMissingObjectError(error)) return null;
       throw providerFailure(error, "PROVIDER_FAILED");
     }
   }
