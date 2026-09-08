@@ -692,6 +692,12 @@ function commerceMetrics(read: MarketplaceCommerceRead): Pick<MarketplaceMetrics
   }
   const observedAt = unixSecondsToIso(latest.settledAtUnix);
   const digest = latest.result.localSha256.toLowerCase();
+  // Deliverable URLs can be data URLs containing the complete result bytes.
+  // Keep the public metric reference within the read-model contract rather
+  // than withholding an otherwise valid listing when that payload is long.
+  const deliverableReference = latest.result.deliverableUrl !== null && latest.result.deliverableUrl.length <= 500
+    ? latest.result.deliverableUrl
+    : latest.result.settlementReceipt.transactionHash;
   return {
     completedJobs: {
       status: "available",
@@ -702,7 +708,7 @@ function commerceMetrics(read: MarketplaceCommerceRead): Pick<MarketplaceMetrics
     lastResult: {
       status: "available",
       summary: `Settled BNBEra result (SHA-256 ${digest}).`,
-      reference: latest.result.deliverableUrl ?? latest.result.settlementReceipt.transactionHash,
+      reference: deliverableReference,
       source: "bnbera-erc8183-settled",
       observedAt
     }
