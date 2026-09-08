@@ -1,14 +1,18 @@
 import { getCommerceAuthDatabasePool, requireAuthenticatedCommerceIdentity } from "./commerce-auth";
+import { isAbsolute } from "node:path";
 import { CreatorRepository } from "./creator-repository";
 import { CreatorAuthorityError, unavailableCreatorRuntimeAuthority, type CreatorRuntimeAuthorityResolver } from "./creator-authority-runtime";
 import { createPostgresCreatorAuthorityStore } from "./creator-authority-store";
-import { readCreatorAuthority, requireRuntimeAuthority, revokeCreatorAuthority, type CreatorAuthorityGateway, type CreatorAuthorityPublicStatus, type RuntimeSessionSecretSink } from "@bnbera/altana";
+import { readCreatorAuthority, requireRuntimeAuthority, revokeCreatorAuthority, type CreatorAuthorityPublicStatus } from "@bnbera/altana";
+import { createLocalCreatorAuthorityComposition, type CreatorAuthorityComposition } from "./creator-t6-composition";
+import { createCreatorRegistrationService, type CreatorRegistrationService } from "./creator-registration";
 
 export function creatorRepository(): CreatorRepository { return new CreatorRepository(getCommerceAuthDatabasePool()); }
+export function creatorRegistrationService(): CreatorRegistrationService { return createCreatorRegistrationService({ pool: getCommerceAuthDatabasePool() }); }
 export { requireAuthenticatedCommerceIdentity as requireCreatorIdentity };
 
 /** Replaced by the T6-owned composition only after its live grant/revoke gate. */
-type AuthorityComposition = { readonly gateway: CreatorAuthorityGateway; readonly sink: RuntimeSessionSecretSink };
+export type AuthorityComposition = CreatorAuthorityComposition;
 const globals = globalThis as typeof globalThis & { __bnberaCreatorAuthorityComposition?: AuthorityComposition };
 /** Hosting integration registers the reviewed T6 SDK gateway. There is no
  * environment fallback: a URL/key/config typo must leave Creator disabled.
@@ -18,7 +22,22 @@ export function registerCreatorAuthorityComposition(composition: AuthorityCompos
   if (typeof composition.gateway.read !== "function" || typeof composition.gateway.revoke !== "function" || typeof composition.sink.putRuntimeSession !== "function") throw new CreatorAuthorityError("CREATOR_AUTHORITY_UNAVAILABLE", "Creator authority adapters are incomplete.");
   globals.__bnberaCreatorAuthorityComposition = composition;
 }
-function authorityComposition(): AuthorityComposition | null { return process.env.CREATOR_RUNTIME_AUTHORITY_ENABLED === "true" ? globals.__bnberaCreatorAuthorityComposition ?? null : null; }
+/**
+ * Local MVP composition is deliberately opt-in. Both the existing runtime
+ * feature flag and an absolute Studio workspace root are required; no
+ * guessed path or managed/cloud credential is ever selected implicitly.
+ */
+export function configuredCreatorAuthorityComposition(): AuthorityComposition | null {
+  if (process.env.CREATOR_RUNTIME_AUTHORITY_ENABLED !== "true") return null;
+  const existing = globals.__bnberaCreatorAuthorityComposition;
+  if (existing !== undefined) return existing;
+  const workspaceRoot = process.env.CREATOR_STUDIO_WORKSPACE_ROOT;
+  if (workspaceRoot === undefined || !isAbsolute(workspaceRoot) || workspaceRoot === "/") return null;
+  const composition = createLocalCreatorAuthorityComposition({ workspaceRoot });
+  globals.__bnberaCreatorAuthorityComposition = composition;
+  return composition;
+}
+function authorityComposition(): AuthorityComposition | null { return configuredCreatorAuthorityComposition(); }
 function authorityUnavailable(): never { throw new CreatorAuthorityError("CREATOR_AUTHORITY_UNAVAILABLE", "Creator authority is not configured for this runtime."); }
 export function creatorAuthorityResolver(): CreatorRuntimeAuthorityResolver {
   const composition = authorityComposition(); if (composition === null) return unavailableCreatorRuntimeAuthority;

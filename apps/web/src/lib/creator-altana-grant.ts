@@ -1,6 +1,6 @@
 import { erc8004RegisterPermissions, erc8183SubmitPermissions, type ClientGrantSessionOptions, type GrantSessionOptions, type Signer, type Wallet } from "@altananetwork/sdk";
 import { toFunctionSelector } from "viem";
-import { assertPolicyWithinBounds, authorityPolicyDigest, type ScopedPolicy } from "@bnbera/altana";
+import { assertPolicyWithinBounds, authorityPolicyDigest, toPublicPolicySummary, type ScopedPolicy } from "@bnbera/altana";
 import { creatorCommerceAction, creatorLifecycleAction, creatorSwapAction, creatorTemplate } from "./creator-contract";
 
 const CHAIN_ID = 97 as const;
@@ -74,6 +74,53 @@ export function creatorAuthorityGrant(input: {
     spend: bounded.spend.map((spend) => ({ ...(spend.token === "native" ? {} : { token: spend.token }), limit: spend.limitAtomic, period: spend.period })),
   } as GrantSessionOptions["permissions"];
   return { policy: bounded, policyDigest: authorityPolicyDigest(bounded), sdk: { permissions, expiry: bounded.expiresAtUnix, register: true } };
+}
+
+/**
+ * JSON-safe grant material for the browser review screen.  This deliberately
+ * contains only the fixed public policy and SDK permission descriptors.  The
+ * session signer remains in the browser's memory and is never represented in
+ * this response.
+ */
+export function creatorBrowserGrantOptions(grant: ReturnType<typeof creatorAuthorityGrant>, grantIssuedAtUnix: number): {
+  readonly chainId: 97;
+  readonly grantIssuedAtUnix: number;
+  readonly expiresAtUnix: number;
+  readonly policyDigest: `0x${string}`;
+  readonly policy: ReturnType<typeof toPublicPolicySummary>;
+  readonly sdk: {
+    readonly permissions: {
+      readonly calls: readonly { readonly to: `0x${string}`; readonly signature: string }[];
+      readonly spend: readonly { readonly token?: `0x${string}`; readonly limit: string; readonly period: "minute" | "hour" | "day" | "week" | "month" | "year" }[];
+    };
+    readonly expiry: number;
+    readonly register: true;
+  };
+} {
+  const calls = grant.sdk.permissions.calls ?? [];
+  const spend = grant.sdk.permissions.spend ?? [];
+  return {
+    chainId: 97,
+    grantIssuedAtUnix,
+    expiresAtUnix: grant.policy.expiresAtUnix,
+    policyDigest: grant.policyDigest,
+    policy: toPublicPolicySummary(grant.policy),
+    sdk: {
+      permissions: {
+        calls: calls.map((call) => {
+          if (!("to" in call) || !("signature" in call)) throw new Error("CREATOR_SDK_PERMISSION_PIN_MISMATCH");
+          return { to: call.to, signature: call.signature };
+        }),
+        spend: spend.map((entry) => ({
+          ...(entry.token === undefined ? {} : { token: entry.token }),
+          limit: entry.limit.toString(10),
+          period: entry.period,
+        })),
+      },
+      expiry: grant.sdk.expiry,
+      register: true,
+    },
+  };
 }
 
 /** The explicit session signer is required; the grant helper never creates an admin or session secret. */

@@ -1,18 +1,24 @@
 import { test } from "node:test";
+import type { AddressInfo } from "node:net";
 import assert from "node:assert/strict";
-import { buildSubmitCall as sdkBuildSubmitCall, encodeErc8183Manifest, erc8183Addresses as sdkErc8183Addresses, erc8183ManifestHash, signerFromPrivateKey, type Erc8183Job, type Session } from "@altananetwork/sdk";
-import { decodeFunctionData, hexToString, type Address, type Hex } from "viem";
+import { encodeErc8183Manifest, erc8183ManifestHash, signerFromPrivateKey, type Erc8183Job } from "@altananetwork/sdk";
+import { decodeFunctionData, encodeFunctionData, hexToString, type Address, type Hex } from "viem";
 import {
   BoundedRuntimeError,
   EXECUTE_ACTION,
   PINNED_ERC8183,
   PINNED_PANCAKESWAP,
+  createApp,
   deserializeStudioSession,
   executeBoundedSwap,
+  loadManagedSecrets,
+  parseA2ARequest,
   parseJobDescription,
   parseExecutionRequest,
   readCompiledConfiguration,
 } from "../../../templates/pancakeswap-one-shot/app/agent/src/unifiedMain.ts";
+
+type TemplateSession = Awaited<ReturnType<typeof deserializeStudioSession>>;
 
 const PRIVATE_KEY = `0x${"11".repeat(32)}` as Hex;
 const WALLET = "0x23bb79742B18fE2aF238dDE9eF97f355721c9122" as Address;
@@ -51,7 +57,7 @@ function studioSessionJson(withSubmit = false): string {
   });
 }
 
-async function session(withSubmit = false): Promise<Session> {
+async function session(withSubmit = false): Promise<TemplateSession> {
   return deserializeStudioSession(studioSessionJson(withSubmit));
 }
 
@@ -72,7 +78,7 @@ function fundedJob(provider: Address, description = JOB_DESCRIPTION): Erc8183Job
   };
 }
 
-function dependencies(currentSession: Session, overrides: Record<string, unknown> = {}) {
+function dependencies(currentSession: TemplateSession, overrides: Record<string, unknown> = {}) {
   return {
     loadSession: async (raw: string) => {
       assert.equal(raw, "injected-session");
@@ -83,6 +89,8 @@ function dependencies(currentSession: Session, overrides: Record<string, unknown
     getBlockNumber: async () => 123n,
     readJob: async () => fundedJob(currentSession.walletAddress),
     readPaymentToken: async () => PINNED_ERC8183.paymentToken,
+    readRouterPolicy: async () => true,
+    readJobPolicy: async () => PINNED_ERC8183.policy,
     readFactoryPair: async () => PINNED_PANCAKESWAP.pairs["tbnb-cake"].pair,
     readAmountsOut: async (amount: bigint, path: readonly [Address, Address], block: bigint) => {
       assert.equal(amount, 1_000_000_000_000_000n);
@@ -115,6 +123,82 @@ test("only the exact execute_swap/jobId request is accepted", () => {
   assert.equal(parseExecutionRequest({ action: EXECUTE_ACTION, jobId: "1", target: "0x" }), null);
   assert.equal(parseExecutionRequest({ action: EXECUTE_ACTION, jobId: 1 }), null);
   assert.equal(parseExecutionRequest({ action: EXECUTE_ACTION, jobId: "01" }), null);
+});
+
+test("A2A message/send accepts a canonical DataPart and string JSON-RPC id", () => {
+  const parsed = parseA2ARequest({
+    jsonrpc: "2.0", id: "request-1", method: "message/send",
+    params: {
+      message: {
+        role: "user", messageId: "message-1",
+        parts: [{ kind: "data", data: { action: EXECUTE_ACTION, jobId: "1" } }],
+      },
+    },
+  });
+  assert.deepEqual(parsed, { id: "request-1", jobId: "1" });
+  assert.equal(parseA2ARequest({
+    jsonrpc: "2.0", id: "request-1", method: "message/send",
+    params: { message: { role: "user", messageId: "message-1", parts: [{ kind: "data", data: { action: EXECUTE_ACTION, jobId: "1", extra: true } }] } },
+  }), null);
+  assert.equal(parseA2ARequest({
+    jsonrpc: "2.0", id: "request-1", method: "message/send",
+    params: { message: { role: "user", messageId: "message-1", parts: [{ kind: "text", text: "execute" }] } },
+  }), null);
+});
+
+test("managed secret loader imports the environment bundle without logging or returning it", async () => {
+  const previousId = process.env.BNBAGENT_RUNTIME_SECRET_ID;
+  const previousSession = process.env.ALTANA_SESSION;
+  const previousUrl = process.env.BNBAGENT_PUBLIC_URL;
+  process.env.BNBAGENT_RUNTIME_SECRET_ID = "runtime-secret-id";
+  delete process.env.ALTANA_SESSION;
+  delete process.env.BNBAGENT_PUBLIC_URL;
+  let seenId = "";
+  try {
+    await loadManagedSecrets(async (secretId) => {
+      seenId = secretId;
+      return JSON.stringify({ ALTANA_SESSION: "serialized-session", BNBAGENT_PUBLIC_URL: "https://agent.example/" });
+    });
+    assert.equal(seenId, "runtime-secret-id");
+    assert.equal(process.env.ALTANA_SESSION, "serialized-session");
+    assert.equal(process.env.BNBAGENT_PUBLIC_URL, "https://agent.example/");
+  } finally {
+    if (previousId === undefined) delete process.env.BNBAGENT_RUNTIME_SECRET_ID;
+    else process.env.BNBAGENT_RUNTIME_SECRET_ID = previousId;
+    if (previousSession === undefined) delete process.env.ALTANA_SESSION;
+    else process.env.ALTANA_SESSION = previousSession;
+    if (previousUrl === undefined) delete process.env.BNBAGENT_PUBLIC_URL;
+    else process.env.BNBAGENT_PUBLIC_URL = previousUrl;
+  }
+});
+
+test("A2A message/send returns a JSON-RPC agent Message with a DataPart", async () => {
+  const currentSession = await session(true);
+  await withSession("injected-session", async () => {
+    const app = createApp(dependencies(currentSession));
+    const server = app.listen(0);
+    try {
+      await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+      const listening = server.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${listening.port}/`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: "request-1", method: "message/send",
+          params: { message: { role: "user", messageId: "message-1", parts: [{ kind: "data", data: { action: EXECUTE_ACTION, jobId: "1" } }] } },
+        }),
+      });
+      assert.equal(response.status, 200);
+      const payload = await response.json() as { jsonrpc: string; id: string; result: { kind: string; role: string; parts: { kind: string; data: { jobId: string } }[] } };
+      assert.equal(payload.jsonrpc, "2.0");
+      assert.equal(payload.id, "request-1");
+      assert.equal(payload.result.kind, "message");
+      assert.equal(payload.result.role, "agent");
+      assert.equal(payload.result.parts[0]?.kind, "data");
+      assert.equal(payload.result.parts[0]?.data.jobId, "1");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 });
 
 test("Studio session JSON restores bigint spend and never serializes the signer key", async () => {
@@ -165,7 +249,7 @@ test("confirmed execution derives the pinned swap and submit calls and returns p
             ? fundedJob(currentSession.walletAddress)
             : { ...fundedJob(currentSession.walletAddress), status: 2, statusName: "SUBMITTED" as const, deliverable: submittedDeliverable };
         },
-        execute: async (_session: Session, calls: readonly { to: Address; value?: bigint; data?: Hex }[]) => {
+        execute: async (_session: TemplateSession, calls: readonly { to: Address; value?: bigint; data?: Hex }[]) => {
           captured = calls;
           const decoded = decodeFunctionData({
             abi: [{ type: "function", name: "submit", stateMutability: "nonpayable", inputs: [{ type: "uint256" }, { type: "bytes32" }, { type: "bytes" }], outputs: [] }] as const,
@@ -229,7 +313,7 @@ test("canonical ERC-8183 submission uses the exact permission and data URL", asy
             ? fundedJob(currentSession.walletAddress)
             : { ...fundedJob(currentSession.walletAddress), status: 2, statusName: "SUBMITTED" as const, deliverable: submittedDeliverable };
         },
-        execute: async (_session: Session, calls: readonly { to: Address; value?: bigint; data?: Hex }[]) => {
+        execute: async (_session: TemplateSession, calls: readonly { to: Address; value?: bigint; data?: Hex }[]) => {
           assert.equal(calls.length, 2);
           assert.equal(calls[1]?.to.toLowerCase(), PINNED_ERC8183.commerce.toLowerCase());
           const decoded = decodeFunctionData({
@@ -238,7 +322,14 @@ test("canonical ERC-8183 submission uses the exact permission and data URL", asy
           });
           submittedDeliverable = decoded.args[1];
           submittedUrl = (JSON.parse(hexToString(decoded.args[2])) as { deliverable_url: string }).deliverable_url;
-          assert.deepEqual(calls[1], sdkBuildSubmitCall({ addresses: sdkErc8183Addresses(97), jobId: 1n, deliverable: decoded.args[1], optParams: decoded.args[2] }));
+          assert.deepEqual(calls[1], {
+            to: PINNED_ERC8183.commerce,
+            data: encodeFunctionData({
+              abi: [{ type: "function", name: "submit", stateMutability: "nonpayable", inputs: [{ type: "uint256" }, { type: "bytes32" }, { type: "bytes" }], outputs: [] }] as const,
+              functionName: "submit",
+              args: [1n, decoded.args[1], decoded.args[2]],
+            }),
+          });
           return { status: "CONFIRMED" as const, callsId: HASH_A, transactionHash: HASH_B };
         },
       }),
@@ -261,6 +352,43 @@ test("mismatched on-chain job description is rejected before quote or execute", 
         execute: async () => { executeCalls += 1; return { status: "CONFIRMED" as const }; },
       })),
       (error: unknown) => error instanceof BoundedRuntimeError && error.code === "JOB_DESCRIPTION_MISMATCH",
+    );
+  });
+  assert.equal(quoteCalls, 0);
+  assert.equal(executeCalls, 0);
+});
+
+test("unwhitelisted standards policy fails closed before quote or execute", async () => {
+  const currentSession = await session(true);
+  let quoteCalls = 0;
+  let executeCalls = 0;
+  await withSession("injected-session", async () => {
+    await assert.rejects(
+      executeBoundedSwap("1", dependencies(currentSession, {
+        readRouterPolicy: async () => false,
+        readAmountsOut: async () => { quoteCalls += 1; return [1n, 1n] as const; },
+        execute: async () => { executeCalls += 1; return { status: "CONFIRMED" as const }; },
+      })),
+      (error: unknown) => error instanceof BoundedRuntimeError && error.code === "JOB_CONTRACT_MISMATCH",
+    );
+  });
+  assert.equal(quoteCalls, 0);
+  assert.equal(executeCalls, 0);
+});
+
+test("a job bound to another policy fails closed even when that policy is whitelisted", async () => {
+  const currentSession = await session(true);
+  let quoteCalls = 0;
+  let executeCalls = 0;
+  await withSession("injected-session", async () => {
+    await assert.rejects(
+      executeBoundedSwap("1", dependencies(currentSession, {
+        readRouterPolicy: async () => true,
+        readJobPolicy: async () => "0x4F4678D4439feC812Ac7674Bb3Efb4C8f5Fb78A6" as Address,
+        readAmountsOut: async () => { quoteCalls += 1; return [1n, 1n] as const; },
+        execute: async () => { executeCalls += 1; return { status: "CONFIRMED" as const }; },
+      })),
+      (error: unknown) => error instanceof BoundedRuntimeError && error.code === "JOB_CONTRACT_MISMATCH",
     );
   });
   assert.equal(quoteCalls, 0);

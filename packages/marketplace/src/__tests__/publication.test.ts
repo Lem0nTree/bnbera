@@ -272,7 +272,48 @@ function publicationInput(description = "A public read-only agent.") {
   } as const;
 }
 
+function creatorRegistrationPublicationInput() {
+  const configurationDigest = "a".repeat(64);
+  return {
+    ...publicationInput(`A bounded browser-owned Creator agent. BNBEra bounded runtime: tbnb-busd; configuration digest: ${configurationDigest}.`),
+    publicMetadata: {
+      type: "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+      name: "BUSD bounded agent",
+      description: `A bounded browser-owned Creator agent. BNBEra bounded runtime: tbnb-busd; configuration digest: ${configurationDigest}.`,
+      services: [{
+        name: "A2A",
+        endpoint: "https://agent.example/.well-known/agent-card.json",
+        protocolVersion: "0.3.0"
+      }],
+      registrations: [],
+      "x-bnbera": {
+        template: "pancakeswap-one-shot@1.1.0",
+        templateDigest: "b".repeat(64),
+        configurationDigest,
+        tradingPair: "tbnb-busd"
+      },
+      slug: "busd-bounded-agent",
+      supportedProtocols: ["mcp"]
+    }
+  } as const;
+}
+
 describe("PostgresMarketplacePublicationService", () => {
+  it("publishes Creator-shaped ERC-8004 metadata with a control-free description", async () => {
+    const database = new PublicationDb();
+    const service = new PostgresMarketplacePublicationService(database, { now: () => now });
+
+    const result = await service.publish(creatorRegistrationPublicationInput());
+
+    expect(result.status).toBe("published");
+    expect(database.versions[0]?.public_metadata).toMatchObject({
+      name: "BUSD bounded agent",
+      description: expect.not.stringMatching(/[\u0000-\u001f\u007f]/u),
+      services: [{ kind: "mcp", protocolVersion: "1.0", discoverySource: "8004scan" }],
+      "x-bnbera": { configurationDigest: "a".repeat(64), tradingPair: "tbnb-busd" }
+    });
+  });
+
   it("creates one immutable version, then reuses it on same-content replay", async () => {
     const database = new PublicationDb();
     const service = new PostgresMarketplacePublicationService(database, { now: () => now });
@@ -443,6 +484,32 @@ describe("PostgresMarketplacePublicationService", () => {
     });
     expect(database.versions[0]?.pricing_manifest).toMatchObject({ model: "fixed", network: 97 });
     expect(database.versions[0]?.public_metadata).not.toHaveProperty("providerNote");
+  });
+
+  it("retains only the Creator configuration binding needed for exact G1 handoff", async () => {
+    const database = new PublicationDb();
+    const service = new PostgresMarketplacePublicationService(database, { now: () => now });
+    const configurationDigest = "a".repeat(64);
+
+    const result = await service.publish({
+      ...publicationInput(),
+      publicMetadata: {
+        ...publicationInput().publicMetadata,
+        "x-bnbera": {
+          configurationDigest,
+          tradingPair: "tbnb-busd",
+          template: "untrusted-extra-field"
+        }
+      }
+    });
+
+    expect(result.status).toBe("published");
+    expect(database.versions[0]?.public_metadata).toMatchObject({
+      "x-bnbera": { configurationDigest, tradingPair: "tbnb-busd" }
+    });
+    expect(database.versions[0]?.public_metadata).not.toMatchObject({
+      "x-bnbera": { template: expect.anything() }
+    });
   });
 
   it("persists an explicit ERC-8183 activation binding without changing generic listings", async () => {

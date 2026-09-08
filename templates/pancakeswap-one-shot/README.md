@@ -26,3 +26,12 @@ deliverable hash. Accepted-but-unconfirmed relay outcomes are returned as
 `unknown` and are never retried; a chain reread is the idempotency boundary.
 The session JSON and signer never appear in logs, responses, or persisted
 application data.
+
+The managed AgentCore entrypoint loads the JSON Secrets Manager bundle named by
+`BNBAGENT_RUNTIME_SECRET_ID` before binding the fixed A2A port `9000`; the
+bundle must contain `ALTANA_SESSION` (and may contain public URL/OAuth card
+settings). A2A clients POST JSON-RPC `message/send` to `/` (or
+`/message/send`) with the exact request in a `parts:[{"kind":"data","data":...}]`
+DataPart. The response is a standard JSON-RPC agent Message containing the
+public execution evidence in its DataPart. Local tests can import `createApp`
+without opening a socket.

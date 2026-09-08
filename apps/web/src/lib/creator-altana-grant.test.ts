@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { serializePolicy, toPublicPolicySummary } from "@bnbera/altana";
-import { creatorAuthorityGrant, creatorSdkGrantRequest } from "./creator-altana-grant";
+import { creatorAuthorityGrant, creatorBrowserGrantOptions, creatorSdkGrantRequest } from "./creator-altana-grant";
 import { creatorCommerceAction, creatorLifecycleAction, creatorPolicyDigest, creatorSwapAction } from "./creator-contract";
 
 const admin = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as const;
@@ -51,5 +51,19 @@ describe("Creator Altana grant payload", () => {
       { to: creatorCommerceAction.target, signature: "submit(uint256,bytes32,bytes)" },
       { to: creatorSwapAction.target, signature: "swapExactETHForTokens(uint256,address[],address,uint256)" },
     ]);
+  });
+
+  it("serializes browser review options without bigint or signer material", () => {
+    const grant = creatorAuthorityGrant({ adminAddress: admin, walletAddress: wallet, sessionPublicAddress: session, sessionPublicKey: key, nowUnix: 1_700_000_000 });
+    const options = creatorBrowserGrantOptions(grant, 1_700_000_000);
+    expect(options).toMatchObject({
+      chainId: 97,
+      grantIssuedAtUnix: 1_700_000_000,
+      expiresAtUnix: 1_700_003_600,
+      policyDigest: grant.policyDigest,
+      sdk: { expiry: 1_700_003_600, register: true, permissions: { spend: [{ limit: "2000000000000000", period: "hour" }] } },
+    });
+    expect(options.policy.calls.every((call) => typeof call.maxNativeValueWei === "string")).toBe(true);
+    expect(JSON.stringify(options)).not.toMatch(/private|secret|signer|bigint/iu);
   });
 });

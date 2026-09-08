@@ -110,6 +110,13 @@
       "integrity": "sha512-1RLOTvjQm5CHcIFDh/cN78prUkw59+v6qRDy43xKEOadmLyztpoHJIE1H+4Pisq4AbG+09tW8qMJ1UyuI/JBzw==",
       "verificationStatus": "pinned-from-npm-registry"
     },
+    "agentStudioAltanaSdk": {
+      "package": "@altananetwork/sdk",
+      "version": "0.7.1",
+      "integrity": "sha512-C1XCliQl4NRiHs5LwNtU2BmjqfB2MZWYR+e31ZmsH8fGs7l0bFiA/w5ufmzWj6LaXUYLQnpt6lI5kIQthNHY4Q==",
+      "scope": "managed-studio-0.0.13",
+      "verificationStatus": "pinned-from-npm-registry"
+    },
     "altanaMcp": {
       "package": "@altananetwork/mcp",
       "version": "0.9.0",

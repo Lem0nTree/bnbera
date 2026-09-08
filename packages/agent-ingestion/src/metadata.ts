@@ -316,7 +316,9 @@ function decodeDataUri(uri: string, maxBytes: number): { readonly contentType: s
     throw ingestionError("METADATA_PARSE_FAILED", "The data metadata URI could not be decoded.", "repair_metadata_uri", cause);
   }
   if (bytes.byteLength > maxBytes) throw ingestionError("METADATA_TOO_LARGE", "The data metadata URI exceeds the configured size limit.", "reduce_metadata_size");
-  return { contentType, bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
+  // Copy into an owned Uint8Array so the public contract is always an
+  // ArrayBuffer, even when Node's Buffer is backed by a shared pool.
+  return { contentType, bytes: Uint8Array.from(bytes).buffer };
 }
 
 function ipfsGatewayUrl(gateway: string, cidPath: string): string {

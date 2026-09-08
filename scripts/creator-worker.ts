@@ -1,27 +1,88 @@
-/** One-deployment, opt-in Creator progression.  It is intentionally not cron:
- * deployment needs an explicit operator-selected persisted ID and never scans
- * drafts or enables itself from a Studio login. */
+/**
+ * One bounded Creator worker tick. A scheduler may invoke this command
+ * repeatedly; the database claim and persisted Studio intents make retries
+ * reconcile-only after a process interruption.
+ */
+import { fileURLToPath } from "node:url";
+import { isAbsolute, resolve } from "node:path";
 import { creatorAuthorityResolver, creatorRepository } from "../apps/web/src/lib/creator-server.ts";
-import { createCreatorLifecycleHandoffs } from "../apps/web/src/lib/creator-handoffs.ts";
-import { nativeStudioProcessAdapter, readCreatorStandardsLock, studioReadiness } from "../apps/web/src/lib/creator-studio.ts";
-import { runCreatorStudioStep } from "../apps/web/src/lib/creator-worker.ts";
+import { createCreatorWorkerComposition, CreatorWorkerCompositionError, type CreatorWorkerRun } from "../apps/web/src/lib/creator-composition.ts";
+import { nativeStudioWorkspaceTempDirectory, readCreatorStandardsLock, studioReadiness } from "../apps/web/src/lib/creator-studio.ts";
+import { CreatorAuthorityError } from "../apps/web/src/lib/creator-authority-runtime.ts";
+import { CreatorRepositoryError, type CreatorDeploymentBinding, type CreatorRepository } from "../apps/web/src/lib/creator-repository.ts";
 import { getCommerceAuthDatabasePool } from "../apps/web/src/lib/commerce-auth.ts";
 
-async function main(): Promise<void> {
-  if (process.env.CREATOR_WORKER_ENABLED !== "true" || process.env.CREATOR_RUNTIME_AUTHORITY_ENABLED !== "true") throw new Error("CREATOR_WORKER_DISABLED");
-  const deploymentId = process.env.CREATOR_DEPLOYMENT_ID;
-  const workspace = process.env.CREATOR_STUDIO_WORKSPACE_ROOT;
-  if (deploymentId === undefined || !/^[0-9a-f-]{36}$/i.test(deploymentId) || workspace === undefined || !workspace.startsWith("/")) throw new Error("CREATOR_WORKER_CONFIGURATION_INVALID");
-  const repository = creatorRepository(); const pool = getCommerceAuthDatabasePool();
-  const store = repository.workerStore(workspace);
-  const loaded = await store.load(deploymentId);
-  const authority = await pool.query<{ authority_id: string; creator_user_id: string }>(`SELECT au.id AS authority_id,d.creator_user_id FROM agent_deployments ad JOIN agent_drafts d ON d.id=ad.draft_id JOIN agent_authorities au ON au.draft_id=d.id AND au.status='active' WHERE ad.id=$1 LIMIT 1`, [deploymentId]);
-  const binding = authority.rows[0]; if (binding === undefined) throw new Error("CREATOR_AUTHORITY_UNAVAILABLE");
-  const resolver = creatorAuthorityResolver();
-  const recheckAuthority = async () => { await resolver.requireRuntimeAuthority({ userId: binding.creator_user_id, draftId: (await pool.query<{ draft_id: string }>("SELECT draft_id FROM agent_deployments WHERE id=$1", [deploymentId])).rows[0]!.draft_id, authorityId: binding.authority_id }); };
-  await runCreatorStudioStep({ deploymentId, readiness: studioReadiness(readCreatorStandardsLock()), store, studio: nativeStudioProcessAdapter(), handoffs: createCreatorLifecycleHandoffs(pool), recheckAuthority });
-  // Keep output public and bounded; all sensitive adapter details stay in the
-  // T6 gateway/sink and are never written to this process output.
-  process.stdout.write(JSON.stringify({ deploymentId, stage: loaded.stage, outcome: "reconciled" }) + "\n");
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+export type CreatorWorkerTick =
+  | { readonly outcome: "idle" }
+  | (CreatorWorkerRun & { readonly outcome: "advanced" | "waiting" });
+
+type WorkerComposition = Pick<ReturnType<typeof createCreatorWorkerComposition>, "runOnce">;
+
+/** Small seam used by tests and by a scheduler that already has a claim. */
+export async function runCreatorWorkerOnce(input: {
+  readonly composition: WorkerComposition;
+  readonly deploymentId?: string;
+  readonly claimNext?: () => Promise<CreatorDeploymentBinding | null>;
+}): Promise<CreatorWorkerTick> {
+  const deploymentId = input.deploymentId ?? (input.claimNext === undefined ? null : (await input.claimNext())?.deploymentId ?? null);
+  if (deploymentId === null) return { outcome: "idle" };
+  const run = await input.composition.runOnce(deploymentId);
+  return run;
 }
-void main().catch((error: unknown) => { process.stderr.write(`${error instanceof Error ? error.message : "CREATOR_WORKER_FAILED"}\n`); process.exitCode = 1; });
+
+export async function runCreatorWorkerFromEnvironment(): Promise<CreatorWorkerTick> {
+  if (process.env.CREATOR_WORKER_ENABLED !== "true") throw new CreatorRepositoryError("CREATOR_WORKER_DISABLED", "Creator worker is disabled.");
+  const deploymentId = process.env.CREATOR_DEPLOYMENT_ID;
+  if (deploymentId !== undefined && !uuidPattern.test(deploymentId)) {
+    throw new CreatorRepositoryError("CREATOR_WORKER_CONFIGURATION_INVALID", "Creator worker deployment id is invalid.");
+  }
+  const workspaceParent = process.env.CREATOR_STUDIO_WORKSPACE_ROOT;
+  if (workspaceParent === undefined || !isAbsolute(workspaceParent)) {
+    throw new CreatorRepositoryError("CREATOR_WORKER_CONFIGURATION_INVALID", "Creator worker workspace is invalid.");
+  }
+  // Keep pnpm/Studio scratch files on the configured private workspace
+  // filesystem; host `/tmp` can be quota-limited even when the repo volume has
+  // capacity. The native adapter repeats this boundary for direct callers.
+  const workspaceTempDirectory = nativeStudioWorkspaceTempDirectory(resolve(workspaceParent));
+  process.env.TMPDIR = workspaceTempDirectory;
+  process.env.TMP = workspaceTempDirectory;
+  process.env.TEMP = workspaceTempDirectory;
+
+  const repository: CreatorRepository = creatorRepository();
+  const pool = getCommerceAuthDatabasePool();
+  const composition = createCreatorWorkerComposition({
+    repository,
+    pool,
+    workspaceParent,
+    readiness: studioReadiness(readCreatorStandardsLock()),
+    // creatorAuthorityResolver is T6's registered composition when enabled;
+    // without it, deployment fails closed before an intent is written.
+    authorityResolver: creatorAuthorityResolver(),
+  });
+  return runCreatorWorkerOnce({
+    composition,
+    deploymentId,
+    claimNext: () => repository.claimNextQueuedDeployment(),
+  });
+}
+
+function safeErrorCode(error: unknown): string {
+  if (error instanceof CreatorRepositoryError || error instanceof CreatorAuthorityError || error instanceof CreatorWorkerCompositionError) return error.code;
+  return "CREATOR_WORKER_FAILED";
+}
+
+async function main(): Promise<void> {
+  const result = await runCreatorWorkerFromEnvironment();
+  // Only deployment/stage state is public. Authority descriptors, session
+  // bytes, database errors, and Studio output never cross this boundary.
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+}
+
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  void main().catch((error: unknown) => {
+    process.stderr.write(`${JSON.stringify({ code: safeErrorCode(error) })}\n`);
+    process.exitCode = 1;
+  });
+}

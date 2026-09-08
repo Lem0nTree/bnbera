@@ -181,15 +181,18 @@ function normalizePublicKey(publicKey: string): { readonly raw: Uint8Array; read
   throw new Error("Altana public key is not an uncompressed P-256 key");
 }
 
-function cosePublicKey(publicKey: Hex): Uint8Array {
+function cosePublicKey(publicKey: Hex): Uint8Array<ArrayBuffer> {
   const { flat } = normalizePublicKey(publicKey);
-  return isoCBOR.encode(new Map<number, number | Uint8Array>([
+  const encoded = isoCBOR.encode(new Map<number, number | Uint8Array>([
     [1, 2], // kty: EC2
     [3, -7], // alg: ES256
     [-1, 1], // crv: P-256
     [-2, flat.slice(0, 32)],
     [-3, flat.slice(32, 64)]
   ]));
+  const owned = new Uint8Array(new ArrayBuffer(encoded.byteLength));
+  owned.set(encoded);
+  return owned;
 }
 
 function walletAddressFromUserHandle(userHandle: string | undefined): string {

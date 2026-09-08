@@ -1,7 +1,25 @@
 import type { StudioReadiness } from "./creator-studio";
 import { join } from "node:path";
-import { nativeStudioDeployCommand, nativeStudioStatusCommand, type StudioDeploymentRecord } from "./creator-studio";
+import { nativeStudioDeployCommand, nativeStudioInstallCommand, nativeStudioStatusCommand, type StudioDeploymentRecord } from "./creator-studio";
 import type { CreatorPublicRuntimeConfig } from "./creator-studio";
+
+export type CreatorStudioCommandReasonCode =
+  | "STUDIO_COMMAND_OK"
+  | "STUDIO_COMMAND_FAILED"
+  | "STUDIO_COMMAND_TIMEOUT"
+  | "STUDIO_COMMAND_SIGNAL"
+  | "STUDIO_COMMAND_OUTPUT_OVERFLOW";
+export type CreatorStudioCommandDiagnostic = {
+  readonly code: number | "EACCES" | "ENOENT" | "ETIMEDOUT" | "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" | null;
+  readonly signal: "SIGABRT" | "SIGBUS" | "SIGFPE" | "SIGHUP" | "SIGILL" | "SIGINT" | "SIGKILL" | "SIGPIPE" | "SIGQUIT" | "SIGSEGV" | "SIGTERM" | "SIGTRAP" | "SIGUSR1" | "SIGUSR2" | null;
+  readonly timedOut: boolean;
+  readonly outputOverflow: boolean;
+};
+export type CreatorStudioCommandResult = {
+  readonly exitCode: number;
+  readonly reasonCode: CreatorStudioCommandReasonCode;
+  readonly diagnostic?: CreatorStudioCommandDiagnostic;
+};
 
 /**
  * Bounded, restart-safe progression. Every external operation must first save
@@ -27,7 +45,13 @@ export interface CreatorStudioAdapter {
   /** Copies only the checked-in immutable artifact into its deterministic workspace. */
   materialize(workspaceParent: string, runtimeName: string, config?: CreatorPublicRuntimeConfig, configurationDigest?: string): Promise<"STUDIO_TEMPLATE_READY" | "STUDIO_TEMPLATE_MISMATCH">;
   /** Runs only after runtime integrity/config gates pass. Output is sanitized. */
-  run(command: readonly string[], input: { readonly cwd: string }): Promise<{ readonly exitCode: number; readonly reasonCode: "STUDIO_COMMAND_OK" | "STUDIO_COMMAND_FAILED" | "STUDIO_COMMAND_TIMEOUT" }>;
+  run(command: readonly string[], input: { readonly cwd: string }): Promise<CreatorStudioCommandResult>;
+  /**
+   * Installs the reviewed template dependency graph before deploy intent. This
+   * is optional for deterministic test adapters; the native adapter always
+   * provides it.
+   */
+  install?: (command: readonly string[], input: { readonly cwd: string }) => Promise<CreatorStudioCommandResult>;
   /** Must run the pinned status command and return only its validated public fields. */
   status(command: readonly string[]): Promise<StudioDeploymentRecord | null>;
   /** A status record alone is not proof that the deployed A2A runtime is live. */
@@ -40,6 +64,8 @@ export interface CreatorWorkerStore {
   record(deploymentId: string, input: { readonly stage: CreatorStage; readonly publicId: string | null; readonly endpoint?: string | null; readonly operationId?: string; readonly reasonCode: string }): Promise<void>;
   /** Durable intent event before `bag deploy` is spawned. */
   recordIntent(deploymentId: string, input: { readonly command: readonly string[] }): Promise<"claimed" | "reconcile">;
+  /** Read-only check used to reconcile a provider after a pre-ID crash. */
+  hasDeployIntent?: (deploymentId: string) => Promise<boolean>;
   /** Conditional persistent claim prevents two workers from scaffolding one workspace. */
   recordScaffoldIntent(deploymentId: string): Promise<"claimed" | "reconcile">;
 }
@@ -54,8 +80,8 @@ export type CreatorHandoffOutcome = { readonly status: "confirmed" | "pending" |
 export interface CreatorLifecycleHandoffs {
   registerAndVerify(input: { readonly deploymentId: string; readonly endpoint: string }): Promise<CreatorHandoffOutcome>;
   publishMarketplace(input: { readonly deploymentId: string }): Promise<CreatorHandoffOutcome>;
-  /** Existing G2 verifier must prove a funded job before the created provider is activated. */
-  verifyFundedJob(input: { readonly deploymentId: string; readonly endpoint: string }): Promise<CreatorHandoffOutcome>;
+  /** Existing G2 verifier must prove the funded job is bound to this exact runtime configuration before activation. */
+  verifyFundedJob(input: { readonly deploymentId: string; readonly endpoint: string; readonly configuration: CreatorPublicRuntimeConfig; readonly configurationDigest: string }): Promise<CreatorHandoffOutcome>;
   activateCommerce(input: { readonly deploymentId: string }): Promise<CreatorHandoffOutcome>;
 }
 
@@ -87,11 +113,15 @@ export async function runCreatorStudioStep(input: { readonly deploymentId: strin
   if (current.stage === "studio_scaffold_package") {
     const claim = await input.store.recordScaffoldIntent(input.deploymentId);
     // A prior process may have died after its durable intent. Inspection is
-    // deliberately read-only: a reconciler must never create a workspace.
+    // read-only first; if a crash left a partial workspace, the adapter's
+    // bounded materialize operation validates and fills only missing files.
     if (claim === "reconcile") {
-    const inspected = await input.studio.inspect(current.projectRoot, current.runtimeName, current.publicConfig, current.configurationDigest);
-      await input.store.record(input.deploymentId, { stage: "studio_scaffold_package", publicId: null, reasonCode: inspected });
-      if (inspected !== "STUDIO_TEMPLATE_READY") return null;
+      const inspected = await input.studio.inspect(current.projectRoot, current.runtimeName, current.publicConfig, current.configurationDigest);
+      const reconciled = inspected === "STUDIO_TEMPLATE_READY"
+        ? inspected
+        : await input.studio.materialize(current.projectRoot, current.runtimeName, current.publicConfig, current.configurationDigest);
+      await input.store.record(input.deploymentId, { stage: "studio_scaffold_package", publicId: null, reasonCode: reconciled });
+      if (reconciled !== "STUDIO_TEMPLATE_READY") return null;
       await input.store.record(input.deploymentId, { stage: "deploy_reconcile", publicId: null, reasonCode: "STUDIO_TEMPLATE_RECONCILED" });
       return "deploy_reconcile";
     }
@@ -116,8 +146,8 @@ export async function runCreatorStudioStep(input: { readonly deploymentId: strin
     return "g2_funded_job_reconcile";
   }
   if (current.stage === "g2_funded_job_reconcile") {
-    if (input.handoffs === undefined || current.endpoint === null) return null;
-    const funded = await input.handoffs.verifyFundedJob({ deploymentId: input.deploymentId, endpoint: current.endpoint });
+    if (input.handoffs === undefined || current.endpoint === null || current.publicConfig === undefined || current.configurationDigest === undefined) return null;
+    const funded = await input.handoffs.verifyFundedJob({ deploymentId: input.deploymentId, endpoint: current.endpoint, configuration: current.publicConfig, configurationDigest: current.configurationDigest });
     if (!isConfirmed(funded)) { await input.store.record(input.deploymentId, { stage: current.stage, publicId: current.publicId, endpoint: current.endpoint, operationId: funded.operationId, reasonCode: "G2_FUNDED_JOB_RECONCILIATION_PENDING" }); return null; }
     await input.store.record(input.deploymentId, { stage: "g2_activation_reconcile", publicId: current.publicId, endpoint: current.endpoint, operationId: funded.operationId, reasonCode: "G2_FUNDED_JOB_CONFIRMED" });
     return "g2_activation_reconcile";
@@ -141,6 +171,18 @@ export async function runCreatorStudioStep(input: { readonly deploymentId: strin
     return "erc8004_register_reconcile";
   }
   const projectRoot = join(current.projectRoot, current.runtimeName);
+  const reconcileProviderStatus = async (): Promise<void> => {
+    const recorded = await input.studio.status(nativeStudioStatusCommand(projectRoot));
+    await input.store.record(input.deploymentId, { stage: "deploy_reconcile", publicId: recorded?.deploymentId ?? null, endpoint: recorded?.endpoint ?? null, reasonCode: recorded === null ? "STUDIO_DEPLOYMENT_UNKNOWN" : "STUDIO_DEPLOYMENT_RECORDED" });
+  };
+  const reconcilePendingDeploy = async (): Promise<boolean> => {
+    if (input.store.hasDeployIntent === undefined || !await input.store.hasDeployIntent(input.deploymentId)) return false;
+    // Studio may update studio.toml before the provider ID is persisted. Once
+    // an intent exists, provider status—not the local artifact—owns recovery.
+    await reconcileProviderStatus();
+    return true;
+  };
+  if (await reconcilePendingDeploy()) return null;
   // Close the scaffold-to-deploy gap: the exact public configuration and
   // immutable artifact must still match immediately before the external
   // deployment intent is recorded.
@@ -151,6 +193,7 @@ export async function runCreatorStudioStep(input: { readonly deploymentId: strin
     current.configurationDigest,
   );
   if (inspected !== "STUDIO_TEMPLATE_READY") {
+    if (await reconcilePendingDeploy()) return null;
     await input.store.record(input.deploymentId, {
       stage: "deploy_reconcile",
       publicId: null,
@@ -159,17 +202,62 @@ export async function runCreatorStudioStep(input: { readonly deploymentId: strin
     });
     return null;
   }
+  // Dependency installation is local preparation, not a provider write. It
+  // deliberately happens before the durable deploy intent and the final
+  // authority recheck. If the process is interrupted, the next tick sees no
+  // deploy intent, tolerates pnpm's generated node_modules links, and retries
+  // this frozen install before any external deploy can be claimed.
+  if (input.studio.install !== undefined) {
+    let installed: CreatorStudioCommandResult;
+    try {
+      installed = await input.studio.install(nativeStudioInstallCommand(projectRoot), { cwd: projectRoot });
+    } catch {
+      installed = { exitCode: 1, reasonCode: "STUDIO_COMMAND_FAILED" };
+    }
+    if (installed.exitCode !== 0) {
+      await input.store.record(input.deploymentId, {
+        stage: "deploy_reconcile",
+        publicId: null,
+        endpoint: null,
+        reasonCode: installed.reasonCode === "STUDIO_COMMAND_TIMEOUT"
+          ? "STUDIO_DEPENDENCY_INSTALL_TIMEOUT"
+          : installed.reasonCode === "STUDIO_COMMAND_OUTPUT_OVERFLOW"
+            ? "STUDIO_DEPENDENCY_INSTALL_OUTPUT_OVERFLOW"
+            : installed.reasonCode === "STUDIO_COMMAND_SIGNAL"
+              ? "STUDIO_DEPENDENCY_INSTALL_SIGNAL"
+              : "STUDIO_DEPENDENCY_INSTALL_FAILED",
+      });
+      return null;
+    }
+    // Frozen install must not alter the reviewed source/configuration. The
+    // second read also validates pnpm's generated dependency links.
+    const afterInstall = await input.studio.inspect(
+      current.projectRoot,
+      current.runtimeName,
+      current.publicConfig,
+      current.configurationDigest,
+    );
+    if (afterInstall !== "STUDIO_TEMPLATE_READY") {
+      await input.store.record(input.deploymentId, {
+        stage: "deploy_reconcile",
+        publicId: null,
+        endpoint: null,
+        reasonCode: afterInstall,
+      });
+      return null;
+    }
+  }
   const command = nativeStudioDeployCommand(projectRoot);
   const claim = await input.store.recordIntent(input.deploymentId, { command });
   // A previous process persisted an intent but died before recording an ID.
   // Status is authoritative; never send a second deploy in that case.
   if (claim === "reconcile") {
-    const recorded = await input.studio.status(nativeStudioStatusCommand(projectRoot));
-    await input.store.record(input.deploymentId, { stage: "deploy_reconcile", publicId: recorded?.deploymentId ?? null, endpoint: recorded?.endpoint ?? null, reasonCode: recorded === null ? "STUDIO_DEPLOYMENT_UNKNOWN" : "STUDIO_DEPLOYMENT_RECORDED" });
+    if (!await reconcilePendingDeploy()) await reconcileProviderStatus();
     return null;
   }
   // T6 may have revoked or expired between queueing and this external write.
-  // Recheck at the final possible point; no deploy is sent if it fails.
+  // Recheck immediately before the Studio process is spawned; no deploy is
+  // sent if the authority composition is absent or no longer valid.
   await input.recheckAuthority();
   const result = await input.studio.run(command, { cwd: projectRoot });
   // `deploy` has no stable JSON output. The documented status JSON is the

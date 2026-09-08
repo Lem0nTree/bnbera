@@ -24,6 +24,7 @@ const CREATOR_PANCAKESWAP_ROUTER = "0xd99d1c33f9fc3444f8101754abc46c52416550d1" 
 const CREATOR_PANCAKESWAP_SWAP_SELECTOR = "0x7ff36ab5" as const;
 const CREATOR_ERC8183_COMMERCE = "0xa206c0517b6371c6638cd9e4a42cc9f02a33b0de" as const;
 const CREATOR_ERC8183_SUBMIT_SELECTOR = "0x9e63798d" as const;
+const CREATOR_RUNTIME_TEMPLATE_ID = "pancakeswap-one-shot@1.1.0" as const;
 
 const creatorTemplateSource = {
   slug: "pancakeswap-one-shot-swap",
@@ -34,7 +35,7 @@ const creatorTemplateSource = {
   sourceCommit: "creator-bounded-customization-v1.1.0",
   displayMetadata: {
     title: "Bounded one-shot PancakeSwap native swap agent",
-    description: "A reviewed BSC-testnet PancakeSwap V2 template that performs one bounded swap; it is not a grid or rebalancing strategy."
+    description: "A reviewed BSC-testnet PancakeSwap V2 template that performs one bounded asset-allocation rebalance; it is not a grid or yield strategy."
   },
   configurationSchema: {
     type: "object",
@@ -199,17 +200,38 @@ export function canonicalDraftConfiguration(input: CreatorDraftRequest): Record<
   };
 }
 
+export const creatorRuntimeConfigurationSchema = z.object({
+  protocol: z.literal("pancakeswap-v2"),
+  tradingPair: z.enum(["tbnb-cake", "tbnb-busd"]),
+  inputAmountWei: z.enum(["100000000000000", "500000000000000", "1000000000000000"]),
+  slippageBps: z.union([z.literal(10), z.literal(25), z.literal(50)]),
+  quoteMaxAgeSeconds: z.union([z.literal(30), z.literal(60)]),
+  deadlineSeconds: z.union([z.literal(60), z.literal(120)])
+}).strict();
+export type CreatorRuntimeConfiguration = z.infer<typeof creatorRuntimeConfigurationSchema>;
+
+export function canonicalRuntimeConfiguration(configuration: Record<string, unknown>): CreatorRuntimeConfiguration {
+  return creatorRuntimeConfigurationSchema.parse(configuration);
+}
+
 /** Stable six-field public-runtime digest; it contains no name, user, or secret. */
 export function canonicalRuntimeConfigurationDigest(configuration: Record<string, unknown>): string {
-  const value = {
-    protocol: configuration.protocol,
-    tradingPair: configuration.tradingPair,
-    inputAmountWei: configuration.inputAmountWei,
-    slippageBps: configuration.slippageBps,
-    quoteMaxAgeSeconds: configuration.quoteMaxAgeSeconds,
-    deadlineSeconds: configuration.deadlineSeconds,
-  };
+  const value = canonicalRuntimeConfiguration(configuration);
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+/** Canonical ERC-8183 task binding consumed by the fixed template runtime. */
+export function creatorPaidJobDescription(configuration: Record<string, unknown>, digest = canonicalRuntimeConfigurationDigest(configuration)): string {
+  const value = canonicalRuntimeConfiguration(configuration);
+  const expectedDigest = canonicalRuntimeConfigurationDigest(value);
+  if (digest !== expectedDigest) throw new Error("CREATOR_RUNTIME_CONFIG_DIGEST_MISMATCH");
+  return JSON.stringify({
+    action: "execute_paid_swap",
+    configurationDigest: digest,
+    inputAmountWei: value.inputAmountWei,
+    template: CREATOR_RUNTIME_TEMPLATE_ID,
+    tradingPair: value.tradingPair,
+  });
 }
 
 /** Matches T6 `authorityPolicyDigest(serializePolicy(policy))`: Keccak, not SHA-256. */
