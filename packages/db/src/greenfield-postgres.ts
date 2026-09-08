@@ -768,6 +768,21 @@ export class GreenfieldPostgresAdapter {
       const existing = existingResult.rows[0] === undefined ? null : locatorRow(existingResult.rows[0]);
       if (existing === null) throw new GreenfieldPostgresError("DURABLE_GRAPH_INVALID", "Locator disappeared after conflict");
       compareLocator(existing, row);
+      // A locator is inserted before readback verification is known. Once the
+      // same immutable locator is observed with a verified timestamp, promote
+      // only that state. The null predicate makes concurrent/replayed calls
+      // unable to replace an already recorded verification time.
+      if (existing.verified_at === null && row.verified_at !== null) {
+        await this.execute(
+          `UPDATE evidence_locators
+              SET verified_at = $4
+            WHERE id = $1
+              AND provider = $2
+              AND uri = $3
+              AND verified_at IS NULL`,
+          [existing.id, row.provider, row.uri, row.verified_at]
+        );
+      }
     },
     listForObject: async (evidenceObjectId: string): Promise<readonly GreenfieldLocatorRow[]> => {
       const result = await this.execute(
