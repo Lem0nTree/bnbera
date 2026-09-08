@@ -12,6 +12,17 @@ tBNB input, 10/25/50 bps slippage, 30/60 second quote freshness, and 60/120
 second deadline. Runtime receives only the persisted public configuration
 through the generated, digest-bound `app/agent/src/bnbera-public-config.ts` module, which is bundled into
 the runtime; it rejects arbitrary token,
-router, recipient, and calldata values. The plan endpoint remains plan-only
-until the T6 Studio session mismatch is resolved and does not claim a quote,
-funding, or execution.
+router, recipient, and calldata values. The runtime exposes one exact request
+shape, `{ "action": "execute_swap", "jobId": "<decimal>" }`. It requires the
+Studio-managed `ALTANA_SESSION`, confirms the ERC-8183 job is funded for the
+pinned provider/budget/payment asset, and requires the job description to be
+the exact compact binding
+`{"action":"execute_paid_swap","template":"pancakeswap-one-shot@1.1.0","configurationDigest":"<digest>","tradingPair":"<pair>","inputAmountWei":"<wei>"}`.
+It reads `getAmountsOut` at a fresh block, derives the fixed swap calldata, and
+sends one Altana SDK 0.9.0 batch containing both the swap and the canonical
+ERC-8183 result transition atomically. The result manifest is served as the
+same `data:application/json;base64,...` URL whose bytes produce the on-chain
+deliverable hash. Accepted-but-unconfirmed relay outcomes are returned as
+`unknown` and are never retried; a chain reread is the idempotency boundary.
+The session JSON and signer never appear in logs, responses, or persisted
+application data.
