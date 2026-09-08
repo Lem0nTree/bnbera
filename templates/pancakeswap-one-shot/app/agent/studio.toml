@@ -16,6 +16,7 @@ platform_artifact = "zip"
 kind = "altana"
 # Set address to the confirmed user-controlled smart wallet when preparing a
 # per-creator workspace. Never use a placeholder identity or include secrets.
+keystore_dir = "../../.studio/wallets"
 session_file = "../../.studio/wallets/altana-session.json"
 
 [payments.erc8183]
