@@ -20,7 +20,7 @@ const routerAbi = [{ type: "function", name: "swapExactETHForTokens", stateMutab
 /** Application checks bind dynamic arguments; Altana enforces target/selector/spend onchain. */
 export function buildBoundedPancakeSwap(input: { readonly policy: ScopedPolicy; readonly wallet: Address; readonly quotedOut: bigint; readonly quotedAtUnix: number; readonly quoteBlock: bigint; readonly nowUnix: number; readonly deadlineUnix: number }): { readonly request: ActionRequest; readonly calldata: `0x${string}`; readonly minOut: bigint } {
   const profile = pancakeSwapProfile(input.policy.chainId);
-  if (input.policy.chainId === 56 || profile.releaseEnabled === false && input.policy.chainId === 56) throw new AltanaBoundaryError("CALL_NOT_ALLOWED", "Mainnet swap execution is release-disabled.");
+  if (input.policy.chainId === 56) throw new AltanaBoundaryError("CALL_NOT_ALLOWED", "Mainnet swap execution is release-disabled.");
   if (input.wallet.toLowerCase() !== input.policy.walletAddress.toLowerCase() || input.quoteBlock < 0n || input.quotedAtUnix > input.nowUnix || input.nowUnix - input.quotedAtUnix > 60 || input.quotedOut <= 0n || input.deadlineUnix <= input.nowUnix || input.deadlineUnix - input.nowUnix > 120) throw new AltanaBoundaryError("CALL_NOT_ALLOWED", "Swap quote or deadline is invalid.");
   const allowed = input.policy.calls.some(c => c.target.toLowerCase() === profile.router.toLowerCase() && c.selectors.map(String).includes(profile.selector) && c.maxNativeValueWei === profile.exactValueWei);
   if (!allowed) throw new AltanaBoundaryError("CALL_NOT_ALLOWED", "Authority does not allow the pinned PancakeSwap swap selector.");
