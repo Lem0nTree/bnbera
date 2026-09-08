@@ -7,6 +7,8 @@ import {
 } from "@bnbera/marketplace";
 import { normalizePersistedMarketplaceMetrics } from "./marketplace-server";
 import {
+  emptyPublicEvidenceArtifact,
+  marketplaceEvidenceReadArtifactSchema,
   mapMarketplaceSearchResponse,
   marketplaceSearchResponseSchema,
   parseMarketplaceSearchParams,
@@ -25,6 +27,65 @@ afterEach(() => {
 });
 
 describe("marketplace web adapter", () => {
+  it("normalizes only credential-free HTTPS Greenfield links and keeps bad evidence isolated", () => {
+    const valid = {
+      artifactType: "agent_profile" as const,
+      artifactId: "profile-2206",
+      version: 1,
+      status: "verified" as const,
+      summary: "Verified profile",
+      provider: "greenfield" as const,
+      readUrl: "https://greenfield.example/profile.json",
+      locator: "greenfield://public/profile.json",
+      sha256Digest: "a".repeat(64),
+      keccak256Digest: "b".repeat(64),
+      sizeBytes: 128,
+      sealTransactionHash: `0x${"c".repeat(64)}`,
+      verifiedAt: "2026-09-08T00:00:00.000Z",
+      reason: null
+    };
+    expect(marketplaceEvidenceReadArtifactSchema.parse(valid)).toMatchObject({
+      status: "verified",
+      readUrl: valid.readUrl,
+      locator: valid.locator
+    });
+    expect(marketplaceEvidenceReadArtifactSchema.parse({
+      ...valid,
+      readUrl: "http://greenfield.example/profile.json"
+    })).toMatchObject({ status: "unavailable", readUrl: null, locator: null });
+    expect(marketplaceEvidenceReadArtifactSchema.parse({
+      ...valid,
+      locator: "javascript:alert(1)"
+    })).toMatchObject({ status: "unavailable", readUrl: null, locator: null });
+    expect(marketplaceEvidenceReadArtifactSchema.parse({
+      ...valid,
+      status: "pending",
+      provider: null,
+      readUrl: null,
+      locator: null,
+      sha256Digest: null,
+      keccak256Digest: null,
+      sizeBytes: null,
+      sealTransactionHash: null,
+      verifiedAt: null,
+      reason: "GREENFIELD_VERIFICATION_PENDING"
+    })).toMatchObject({ status: "pending", readUrl: null, locator: null });
+    expect(marketplaceEvidenceReadArtifactSchema.parse({
+      ...valid,
+      status: "failed",
+      provider: null,
+      readUrl: null,
+      locator: null,
+      sha256Digest: null,
+      keccak256Digest: null,
+      sizeBytes: null,
+      sealTransactionHash: null,
+      verifiedAt: null,
+      reason: "GREENFIELD_PUBLICATION_FAILED"
+    })).toMatchObject({ status: "failed", readUrl: null, locator: null });
+    expect(emptyPublicEvidenceArtifact("run_bundle", "RUN_BUNDLE_UNAVAILABLE")).toMatchObject({ status: "unavailable", locator: null });
+  });
+
   it("only exposes fresh, validated persisted feedback metrics", () => {
     const stale = normalizePersistedMarketplaceMetrics([{
       provider: "erc8004-reputation",

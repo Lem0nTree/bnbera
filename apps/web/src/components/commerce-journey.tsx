@@ -31,6 +31,8 @@ type JourneyProps = {
   readonly identityKey: string;
   /** A server-created parent quote/reservation. Never generated client-side. */
   readonly commerceJobId?: string | null;
+  /** Detail-read evidence, bound to the same persisted commerce job. */
+  readonly runBundle?: MarketplaceAgentReadModel["evidence"]["runBundle"] | undefined;
 };
 
 const POLL_INTERVAL_MS = 4_000;
@@ -83,6 +85,17 @@ function operationStatusTone(status: string): "success" | "warning" | "danger" |
   return "neutral";
 }
 
+function safeVerifiedEvidenceLink(value: string | null): string | null {
+  if (value === null) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "https:" || parsed.username !== "" || parsed.password !== "" || parsed.hostname === "") return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
 export function CommerceJourney(props: JourneyProps) {
   return (
     <EoaWalletProvider>
@@ -91,7 +104,7 @@ export function CommerceJourney(props: JourneyProps) {
   );
 }
 
-function CommerceJourneyInner({ activation, identityKey, commerceJobId = null }: JourneyProps) {
+function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, runBundle = undefined }: JourneyProps) {
   const storageKey = useMemo(() => publicStorageKey(identityKey), [identityKey]);
   const quoteKey = useMemo(() => quoteStorageKey(identityKey), [identityKey]);
   const [authority, setAuthority] = useState<BrowserAuthority | null>(null);
@@ -569,6 +582,9 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null }:
   const submission = job?.submission ?? null;
   const submitted = job !== null && job.job.state === "submitted" && submission !== null;
   const refundable = job !== null && (job.job.state === "funded" || job.job.state === "submitted") && job.job.terms.expiresAtUnix <= Math.floor(Date.now() / 1_000);
+  const currentRunBundle = completed && commerceJobId !== null && runBundle?.jobId === commerceJobId
+    ? runBundle
+    : null;
 
   return (
     <div className="commerce-journey" data-testid="commerce-journey">
@@ -632,7 +648,7 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null }:
         <div className="detail-kv"><span>On-chain Keccak</span><code>{submission.chainKeccak}</code></div>
         <div className="detail-kv"><span>Submission receipt</span><code>{submission.transactionHash}</code></div>
         {job?.job.completionTransactionHash !== null && job?.job.completionTransactionHash !== undefined && <div className="detail-kv"><span>Settlement receipt</span><code>{job.job.completionTransactionHash}</code></div>}
-        {submission.deliverableUrl !== null && <div className="detail-kv"><span>Deliverable</span><a href={submission.deliverableUrl} target="_blank" rel="noreferrer">Open exact manifest bytes</a></div>}
+        {currentRunBundle !== null && <div className="detail-kv"><span>Greenfield run_bundle</span><span><StatusBadge value={statusLabel(currentRunBundle.status)} tone={currentRunBundle.status === "verified" ? "success" : currentRunBundle.status === "failed" ? "danger" : currentRunBundle.status === "pending" ? "warning" : "neutral"} />{currentRunBundle.status === "verified" && safeVerifiedEvidenceLink(currentRunBundle.readUrl) !== null ? <a href={safeVerifiedEvidenceLink(currentRunBundle.readUrl) ?? undefined} target="_blank" rel="noreferrer">Open verified JSON</a> : currentRunBundle.reason ?? "No verified Greenfield publication is available."}</span></div>}
         {submission.manifestText !== null && <pre className="commerce-journey__manifest">{submission.manifestText}</pre>}
       </div>}
       {submitted && <div className="commerce-journey__decision">

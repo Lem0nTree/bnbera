@@ -18,6 +18,10 @@ import {
   type Erc8004Identity,
   type MarketplaceEligibilityResult
 } from "@bnbera/domain";
+import {
+  marketplaceEvidenceProjectionSchema,
+  unavailableMarketplaceEvidence
+} from "./evidence.js";
 
 const isoDateSchema = z.string().datetime({ offset: true });
 const digestSchema = z.string().regex(/^[0-9a-fA-F]{64}$/u, "Expected a 32-byte hexadecimal digest");
@@ -574,6 +578,8 @@ export const marketplaceListingMetadataSchema = z.object({
   authority: marketplaceAuthoritySchema,
   executionEvidence: marketplaceExecutionEvidenceSchema,
   activationOffer: marketplaceActivationOfferSchema,
+  /** Optional verified Greenfield links for the public profile/result views. */
+  evidence: marketplaceEvidenceProjectionSchema.optional(),
   /** Optional at input boundaries; parseMarketplaceMetadata fills an explicit
    * unavailable projection when no enrichment observation exists. */
   metrics: marketplaceMetricsSchema.optional(),
@@ -608,6 +614,8 @@ export const marketplaceListingInputSchema = z.object({
   authority: marketplaceAuthoritySchema,
   executionEvidence: marketplaceExecutionEvidenceSchema,
   activationOffer: marketplaceActivationOfferSchema,
+  /** Optional verified Greenfield links for the public profile/result views. */
+  evidence: marketplaceEvidenceProjectionSchema.optional(),
   /** Service probes and enrichment are separate from the advertised contract. */
   metrics: marketplaceMetricsSchema.optional(),
   serviceEvidence: z.array(marketplaceServiceEvidenceSchema).max(128).optional(),
@@ -754,7 +762,8 @@ export function parseMarketplaceListing(input: unknown): MarketplaceListingInput
   return {
     ...listing,
     metrics: listing.metrics ?? unknownMarketplaceMetrics(),
-    serviceEvidence: listing.serviceEvidence ?? []
+    serviceEvidence: listing.serviceEvidence ?? [],
+    evidence: listing.evidence ?? unavailableMarketplaceEvidence()
   };
 }
 
@@ -762,7 +771,8 @@ export function parseMarketplaceMetadata(input: unknown): MarketplaceListingMeta
   const metadata = marketplaceListingMetadataSchema.parse(input);
   return {
     ...metadata,
-    metrics: metadata.metrics ?? unknownMarketplaceMetrics()
+    metrics: metadata.metrics ?? unknownMarketplaceMetrics(),
+    evidence: metadata.evidence ?? unavailableMarketplaceEvidence()
   };
 }
 
@@ -796,3 +806,5 @@ export type {
   Erc8004Identity,
   MarketplaceEligibilityResult
 };
+
+export type { MarketplaceEvidenceProjection } from "./evidence.js";

@@ -41,6 +41,10 @@ import {
   marketplaceSearchRequestSchema,
   marketplaceListingMetadataSchema,
   marketplaceMetricsSchema,
+  projectEvidenceProjection,
+  unavailableMarketplaceEvidence,
+  type MarketplaceEvidenceGraphInput,
+  type MarketplaceEvidenceProjection,
   type MarketplaceListingMetadata,
   type MarketplaceSearchRequest
 } from "@bnbera/marketplace";
@@ -63,6 +67,29 @@ import {
 import { z } from "zod";
 
 type DatabasePool = pg.Pool;
+
+const optionalEvidenceQueryTimeoutMs = 750;
+
+async function boundedEvidenceQuery<T extends pg.QueryResultRow>(pool: DatabasePool, text: string, values: readonly unknown[]): Promise<pg.QueryResult<T>> {
+  // pg's installed type definitions predate query_timeout even though the
+  // client accepts it. Keep the runtime timeout explicit and bound the await
+  // as well, so an optional evidence outage cannot hold the listing read.
+  const queryConfig = {
+    text,
+    values: [...values],
+    query_timeout: optionalEvidenceQueryTimeoutMs
+  } as unknown as pg.QueryConfig;
+  const query = pool.query<T>(queryConfig);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error("Optional evidence query timed out")), optionalEvidenceQueryTimeoutMs);
+  });
+  try {
+    return await Promise.race([query, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 type PoolCache = {
   readonly key: string;
@@ -106,6 +133,45 @@ type MarketplaceMetadataRow = {
   readonly enrichment_observations: unknown;
 };
 
+type MarketplaceEvidenceRow = {
+  readonly artifact_type: string;
+  readonly artifact_id: string | null;
+  readonly commerce_job_id: string | null;
+  readonly version: number | string | null;
+  readonly object_state: string | null;
+  readonly object_sha256_digest: string | null;
+  readonly object_keccak256_digest: string | null;
+  readonly object_size_bytes: number | string | null;
+  readonly object_seal_transaction_hash: string | null;
+  readonly object_readback_verified_at: Date | string | null;
+  readonly locator_provider: string | null;
+  readonly locator_uri: string | null;
+  readonly locator_bucket: string | null;
+  readonly locator_object_name: string | null;
+  readonly locator_provider_reference: string | null;
+  readonly locator_version: number | string | null;
+  readonly locator_sha256_digest: string | null;
+  readonly locator_keccak256_digest: string | null;
+  readonly locator_size_bytes: number | string | null;
+  readonly locator_immutable: boolean | null;
+  readonly locator_verified_at: Date | string | null;
+  readonly locator_publication_attempt_id: string | null;
+  readonly verification_status: string | null;
+  readonly seal_confirmed: boolean | null;
+  readonly readback_status: string | null;
+  readonly expected_sha256_digest: string | null;
+  readonly observed_sha256_digest: string | null;
+  readonly expected_keccak256_digest: string | null;
+  readonly observed_keccak256_digest: string | null;
+  readonly expected_size_bytes: number | string | null;
+  readonly observed_size_bytes: number | string | null;
+  readonly hashes_match: boolean | null;
+  readonly size_matches: boolean | null;
+  readonly reason_code: string | null;
+  readonly checked_at: Date | string | null;
+  readonly verification_publication_attempt_id: string | null;
+};
+
 /**
  * The marketplace metadata projection is versioned separately from the
  * identity/service ingestion ports. The projection query deliberately reads
@@ -114,6 +180,177 @@ type MarketplaceMetadataRow = {
  */
 export class PostgresMarketplaceMetadataSource {
   public constructor(private readonly pool: DatabasePool) {}
+
+  private greenfieldReadUrlOrigins(): readonly string[] {
+    return (process.env.GREENFIELD_READ_URL_ALLOWLIST ?? process.env.GREENFIELD_PUBLIC_READ_URL_ALLOWLIST ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
+  }
+
+  private async evidenceForVersion(agentId: string, versionId: string): Promise<MarketplaceEvidenceProjection> {
+    const result = await boundedEvidenceQuery<MarketplaceEvidenceRow>(this.pool, `
+      SELECT
+        eo.object_type AS artifact_type,
+        eo.artifact_id,
+        result.commerce_job_id,
+        eo.version,
+        eo.state AS object_state,
+        eo.sha256_digest AS object_sha256_digest,
+        eo.keccak256_digest AS object_keccak256_digest,
+        eo.size_bytes AS object_size_bytes,
+        eo.seal_transaction_hash AS object_seal_transaction_hash,
+        eo.readback_verified_at AS object_readback_verified_at,
+        locator.provider AS locator_provider,
+        locator.uri AS locator_uri,
+        locator.bucket AS locator_bucket,
+        locator.object_name AS locator_object_name,
+        locator.provider_reference AS locator_provider_reference,
+        locator.version AS locator_version,
+        locator.sha256_digest AS locator_sha256_digest,
+        locator.keccak256_digest AS locator_keccak256_digest,
+        locator.size_bytes AS locator_size_bytes,
+        locator.immutable AS locator_immutable,
+        locator.verified_at AS locator_verified_at,
+        locator.publication_attempt_id AS locator_publication_attempt_id,
+        verification.status AS verification_status,
+        verification.seal_confirmed,
+        verification.readback_status,
+        verification.expected_sha256_digest,
+        verification.observed_sha256_digest,
+        verification.expected_keccak256_digest,
+        verification.observed_keccak256_digest,
+        verification.expected_size_bytes,
+        verification.observed_size_bytes,
+        verification.hashes_match,
+        verification.size_matches,
+        verification.reason_code,
+        verification.checked_at,
+        verification.publication_attempt_id AS verification_publication_attempt_id
+      FROM evidence_objects eo
+      LEFT JOIN LATERAL (
+        SELECT l.provider, l.uri, l.bucket, l.object_name, l.provider_reference,
+          l.version, l.sha256_digest, l.keccak256_digest, l.size_bytes,
+          l.immutable, l.verified_at, l.publication_attempt_id
+        FROM evidence_locators l
+        WHERE l.evidence_object_id = eo.id
+        ORDER BY l.verified_at DESC NULLS LAST, l."createdAt" DESC, l.id DESC
+        LIMIT 1
+      ) locator ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT v.status, v.seal_confirmed, v.readback_status,
+          v.expected_sha256_digest, v.observed_sha256_digest,
+          v.expected_keccak256_digest, v.observed_keccak256_digest,
+          v.expected_size_bytes, v.observed_size_bytes, v.hashes_match,
+          v.size_matches, v.reason_code, v.checked_at, v.publication_attempt_id
+        FROM evidence_verification_results v
+        WHERE v.evidence_object_id = eo.id
+        ORDER BY v.checked_at DESC, v."createdAt" DESC, v.id DESC
+        LIMIT 1
+      ) verification ON TRUE
+      LEFT JOIN agent_runs run ON run.id = eo.run_id
+      LEFT JOIN commerce_job_results result
+        ON result.commerce_job_id = run.job_id
+       AND result.state = 'settled'
+       AND result.agent_version_id = $2
+      WHERE eo.agent_id = $1
+        AND (
+          (eo.object_type = 'agent_profile' AND eo.resource_id = $2)
+          OR (
+            eo.object_type = 'run_bundle'
+            AND run.agent_id = $1
+            AND run.job_id IS NOT NULL
+            AND result.id IS NOT NULL
+          )
+        )
+      ORDER BY eo.object_type, eo.version DESC, eo."updatedAt" DESC, eo.id DESC
+    `, [agentId, versionId]);
+    const graphInputs: MarketplaceEvidenceGraphInput[] = result.rows.map((row) => ({
+      artifactType: row.artifact_type,
+      artifactId: row.artifact_id,
+      jobId: row.commerce_job_id,
+      version: row.version,
+      objectState: row.object_state,
+      objectSha256Digest: row.object_sha256_digest,
+      objectKeccak256Digest: row.object_keccak256_digest,
+      objectSizeBytes: row.object_size_bytes,
+      objectSealTransactionHash: row.object_seal_transaction_hash,
+      objectReadbackVerifiedAt: row.object_readback_verified_at,
+      locator: row.locator_provider === null && row.locator_uri === null
+        ? null
+        : {
+            provider: row.locator_provider,
+            uri: row.locator_uri,
+            bucket: row.locator_bucket,
+            objectName: row.locator_object_name,
+            providerReference: row.locator_provider_reference,
+            version: row.locator_version,
+            sha256Digest: row.locator_sha256_digest,
+            keccak256Digest: row.locator_keccak256_digest,
+            sizeBytes: row.locator_size_bytes,
+            immutable: row.locator_immutable,
+            verifiedAt: row.locator_verified_at,
+            publicationAttemptId: row.locator_publication_attempt_id
+          },
+      verification: row.verification_status === null
+        ? null
+        : {
+            status: row.verification_status,
+            sealConfirmed: row.seal_confirmed,
+            readbackStatus: row.readback_status,
+            expectedSha256Digest: row.expected_sha256_digest,
+            observedSha256Digest: row.observed_sha256_digest,
+            expectedKeccak256Digest: row.expected_keccak256_digest,
+            observedKeccak256Digest: row.observed_keccak256_digest,
+            expectedSizeBytes: row.expected_size_bytes,
+            observedSizeBytes: row.observed_size_bytes,
+            hashesMatch: row.hashes_match,
+            sizeMatches: row.size_matches,
+            reasonCode: row.reason_code,
+            checkedAt: row.checked_at,
+            publicationAttemptId: row.verification_publication_attempt_id
+          }
+    }));
+    const readUrlBase = process.env.GREENFIELD_READ_URL_BASE ?? process.env.GREENFIELD_PUBLIC_READ_URL_BASE;
+    return projectEvidenceProjection(graphInputs, {
+      allowedReadUrlOrigins: this.greenfieldReadUrlOrigins(),
+      ...(readUrlBase === undefined ? {} : { readUrlBase })
+    });
+  }
+
+  /**
+   * Evidence is read only for an opened detail record. Keep the complete
+   * ERC-8004 identity tuple in this lookup so a reused slug or agent id cannot
+   * attach a publication from another namespace/registry/chain.
+   */
+  public async readEvidenceForIdentity(identity: Erc8004Identity): Promise<MarketplaceEvidenceProjection> {
+    const current = await boundedEvidenceQuery<{
+      readonly internal_agent_id: string;
+      readonly version_id: string | null;
+    }>(this.pool, `
+      SELECT
+        a.id AS internal_agent_id,
+        current_version.id AS version_id
+      FROM agents a
+      JOIN erc8004_identities i ON i.id = a.identity_id
+      LEFT JOIN LATERAL (
+        SELECT av.id
+        FROM agent_versions av
+        WHERE av.agent_id = a.id
+          AND (a.current_version_id IS NULL OR av.id = a.current_version_id)
+        ORDER BY av.version DESC, av."createdAt" DESC, av.id DESC
+        LIMIT 1
+      ) current_version ON TRUE
+      WHERE i.namespace = $1
+        AND i.chain_id = $2
+        AND i.identity_registry = $3
+        AND i.agent_id = $4
+      LIMIT 1
+    `, [identity.namespace, identity.chainId, identity.identityRegistry, identity.agentId]);
+    const row = current.rows[0];
+    if (row === undefined || row.version_id === null) return unavailableMarketplaceEvidence();
+    return this.evidenceForVersion(row.internal_agent_id, row.version_id);
+  }
 
   public async listMetadata(): Promise<readonly MarketplaceListingMetadata[]> {
     const result = await this.pool.query<MarketplaceMetadataRow>(`
@@ -192,7 +429,7 @@ export class PostgresMarketplaceMetadataSource {
       const uniqueSlug = slugs.has(mapped.slug)
         ? collisionSafeSlug(mapped.slug, mapped.identityKey)
         : mapped.slug;
-      const uniqueMetadata = uniqueSlug === mapped.slug
+      let uniqueMetadata = uniqueSlug === mapped.slug
         ? mapped
         : marketplaceListingMetadataSchema.parse({ ...mapped, slug: uniqueSlug });
       slugs.add(uniqueMetadata.slug);
@@ -803,7 +1040,12 @@ function identityKeyForVersionId(pool: DatabasePool) {
   };
 }
 
-async function createLiveReadService(): Promise<MarketplaceReadService> {
+type LiveReadContext = {
+  readonly service: MarketplaceReadService;
+  readonly metadataSource: PostgresMarketplaceMetadataSource;
+};
+
+async function createLiveReadService(): Promise<LiveReadContext> {
   let runtime;
   try {
     runtime = loadRuntimeConfig(process.env);
@@ -861,7 +1103,7 @@ async function createLiveReadService(): Promise<MarketplaceReadService> {
   });
   // The process-wide pool is intentionally retained for reuse. Tests can use
   // closeMarketplaceDatabaseForTests when they own the process lifecycle.
-  return service;
+  return { service, metadataSource };
 }
 
 function emptyDetailResponse(
@@ -908,7 +1150,7 @@ export async function readMarketplaceApi(input: Partial<MarketplaceSearchInput> 
   const mode = configuredMarketplaceDataMode();
   if (mode !== "live") return readLocalMarketplaceApi(parsedInput);
   try {
-    const service = await createLiveReadService();
+    const { service } = await createLiveReadService();
     const result = await service.safeSearch(coreSearchInput(parsedInput));
     if (!result.ok) {
       return marketplaceSearchErrorResponse(parsedInput, result.error, "The PostgreSQL marketplace source could not be read safely.");
@@ -933,7 +1175,7 @@ export async function readMarketplaceAgentApi(
   const mode = configuredMarketplaceDataMode();
   if (mode !== "live") return readLocalMarketplaceAgentApi(slug, input);
   try {
-    const service = await createLiveReadService();
+    const { service, metadataSource } = await createLiveReadService();
     const result = await service.readAgent(normalizedSlug);
     const effectiveMode = result.meta.sourceStatus === "degraded"
       || (result.meta.sourceStatus === "empty" && result.meta.warning !== null)
@@ -960,6 +1202,14 @@ export async function readMarketplaceAgentApi(
         mappedMeta
       );
     }
+    let evidence = unavailableMarketplaceEvidence();
+    try {
+      evidence = await metadataSource.readEvidenceForIdentity(result.agent.agent.identity);
+    } catch {
+      // Evidence is optional. A missing migration/provider timeout must not
+      // hide the canonical listing or prevent browsing/hiring.
+      evidence = unavailableMarketplaceEvidence();
+    }
     return {
       contractVersion: marketplaceReadContractVersion,
       status: effectiveMode === "degraded" ? "degraded" : "ready",
@@ -970,7 +1220,7 @@ export async function readMarketplaceAgentApi(
         : "The connected PostgreSQL marketplace read model returned this agent.",
       meta: mappedMeta,
       agent: mapMarketplaceDetailResponse(
-        result.agent.agent,
+        { ...result.agent.agent, evidence },
         effectiveMode === "empty" ? "live" : effectiveMode,
         result.meta.refreshedAt
       ),
