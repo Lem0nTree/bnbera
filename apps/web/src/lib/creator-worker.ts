@@ -7,7 +7,7 @@ import { nativeStudioDeployCommand, nativeStudioStatusCommand, type StudioDeploy
  * its public identifier, then be reconciled before this function advances.
  */
 export const creatorStages = [
-  "validate", "authority_ready", "studio_scaffold_package", "deploy_reconcile", "erc8004_register_reconcile", "marketplace_publish"
+  "validate", "authority_ready", "studio_scaffold_package", "deploy_reconcile", "erc8004_register_reconcile", "marketplace_publish", "g2_funded_job_reconcile", "g2_activation_reconcile", "completed"
 ] as const;
 export type CreatorStage = (typeof creatorStages)[number];
 
@@ -25,23 +25,38 @@ export interface CreatorStudioAdapter {
   materialize(workspaceParent: string, runtimeName: string): Promise<"STUDIO_TEMPLATE_READY" | "STUDIO_TEMPLATE_MISMATCH">;
   /** Runs only after runtime integrity/config gates pass. Output is sanitized. */
   run(command: readonly string[], input: { readonly cwd: string }): Promise<{ readonly exitCode: number; readonly reasonCode: "STUDIO_COMMAND_OK" | "STUDIO_COMMAND_FAILED" | "STUDIO_COMMAND_TIMEOUT" }>;
-  reconcile(publicId: string): Promise<"confirmed" | "unknown" | "failed">;
   /** Must run the pinned status command and return only its validated public fields. */
   status(command: readonly string[]): Promise<StudioDeploymentRecord | null>;
+  /** A status record alone is not proof that the deployed A2A runtime is live. */
+  verifyEndpoint(endpoint: string): Promise<boolean>;
 }
 
 export interface CreatorWorkerStore {
   load(deploymentId: string): Promise<{ readonly stage: CreatorStage; readonly runtimeName: string; readonly projectRoot: string; readonly publicId: string | null; readonly endpoint: string | null }>;
   /** Saves identifier/output before advancing any external stage. */
-  record(deploymentId: string, input: { readonly stage: CreatorStage; readonly publicId: string | null; readonly endpoint?: string | null; readonly reasonCode: string }): Promise<void>;
+  record(deploymentId: string, input: { readonly stage: CreatorStage; readonly publicId: string | null; readonly endpoint?: string | null; readonly operationId?: string; readonly reasonCode: string }): Promise<void>;
   /** Durable intent event before `bag deploy` is spawned. */
   recordIntent(deploymentId: string, input: { readonly command: readonly string[] }): Promise<"claimed" | "reconcile">;
+  /** Conditional persistent claim prevents two workers from scaffolding one workspace. */
+  recordScaffoldIntent(deploymentId: string): Promise<"claimed" | "reconcile">;
 }
 
 export interface CreatorUriUpdateAdapter {
   submit(input: { readonly agentId: string; readonly uri: string; readonly uriIntentDigest: string }): Promise<{ readonly transactionHash: string | null; readonly status: "confirmed" | "unknown" | "rejected" }>;
   reconcile(transactionHash: string): Promise<"confirmed" | "unknown" | "rejected">;
 }
+
+export type CreatorHandoffOutcome = { readonly status: "confirmed" | "pending" | "failed"; readonly operationId: string };
+/** Existing G1/G2 services own these writes and must return/reconcile a durable public operation ID. */
+export interface CreatorLifecycleHandoffs {
+  registerAndVerify(input: { readonly deploymentId: string; readonly endpoint: string }): Promise<CreatorHandoffOutcome>;
+  publishMarketplace(input: { readonly deploymentId: string }): Promise<CreatorHandoffOutcome>;
+  /** Existing G2 verifier must prove a funded job before the created provider is activated. */
+  verifyFundedJob(input: { readonly deploymentId: string; readonly endpoint: string }): Promise<CreatorHandoffOutcome>;
+  activateCommerce(input: { readonly deploymentId: string }): Promise<CreatorHandoffOutcome>;
+}
+
+function isConfirmed(outcome: CreatorHandoffOutcome): boolean { return outcome.status === "confirmed" && outcome.operationId.trim().length > 0; }
 
 export interface CreatorSwapAdapter {
   execute(executionId: string): Promise<{ readonly transactionHash: string | null; readonly status: "confirmed" | "unknown" | "rejected"; readonly quoteBlock: number; readonly calldataDigest: string; readonly balanceDeltaAtomic: string | null }>;
@@ -63,21 +78,64 @@ export async function runCreatorSwap(input: { readonly adapter: CreatorSwapAdapt
  * real Studio spawn must first persist a provider operation ID that the
  * provider can reconcile after process loss.
  */
-export async function runCreatorStudioStep(input: { readonly deploymentId: string; readonly readiness: StudioReadiness; readonly store: CreatorWorkerStore; readonly studio: CreatorStudioAdapter; readonly recheckAuthority: () => Promise<void> }): Promise<CreatorStage | null> {
+export async function runCreatorStudioStep(input: { readonly deploymentId: string; readonly readiness: StudioReadiness; readonly store: CreatorWorkerStore; readonly studio: CreatorStudioAdapter; readonly recheckAuthority: () => Promise<void>; readonly handoffs?: CreatorLifecycleHandoffs }): Promise<CreatorStage | null> {
   const current = await input.store.load(input.deploymentId);
   if (!input.readiness.ready) return null;
   if (current.stage === "studio_scaffold_package") {
+    const claim = await input.store.recordScaffoldIntent(input.deploymentId);
+    // A prior process may have died after its durable intent. `materialize`
+    // only inspects an existing workspace, so this reconciles an exact copy
+    // and fails a partial/tampered one without creating another workspace.
+    if (claim === "reconcile") {
+      const inspected = await input.studio.materialize(current.projectRoot, current.runtimeName);
+      await input.store.record(input.deploymentId, { stage: "studio_scaffold_package", publicId: null, reasonCode: inspected });
+      if (inspected !== "STUDIO_TEMPLATE_READY") return null;
+      await input.store.record(input.deploymentId, { stage: "deploy_reconcile", publicId: null, reasonCode: "STUDIO_TEMPLATE_RECONCILED" });
+      return "deploy_reconcile";
+    }
     const materialized = await input.studio.materialize(current.projectRoot, current.runtimeName);
     await input.store.record(input.deploymentId, { stage: "studio_scaffold_package", publicId: null, reasonCode: materialized });
     if (materialized !== "STUDIO_TEMPLATE_READY") return null;
     await input.store.record(input.deploymentId, { stage: "deploy_reconcile", publicId: null, reasonCode: "STUDIO_TEMPLATE_READY" });
     return "deploy_reconcile";
   }
+  if (current.stage === "erc8004_register_reconcile") {
+    if (current.endpoint === null || input.handoffs === undefined) return null;
+    const result = await input.handoffs.registerAndVerify({ deploymentId: input.deploymentId, endpoint: current.endpoint });
+    if (!isConfirmed(result)) return null;
+    await input.store.record(input.deploymentId, { stage: "marketplace_publish", publicId: current.publicId, endpoint: current.endpoint, operationId: result.operationId, reasonCode: "G1_REGISTRATION_CONFIRMED" });
+    return "marketplace_publish";
+  }
+  if (current.stage === "marketplace_publish") {
+    if (input.handoffs === undefined) return null;
+    const publication = await input.handoffs.publishMarketplace({ deploymentId: input.deploymentId });
+    if (!isConfirmed(publication)) return null;
+    await input.store.record(input.deploymentId, { stage: "g2_funded_job_reconcile", publicId: current.publicId, endpoint: current.endpoint, operationId: publication.operationId, reasonCode: "G1_PUBLICATION_CONFIRMED" });
+    return "g2_funded_job_reconcile";
+  }
+  if (current.stage === "g2_funded_job_reconcile") {
+    if (input.handoffs === undefined || current.endpoint === null) return null;
+    const funded = await input.handoffs.verifyFundedJob({ deploymentId: input.deploymentId, endpoint: current.endpoint });
+    if (!isConfirmed(funded)) return null;
+    await input.store.record(input.deploymentId, { stage: "g2_activation_reconcile", publicId: current.publicId, endpoint: current.endpoint, operationId: funded.operationId, reasonCode: "G2_FUNDED_JOB_CONFIRMED" });
+    return "g2_activation_reconcile";
+  }
+  if (current.stage === "g2_activation_reconcile") {
+    if (input.handoffs === undefined || current.endpoint === null) return null;
+    const activation = await input.handoffs.activateCommerce({ deploymentId: input.deploymentId });
+    if (!isConfirmed(activation)) return null;
+    await input.store.record(input.deploymentId, { stage: "completed", publicId: current.publicId, endpoint: current.endpoint, operationId: activation.operationId, reasonCode: "G1_PUBLICATION_G2_FUNDED_JOB_AND_ACTIVATION_CONFIRMED" });
+    return "completed";
+  }
   if (current.stage !== "deploy_reconcile") return null;
   if (current.publicId !== null) {
     const recorded = await input.studio.status(nativeStudioStatusCommand(join(current.projectRoot, current.runtimeName)));
     if (recorded?.deploymentId !== current.publicId) return null;
-    await input.store.record(input.deploymentId, { stage: "erc8004_register_reconcile", publicId: current.publicId, endpoint: recorded.endpoint ?? current.endpoint, reasonCode: "STUDIO_DEPLOYMENT_CONFIRMED" });
+    if (recorded.endpoint === null || !await input.studio.verifyEndpoint(recorded.endpoint)) {
+      await input.store.record(input.deploymentId, { stage: "deploy_reconcile", publicId: current.publicId, endpoint: current.endpoint, reasonCode: "STUDIO_ENDPOINT_UNVERIFIED" });
+      return null;
+    }
+    await input.store.record(input.deploymentId, { stage: "erc8004_register_reconcile", publicId: current.publicId, endpoint: recorded.endpoint, reasonCode: "STUDIO_DEPLOYMENT_CONFIRMED" });
     return "erc8004_register_reconcile";
   }
   const projectRoot = join(current.projectRoot, current.runtimeName);
@@ -97,6 +155,7 @@ export async function runCreatorStudioStep(input: { readonly deploymentId: strin
   // `deploy` has no stable JSON output. The documented status JSON is the
   // only source for provider ID/endpoint and is queried even after a timeout.
   const recorded = await input.studio.status(nativeStudioStatusCommand(projectRoot));
-  await input.store.record(input.deploymentId, { stage: "deploy_reconcile", publicId: recorded?.deploymentId ?? null, endpoint: recorded?.endpoint ?? null, reasonCode: recorded === null ? result.reasonCode : "STUDIO_DEPLOYMENT_RECORDED" });
+  const endpointVerified = recorded !== null && recorded.endpoint !== null && await input.studio.verifyEndpoint(recorded.endpoint);
+  await input.store.record(input.deploymentId, { stage: "deploy_reconcile", publicId: recorded?.deploymentId ?? null, endpoint: endpointVerified ? recorded?.endpoint ?? null : null, reasonCode: recorded === null ? result.reasonCode : endpointVerified ? "STUDIO_DEPLOYMENT_RECORDED" : "STUDIO_ENDPOINT_UNVERIFIED" });
   return null;
 }

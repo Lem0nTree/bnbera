@@ -1,7 +1,10 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { assertCreatorNetworkExecution, assertCreatorSwapIntent, assertCreatorUriIntent, creatorDraftRequestSchema, creatorLifecycleAction, creatorProductionProfile, creatorSwapPolicy, creatorTemplate, creatorUriIntentDigest } from "./creator-contract";
 import { unavailableCreatorRuntimeAuthority } from "./creator-authority-runtime";
-import { nativeStudioDeployCommand, nativeStudioInitCommand, nativeStudioStatusCommand, parseNativeStudioStatus, studioReadiness } from "./creator-studio";
+import { nativeStudioDeployCommand, nativeStudioPingUrl, nativeStudioProcessAdapter, nativeStudioStatusCommand, parseNativeStudioStatus, studioReadiness } from "./creator-studio";
 import { externalOutcomePolicy, nextCreatorStage, runCreatorStudioStep, type CreatorStage } from "./creator-worker";
 
 describe("Creator fixed-template boundary", () => {
@@ -11,8 +14,7 @@ describe("Creator fixed-template boundary", () => {
     expect(creatorDraftRequestSchema.safeParse({ ...draft, prompt: "write arbitrary code" }).success).toBe(false);
     expect(creatorDraftRequestSchema.safeParse({ ...draft, protocol: "other" }).success).toBe(false);
   });
-  it("uses the native Altana Studio initialization shape", () => {
-    expect(nativeStudioInitCommand("bnberahf123")).toEqual(["bag", "init", "bnberahf123", "--wallet-kind", "altana", "--network", "bsc-testnet", "--destination", "platform", "--protocols", "A2A", "--rails", "8183", "--erc8183-price", "1000000000000000", "--no-auto-topup", "--no-onboard"]);
+  it("uses the native non-interactive Studio deployment shape", () => {
     expect(nativeStudioDeployCommand("/srv/creator/studio")).toEqual(["bag", "deploy", "--provider", "bnb", "--project-root", "/srv/creator/studio", "--yes"]);
     expect(nativeStudioStatusCommand("/srv/creator/studio")).toContain("--json");
   });
@@ -54,21 +56,24 @@ describe("Creator fixed-template boundary", () => {
     expect(nextCreatorStage("studio_scaffold_package", ready, true)).toBe("deploy_reconcile");
     expect(nextCreatorStage("deploy_reconcile", ready, true)).toBe("erc8004_register_reconcile");
     expect(nextCreatorStage("erc8004_register_reconcile", ready, true)).toBe("marketplace_publish");
+    expect(nextCreatorStage("marketplace_publish", ready, true)).toBe("g2_funded_job_reconcile");
+    expect(nextCreatorStage("g2_funded_job_reconcile", ready, true)).toBe("g2_activation_reconcile");
+    expect(nextCreatorStage("g2_activation_reconcile", ready, true)).toBe("completed");
   });
   it("persists Studio ID before advancing and reconciles without a duplicate run", async () => {
     let state: { stage: CreatorStage; runtimeName: string; projectRoot: string; publicId: string | null; endpoint: string | null } = { stage: "studio_scaffold_package", runtimeName: "bnberahf123", projectRoot: "/srv/creator/studio", publicId: null, endpoint: null };
     const events: unknown[] = [];
-    const store = { load: async () => state, record: async (_id: string, event: { stage: CreatorStage; publicId: string | null; endpoint?: string | null; reasonCode: string }) => { events.push(event); state = { ...state, stage: event.stage, publicId: event.publicId, endpoint: event.endpoint ?? state.endpoint }; }, recordIntent: async () => "claimed" as const };
+    const store = { load: async () => state, record: async (_id: string, event: { stage: CreatorStage; publicId: string | null; endpoint?: string | null; reasonCode: string }) => { events.push(event); state = { ...state, stage: event.stage, publicId: event.publicId, endpoint: event.endpoint ?? state.endpoint }; }, recordIntent: async () => "claimed" as const, recordScaffoldIntent: async () => "claimed" as const };
     let runs = 0;
-    const studio = { materialize: async () => { runs += 1; return "STUDIO_TEMPLATE_READY" as const; }, run: async () => ({ exitCode: 0, reasonCode: "STUDIO_COMMAND_OK" as const }), reconcile: async () => "confirmed" as const, status: async () => null };
+    const studio = { materialize: async () => { runs += 1; return "STUDIO_TEMPLATE_READY" as const; }, run: async () => ({ exitCode: 0, reasonCode: "STUDIO_COMMAND_OK" as const }), status: async () => null, verifyEndpoint: async () => true };
     await expect(runCreatorStudioStep({ deploymentId: "d", readiness: { ready: true, reason: "test" }, store, studio, recheckAuthority: async () => undefined })).resolves.toBe("deploy_reconcile");
     expect(runs).toBe(1); expect(events).toHaveLength(2);
   });
   it("persists intent, captures the provider ID, and reconciles after restart without another deploy", async () => {
     let state: { stage: CreatorStage; runtimeName: string; projectRoot: string; publicId: string | null; endpoint: string | null } = { stage: "deploy_reconcile", runtimeName: "bnberahf123", projectRoot: "/srv/creator/studio", publicId: null, endpoint: null };
     const events: string[] = []; let deploys = 0;
-    const store = { load: async () => state, record: async (_: string, item: { stage: CreatorStage; publicId: string | null; endpoint?: string | null; reasonCode: string }) => { state = { ...state, stage: item.stage, publicId: item.publicId, endpoint: item.endpoint ?? null }; }, recordIntent: async () => { events.push("intent"); return "claimed" as const; } };
-    const studio = { materialize: async () => "STUDIO_TEMPLATE_READY" as const, run: async () => { deploys += 1; return { exitCode: 0, reasonCode: "STUDIO_COMMAND_OK" as const }; }, status: async () => ({ deploymentId: "bnb-1", endpoint: "https://agent.example" }), reconcile: async () => "confirmed" as const };
+    const store = { load: async () => state, record: async (_: string, item: { stage: CreatorStage; publicId: string | null; endpoint?: string | null; reasonCode: string }) => { state = { ...state, stage: item.stage, publicId: item.publicId, endpoint: item.endpoint ?? null }; }, recordIntent: async () => { events.push("intent"); return "claimed" as const; }, recordScaffoldIntent: async () => "claimed" as const };
+    const studio = { materialize: async () => "STUDIO_TEMPLATE_READY" as const, run: async () => { deploys += 1; return { exitCode: 0, reasonCode: "STUDIO_COMMAND_OK" as const }; }, status: async () => ({ deploymentId: "bnb-1", endpoint: "https://agent.example" }), verifyEndpoint: async () => true };
     await expect(runCreatorStudioStep({ deploymentId: "d", readiness: { ready: true, reason: "test" }, store, studio, recheckAuthority: async () => undefined })).resolves.toBeNull();
     expect(events).toEqual(["intent"]); expect(state.publicId).toBe("bnb-1");
     await expect(runCreatorStudioStep({ deploymentId: "d", readiness: { ready: true, reason: "test" }, store, studio, recheckAuthority: async () => undefined })).resolves.toBe("erc8004_register_reconcile");
@@ -81,9 +86,74 @@ describe("Creator fixed-template boundary", () => {
   it("never respawns a prior unknown deploy intent and rechecks authority before a new deploy", async () => {
     const state = { stage: "deploy_reconcile" as CreatorStage, runtimeName: "bnberahf123", projectRoot: "/srv/creator", publicId: null, endpoint: null };
     let runs = 0; let checks = 0;
-    const store = { load: async () => state, record: async () => undefined, recordIntent: async () => "reconcile" as const };
-    const studio = { materialize: async () => "STUDIO_TEMPLATE_READY" as const, run: async () => { runs += 1; return { exitCode: 0, reasonCode: "STUDIO_COMMAND_OK" as const }; }, status: async () => null, reconcile: async () => "unknown" as const };
+    const store = { load: async () => state, record: async () => undefined, recordIntent: async () => "reconcile" as const, recordScaffoldIntent: async () => "claimed" as const };
+    const studio = { materialize: async () => "STUDIO_TEMPLATE_READY" as const, run: async () => { runs += 1; return { exitCode: 0, reasonCode: "STUDIO_COMMAND_OK" as const }; }, status: async () => null, verifyEndpoint: async () => true };
     await runCreatorStudioStep({ deploymentId: "d", readiness: { ready: true, reason: "test" }, store, studio, recheckAuthority: async () => { checks += 1; } });
     expect(runs).toBe(0); expect(checks).toBe(0);
+  });
+  it("serializes concurrent scaffold attempts and leaves no partial artifact marked ready", async () => {
+    const state = { stage: "studio_scaffold_package" as CreatorStage, runtimeName: "bnberahf123", projectRoot: "/srv/creator", publicId: null, endpoint: null };
+    let claims = 0; let materializations = 0;
+    const store = { load: async () => state, record: async () => undefined, recordIntent: async () => "claimed" as const, recordScaffoldIntent: async () => claims++ === 0 ? "claimed" as const : "reconcile" as const };
+    const studio = { materialize: async () => { materializations += 1; return "STUDIO_TEMPLATE_MISMATCH" as const; }, run: async () => ({ exitCode: 0, reasonCode: "STUDIO_COMMAND_OK" as const }), status: async () => null, verifyEndpoint: async () => true };
+    await expect(runCreatorStudioStep({ deploymentId: "d", readiness: { ready: true, reason: "test" }, store, studio, recheckAuthority: async () => undefined })).resolves.toBeNull();
+    await expect(runCreatorStudioStep({ deploymentId: "d", readiness: { ready: true, reason: "test" }, store, studio, recheckAuthority: async () => undefined })).resolves.toBeNull();
+    // The second worker only performs the restart-safe exact-artifact
+    // inspection; native materialize never copies an existing workspace.
+    expect(materializations).toBe(2);
+  });
+  it("does not confirm a Studio record until its runtime endpoint probes healthy", async () => {
+    const state = { stage: "deploy_reconcile" as CreatorStage, runtimeName: "bnberahf123", projectRoot: "/srv/creator", publicId: "bnb-1", endpoint: "https://agent.example" };
+    const records: string[] = [];
+    const store = { load: async () => state, record: async (_: string, value: { reasonCode: string }) => { records.push(value.reasonCode); }, recordIntent: async () => "claimed" as const, recordScaffoldIntent: async () => "claimed" as const };
+    const studio = { materialize: async () => "STUDIO_TEMPLATE_READY" as const, run: async () => ({ exitCode: 0, reasonCode: "STUDIO_COMMAND_OK" as const }), status: async () => ({ deploymentId: "bnb-1", endpoint: "https://agent.example" }), verifyEndpoint: async () => false };
+    await expect(runCreatorStudioStep({ deploymentId: "d", readiness: { ready: true, reason: "test" }, store, studio, recheckAuthority: async () => undefined })).resolves.toBeNull();
+    expect(records).toEqual(["STUDIO_ENDPOINT_UNVERIFIED"]);
+  });
+  it("reuses an exact scaffold after restart but rejects a partial workspace", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "bnbera-creator-"));
+    try {
+      const studio = nativeStudioProcessAdapter();
+      await expect(studio.materialize(parent, "bnberahf123")).resolves.toBe("STUDIO_TEMPLATE_READY");
+      await expect(studio.materialize(parent, "bnberahf123")).resolves.toBe("STUDIO_TEMPLATE_READY");
+      const partial = join(parent, "bnberahf456");
+      writeFileSync(partial, "partial artifact");
+      await expect(studio.materialize(parent, "bnberahf456")).resolves.toBe("STUDIO_TEMPLATE_MISMATCH");
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+  it("reconciles a crash after scaffold intent from an exact artifact and fails a partial one", async () => {
+    let state = { stage: "studio_scaffold_package" as CreatorStage, runtimeName: "bnberahf123", projectRoot: "/srv/creator", publicId: null, endpoint: null };
+    const events: string[] = [];
+    const store = { load: async () => state, record: async (_: string, item: { stage: CreatorStage; reasonCode: string }) => { events.push(item.reasonCode); state = { ...state, stage: item.stage }; }, recordIntent: async () => "claimed" as const, recordScaffoldIntent: async () => "reconcile" as const };
+    const studio = { materialize: async () => "STUDIO_TEMPLATE_READY" as const, run: async () => ({ exitCode: 0, reasonCode: "STUDIO_COMMAND_OK" as const }), status: async () => null, verifyEndpoint: async () => true };
+    await expect(runCreatorStudioStep({ deploymentId: "d", readiness: { ready: true, reason: "test" }, store, studio, recheckAuthority: async () => undefined })).resolves.toBe("deploy_reconcile");
+    expect(events).toEqual(["STUDIO_TEMPLATE_READY", "STUDIO_TEMPLATE_RECONCILED"]);
+    state = { ...state, stage: "studio_scaffold_package" };
+    const partial = { ...studio, materialize: async () => "STUDIO_TEMPLATE_MISMATCH" as const };
+    await expect(runCreatorStudioStep({ deploymentId: "d", readiness: { ready: true, reason: "test" }, store, studio: partial, recheckAuthority: async () => undefined })).resolves.toBeNull();
+    expect(events.at(-1)).toBe("STUDIO_TEMPLATE_MISMATCH");
+  });
+  it("persists terminal completion after durable G1 and G2 handoff evidence", async () => {
+    let state = { stage: "erc8004_register_reconcile" as CreatorStage, runtimeName: "bnberahf123", projectRoot: "/srv/creator", publicId: "studio-1", endpoint: "https://agent.example/prefix" };
+    const records: Array<{ stage: CreatorStage; operationId?: string }> = [];
+    const store = { load: async () => state, record: async (_: string, item: { stage: CreatorStage; operationId?: string }) => { records.push(item); state = { ...state, stage: item.stage }; }, recordIntent: async () => "claimed" as const, recordScaffoldIntent: async () => "claimed" as const };
+    const studio = { materialize: async () => "STUDIO_TEMPLATE_READY" as const, run: async () => ({ exitCode: 0, reasonCode: "STUDIO_COMMAND_OK" as const }), status: async () => null, verifyEndpoint: async () => true };
+    const calls: string[] = [];
+    const handoffs = {
+      registerAndVerify: async () => { calls.push("register"); return { status: "confirmed" as const, operationId: "g1-register-1" }; },
+      publishMarketplace: async () => { calls.push("publish"); return { status: "confirmed" as const, operationId: "g1-publish-1" }; },
+      verifyFundedJob: async () => { calls.push("funded"); return { status: "confirmed" as const, operationId: "g2-funded-1" }; },
+      activateCommerce: async () => { calls.push("activate"); return { status: "confirmed" as const, operationId: "g2-activate-1" }; }
+    };
+    await expect(runCreatorStudioStep({ deploymentId: "d", readiness: { ready: true, reason: "test" }, store, studio, handoffs, recheckAuthority: async () => undefined })).resolves.toBe("marketplace_publish");
+    await expect(runCreatorStudioStep({ deploymentId: "d", readiness: { ready: true, reason: "test" }, store, studio, handoffs, recheckAuthority: async () => undefined })).resolves.toBe("g2_funded_job_reconcile");
+    await expect(runCreatorStudioStep({ deploymentId: "d", readiness: { ready: true, reason: "test" }, store, studio, handoffs, recheckAuthority: async () => undefined })).resolves.toBe("g2_activation_reconcile");
+    await expect(runCreatorStudioStep({ deploymentId: "d", readiness: { ready: true, reason: "test" }, store, studio, handoffs, recheckAuthority: async () => undefined })).resolves.toBe("completed");
+    expect(state.stage).toBe("completed");
+    expect(calls).toEqual(["register", "publish", "funded", "activate"]);
+    expect(records.map((value) => value.operationId)).toEqual(["g1-register-1", "g1-publish-1", "g2-funded-1", "g2-activate-1"]);
+  });
+  it("keeps the Studio endpoint path prefix when probing", () => {
+    expect(nativeStudioPingUrl("https://agent.example/runtime/v1").toString()).toBe("https://agent.example/runtime/v1/ping");
   });
 });

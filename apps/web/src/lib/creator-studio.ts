@@ -1,7 +1,8 @@
-import { cpSync, existsSync, readFileSync } from "node:fs";
+import { cpSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { assertSafePublicNetworkTarget } from "@bnbera/agent-ingestion";
 
 export type StudioReadiness = { readonly ready: boolean; readonly reason: string };
 
@@ -26,11 +27,6 @@ export function readCreatorStandardsLock(): unknown {
 }
 
 /** Native Studio invocation shape; only used after readiness and T6 authority checks. */
-export function nativeStudioInitCommand(runtimeName: string): readonly string[] {
-  if (!/^[a-z0-9]{3,23}$/.test(runtimeName)) throw new Error("AgentCore runtime names use 3–23 lowercase letters or digits only.");
-  return ["bag", "init", runtimeName, "--wallet-kind", "altana", "--network", "bsc-testnet", "--destination", "platform", "--protocols", "A2A", "--rails", "8183", "--erc8183-price", "1000000000000000", "--no-auto-topup", "--no-onboard"];
-}
-
 /** Native, non-interactive Studio deploy. The T6 secret reference is handed
  * to Studio by its owner; it is never an argument or persisted here. */
 export function nativeStudioDeployCommand(projectRoot: string): readonly string[] {
@@ -56,6 +52,44 @@ export function parseNativeStudioStatus(output: string): StudioDeploymentRecord 
   } catch { return null; }
 }
 
+const templateArtifactPaths = ["README.md", "package.json", "app/agent/package.json", "app/agent/studio.toml", "app/agent/tsconfig.json", "app/agent/src/unifiedMain.ts"] as const;
+
+/** A workspace is reusable only when it is exactly the reviewed artifact. */
+function hasExactTemplateArtifact(root: string): boolean {
+  try {
+    const source = new URL("../../../../templates/pancakeswap-one-shot/", import.meta.url);
+    const expected = new Set(templateArtifactPaths);
+    const entries = (directory: string, prefix = ""): string[] => readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+      const relative = `${prefix}${entry.name}`;
+      return entry.isDirectory() ? entries(join(directory, entry.name), `${relative}/`) : [relative];
+    });
+    if (entries(root).some((path) => !expected.has(path as typeof templateArtifactPaths[number]))) return false;
+    return templateArtifactPaths.every((path) => statSync(join(root, path)).isFile() && readFileSync(join(root, path)).equals(readFileSync(new URL(path, source))));
+  } catch { return false; }
+}
+
+/** Probe the deployed provider rather than treating a status record as live. */
+export function nativeStudioPingUrl(endpoint: string): URL {
+  const target = new URL(endpoint);
+  return new URL(`${target.pathname.replace(/\/+$/, "")}/ping`, target.origin);
+}
+
+async function verifyNativeStudioEndpoint(endpoint: string): Promise<boolean> {
+  try {
+    const target = await assertSafePublicNetworkTarget(endpoint);
+    if (target.protocol !== "https:") return false;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5_000);
+    try {
+      const ping = nativeStudioPingUrl(target.toString());
+      const response = await fetch(ping, { method: "GET", signal: controller.signal, redirect: "error" });
+      if (!response.ok) return false;
+      const body = await response.json() as { status?: unknown; template?: unknown };
+      return body.status === "healthy" && body.template === "pancakeswap-one-shot";
+    } finally { clearTimeout(timer); }
+  } catch { return false; }
+}
+
 /** Bounded native CLI adapter. `execFile` deliberately uses shell:false. */
 export function nativeStudioProcessAdapter(): import("./creator-worker").CreatorStudioAdapter {
   const execute = async (command: readonly string[], cwd: string) => {
@@ -66,8 +100,11 @@ export function nativeStudioProcessAdapter(): import("./creator-worker").Creator
     async materialize(workspaceParent, runtimeName) {
       const destination = join(workspaceParent, runtimeName);
       const source = new URL("../../../../templates/pancakeswap-one-shot/", import.meta.url);
-      if (existsSync(destination)) return "STUDIO_TEMPLATE_MISMATCH";
-      try { cpSync(source, destination, { recursive: true, errorOnExist: true }); return "STUDIO_TEMPLATE_READY"; } catch { return "STUDIO_TEMPLATE_MISMATCH"; }
+      if (existsSync(destination)) return hasExactTemplateArtifact(destination) ? "STUDIO_TEMPLATE_READY" : "STUDIO_TEMPLATE_MISMATCH";
+      try {
+        cpSync(source, destination, { recursive: true, errorOnExist: true });
+        return hasExactTemplateArtifact(destination) ? "STUDIO_TEMPLATE_READY" : "STUDIO_TEMPLATE_MISMATCH";
+      } catch { return hasExactTemplateArtifact(destination) ? "STUDIO_TEMPLATE_READY" : "STUDIO_TEMPLATE_MISMATCH"; }
     },
     async run(command, input) {
       try { await execute(command, input.cwd); return { exitCode: 0, reasonCode: "STUDIO_COMMAND_OK" as const }; }
@@ -76,8 +113,6 @@ export function nativeStudioProcessAdapter(): import("./creator-worker").Creator
     async status(command) {
       try { return parseNativeStudioStatus(await execute(command, process.cwd())); } catch { return null; }
     },
-    async reconcile(publicId) {
-      return publicId.length > 0 ? "confirmed" : "unknown";
-    }
+    verifyEndpoint: verifyNativeStudioEndpoint
   };
 }

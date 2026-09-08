@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { creatorTemplate, type CreatorDraftRequest, canonicalDraftConfiguration, draftConfigurationDigest } from "./creator-contract";
 import type { CreatorRuntimeAuthority } from "./creator-authority-runtime";
 import { creatorStages, type CreatorStage, type CreatorWorkerStore } from "./creator-worker";
+import { assertSafePublicNetworkTarget } from "@bnbera/agent-ingestion";
 
 export type CreatorDraft = { readonly id: string; readonly name: string; readonly slug: string; readonly status: string; readonly createdAt: string; readonly deploymentId: string | null; readonly deploymentState: string | null; readonly currentStep: string | null; };
 
@@ -123,7 +124,7 @@ export class CreatorRepository {
   /** Existing deployment/event tables hold only public provider facts. */
   workerStore(projectRoot: string): CreatorWorkerStore {
     if (!projectRoot.startsWith("/")) throw new CreatorRepositoryError("STUDIO_PROJECT_ROOT_INVALID", "Creator Studio workspace parent must be absolute.");
-    const stageState: Record<CreatorStage, string> = { validate: "validating", authority_ready: "queued", studio_scaffold_package: "building", deploy_reconcile: "deploying_runtime", erc8004_register_reconcile: "registering_identity", marketplace_publish: "publishing_evidence" };
+    const stageState: Record<CreatorStage, string> = { validate: "validating", authority_ready: "queued", studio_scaffold_package: "building", deploy_reconcile: "deploying_runtime", erc8004_register_reconcile: "registering_identity", marketplace_publish: "publishing_evidence", g2_funded_job_reconcile: "configuring_commerce", g2_activation_reconcile: "configuring_commerce", completed: "listed" };
     return {
       load: async (deploymentId) => {
         const result = await this.pool.query<{ current_step: string | null; agent_core_arn: string | null; public_url: string | null; draft_id: string }>("SELECT current_step, agent_core_arn, public_url, draft_id FROM agent_deployments WHERE id=$1 AND provider='bnb-agent-studio'", [deploymentId]);
@@ -132,14 +133,15 @@ export class CreatorRepository {
         return { stage: row.current_step as CreatorStage, runtimeName: `bnberahf${createHash("sha256").update(row.draft_id).digest("hex").slice(0, 12)}`, projectRoot, publicId: row.agent_core_arn, endpoint: row.public_url };
       },
       record: async (deploymentId, input) => {
-        if (input.endpoint !== undefined && input.endpoint !== null) assertCreatorPublicHttpsEndpoint(input.endpoint);
+        if (input.endpoint !== undefined && input.endpoint !== null) await assertCreatorPublicHttpsEndpoint(input.endpoint);
         const client = await this.pool.connect();
         try {
           await client.query("BEGIN");
           const prior = await client.query<{ state: string; attempt: number }>("SELECT state, attempt FROM agent_deployments WHERE id=$1 FOR UPDATE", [deploymentId]);
           if (prior.rows[0] === undefined) throw new CreatorRepositoryError("DEPLOYMENT_NOT_FOUND", "Creator deployment was not found.");
-          await client.query("UPDATE agent_deployments SET state=$2::deployment_state, current_step=$3, agent_core_arn=COALESCE($4,agent_core_arn), public_url=COALESCE($5,public_url), \"updatedAt\"=NOW() WHERE id=$1", [deploymentId, stageState[input.stage], input.stage, input.publicId, input.endpoint ?? null]);
-          await client.query("INSERT INTO deployment_events (deployment_id, attempt, previous_state, next_state, status_message, external_resource_references, retryable) VALUES ($1,$2,$3::deployment_state,$4::deployment_state,$5,jsonb_strip_nulls(jsonb_build_object('providerDeploymentId',$6,'endpoint',$7)),false)", [deploymentId, prior.rows[0].attempt, prior.rows[0].state, stageState[input.stage], input.reasonCode, input.publicId, input.endpoint ?? null]);
+          const nextState = input.reasonCode === "STUDIO_TEMPLATE_MISMATCH" ? "failed" : stageState[input.stage];
+          await client.query("UPDATE agent_deployments SET state=$2::deployment_state, current_step=$3, agent_core_arn=COALESCE($4,agent_core_arn), public_url=COALESCE($5,public_url), error_code=CASE WHEN $2='failed' THEN 'STUDIO_TEMPLATE_MISMATCH' ELSE error_code END, \"updatedAt\"=NOW() WHERE id=$1", [deploymentId, nextState, input.stage, input.publicId, input.endpoint ?? null]);
+          await client.query("INSERT INTO deployment_events (deployment_id, attempt, previous_state, next_state, status_message, external_resource_references, retryable) VALUES ($1,$2,$3::deployment_state,$4::deployment_state,$5,jsonb_strip_nulls(jsonb_build_object('providerDeploymentId',$6,'endpoint',$7,'handoffOperationId',$8)),false)", [deploymentId, prior.rows[0].attempt, prior.rows[0].state, nextState, input.reasonCode, input.publicId, input.endpoint ?? null, input.operationId ?? null]);
           await client.query("COMMIT");
         } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
       },
@@ -156,17 +158,32 @@ export class CreatorRepository {
           await client.query("INSERT INTO deployment_events (deployment_id, attempt, previous_state, next_state, status_message, external_resource_references, retryable) VALUES ($1,$2,$3::deployment_state,'deploying_runtime','STUDIO_DEPLOY_INTENT',jsonb_build_object('operation','bag deploy --provider bnb'),true)", [deploymentId, row.attempt + 1, row.state]);
           await client.query("COMMIT"); return "claimed" as const;
         } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+      },
+      recordScaffoldIntent: async (deploymentId) => {
+        const client = await this.pool.connect();
+        try {
+          await client.query("BEGIN");
+          const locked = await client.query<{ state: string; attempt: number; current_step: string | null }>("SELECT state, attempt, current_step FROM agent_deployments WHERE id=$1 FOR UPDATE SKIP LOCKED", [deploymentId]);
+          const row = locked.rows[0];
+          if (row === undefined || row.current_step !== "studio_scaffold_package") { await client.query("ROLLBACK"); return "reconcile" as const; }
+          const existing = await client.query("SELECT 1 FROM deployment_events WHERE deployment_id=$1 AND status_message='STUDIO_SCAFFOLD_INTENT' LIMIT 1", [deploymentId]);
+          if (existing.rowCount !== 0) { await client.query("COMMIT"); return "reconcile" as const; }
+          const claimed = await client.query("UPDATE agent_deployments SET state='building', \"updatedAt\"=NOW() WHERE id=$1 AND current_step='studio_scaffold_package'", [deploymentId]);
+          if (claimed.rowCount !== 1) { await client.query("ROLLBACK"); return "reconcile" as const; }
+          await client.query("INSERT INTO deployment_events (deployment_id, attempt, previous_state, next_state, status_message, external_resource_references, retryable) VALUES ($1,$2,$3::deployment_state,'building','STUDIO_SCAFFOLD_INTENT',NULL,true)", [deploymentId, row.attempt, row.state]);
+          await client.query("COMMIT"); return "claimed" as const;
+        } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
       }
     };
   }
 }
 
 /** Same fail-closed public HTTPS boundary used by marketplace-facing paths. */
-function assertCreatorPublicHttpsEndpoint(value: string): void {
-  let url: URL;
-  try { url = new URL(value); } catch { throw new CreatorRepositoryError("STUDIO_ENDPOINT_INVALID", "Studio returned an invalid public endpoint."); }
-  const host = url.hostname.toLowerCase();
-  if (url.protocol !== "https:" || url.username || url.password || host === "localhost" || host.endsWith(".localhost") || /^127\./.test(host) || host === "::1" || /^10\.|^192\.168\.|^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) throw new CreatorRepositoryError("STUDIO_ENDPOINT_UNSAFE", "Studio returned a non-public HTTPS endpoint.");
+async function assertCreatorPublicHttpsEndpoint(value: string): Promise<void> {
+  try {
+    const url = await assertSafePublicNetworkTarget(value);
+    if (url.protocol !== "https:") throw new Error("HTTPS required");
+  } catch { throw new CreatorRepositoryError("STUDIO_ENDPOINT_UNSAFE", "Studio returned a non-public HTTPS endpoint."); }
 }
 
 export class CreatorRepositoryError extends Error { constructor(readonly code: string, message: string) { super(message); } }
