@@ -364,6 +364,26 @@ describe("official Greenfield SDK adapter boundary", () => {
     expect(fixture.counts().createCalls).toBe(0);
   });
 
+  it("reconciles missing or unknown buckets read-only after a fresh adapter instance", async () => {
+    const missing = bucketSdkFixture();
+    await expect(missing.publisher.reconcileCanaryBucket()).resolves.toMatchObject({
+      status: "missing",
+      bucketName: "greenfield-test",
+      owner: null,
+      primarySpAddress: null,
+      visibility: null,
+      creationTransactionHash: null
+    });
+    expect(missing.counts()).toMatchObject({ createCalls: 0, broadcastCalls: 0 });
+
+    const unknown = bucketSdkFixture({ bucketExists: true, spNotFound: true });
+    await expect(unknown.publisher.reconcileCanaryBucket()).resolves.toMatchObject({
+      status: "unknown",
+      creationTransactionHash: null
+    });
+    expect(unknown.counts()).toMatchObject({ createCalls: 0, broadcastCalls: 0 });
+  });
+
   it("rejects malformed successful SP metadata", async () => {
     const fixture = bucketSdkFixture({ bucketExists: true, malformedSp: true });
     await expect(fixture.publisher.ensureCanaryBucket()).rejects.toMatchObject({ code: "PROVIDER_FAILED" });

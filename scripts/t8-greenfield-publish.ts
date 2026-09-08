@@ -10,6 +10,7 @@ import {
   runBundleArtifactBinding,
   createGreenfieldEnvironmentSecretLoader,
   GreenfieldSdkPublisher,
+  GREENFIELD_CANDIDATE_STANDARDS_PINS,
   GREENFIELD_TESTNET_CHAIN_ID,
   GREENFIELD_TESTNET_NETWORK,
   greenfieldConfigurationDigest,
@@ -18,8 +19,8 @@ import {
   type FrozenAgentProfileRows,
   type FrozenRunBundleRows,
   type GreenfieldBucketEnsureReceipt,
+  type GreenfieldBucketReconcileReceipt,
   type GreenfieldArtifactBinding,
-  type GreenfieldStandardsPins,
   type PublicationConfiguration
 } from "../packages/greenfield/src/index.js";
 import { digestArtifact, deterministicObjectName } from "../packages/evidence/src/index.js";
@@ -49,7 +50,7 @@ export async function t8GreenfieldSleep(milliseconds: number): Promise<void> {
   await sleepTimer(milliseconds);
 }
 
-type Command = "plan" | "publish" | "reconcile" | "create-bucket";
+type Command = "plan" | "publish" | "reconcile" | "create-bucket" | "reconcile-bucket";
 
 export interface T8GreenfieldCliConfig {
   readonly network: string;
@@ -59,7 +60,6 @@ export interface T8GreenfieldCliConfig {
   readonly creator: string;
   readonly rpcUrl: string | null;
   readonly spEndpoint: string | null;
-  readonly publicReadBaseUrl: string | null;
   readonly databaseUrl: string | null;
   readonly keyReference: string | null;
   readonly enabled: boolean;
@@ -107,93 +107,12 @@ export function readT8GreenfieldCliConfig(env: NodeJS.ProcessEnv = process.env):
     creator,
     rpcUrl: env.GREENFIELD_RPC_URL?.trim() || null,
     spEndpoint: env.GREENFIELD_SP_ENDPOINT?.trim() || null,
-    publicReadBaseUrl: null,
     databaseUrl: env.DATABASE_URL?.trim() || null,
     keyReference: env.GREENFIELD_PUBLISHER_PRIVATE_KEY_REF?.trim() || null,
     enabled: booleanFlag(env.T8_GREENFIELD_ENABLED),
     liveWriteEnabled: booleanFlag(env.T8_GREENFIELD_LIVE_WRITE_ENABLED),
     canaryApproved: booleanFlag(env.T8_GREENFIELD_CANARY_APPROVED)
   };
-}
-
-interface LockedGreenfieldRuntime {
-  readonly pins: GreenfieldStandardsPins;
-  readonly rpcUrl: string;
-  readonly spEndpoint: string;
-  readonly publicReadBaseUrl: string;
-}
-
-async function readLockedGreenfieldRuntime(): Promise<LockedGreenfieldRuntime> {
-  const raw = JSON.parse(await readFile(new URL("../config/standards.lock.json", import.meta.url), "utf8")) as {
-    readonly greenfield?: {
-      readonly networkId?: unknown;
-      readonly sdkChainId?: unknown;
-      readonly sdkPackage?: unknown;
-      readonly sdkVersion?: unknown;
-      readonly sdkIntegrity?: unknown;
-      readonly reedSolomonPackage?: unknown;
-      readonly reedSolomonVersion?: unknown;
-      readonly reedSolomonIntegrity?: unknown;
-      readonly rpcUrl?: unknown;
-      readonly storageProviders?: readonly {
-        readonly providerLabel?: unknown;
-        readonly operatorAddress?: unknown;
-        readonly endpoint?: unknown;
-        readonly publicReadBaseUrls?: readonly unknown[];
-      }[];
-    };
-  };
-  const lock = raw.greenfield;
-  const provider = lock?.storageProviders?.[0];
-  const publicReadBaseUrl = provider?.publicReadBaseUrls?.[0];
-  if (
-    lock?.networkId !== GREENFIELD_TESTNET_NETWORK ||
-    lock.sdkChainId !== GREENFIELD_TESTNET_CHAIN_ID ||
-    lock.sdkPackage !== "@bnb-chain/greenfield-js-sdk" ||
-    lock.sdkVersion !== "2.2.0" ||
-    lock.sdkIntegrity !== "sha512-TDLmmy8aj1UDlRYkfzfrZnej4/vLQqmTcYM/3kh0drdiEpvIiYvCcmn0zXem39hijnnjcLcoJ2qiqaR8cC/9gA==" ||
-    lock.reedSolomonPackage !== "@bnb-chain/reed-solomon" ||
-    lock.reedSolomonVersion !== "1.1.4" ||
-    lock.reedSolomonIntegrity !== "sha512-mebL6p1iHt9B6lpxX1pxW/K3KA35sVdMsIyW/B31URjktSJ0osGEvVUoYGb53nuSIUIUtm2wPtE0+0dZV1CMLw==" ||
-    typeof lock.rpcUrl !== "string" ||
-    typeof provider?.providerLabel !== "string" ||
-    typeof provider.operatorAddress !== "string" ||
-    !/^0x[0-9a-fA-F]{40}$/.test(provider.operatorAddress) ||
-    typeof provider.endpoint !== "string" ||
-    typeof publicReadBaseUrl !== "string"
-  ) {
-    throw new Error("T8 Greenfield standards lock is incomplete or does not match installed package pins");
-  }
-  for (const value of [lock.rpcUrl, provider.endpoint, publicReadBaseUrl]) {
-    const url = new URL(value);
-    if (url.protocol !== "https:" || url.username !== "" || url.password !== "") {
-      throw new Error("T8 Greenfield standards lock contains a non-HTTPS endpoint");
-    }
-  }
-  return {
-    rpcUrl: lock.rpcUrl,
-    spEndpoint: provider.endpoint,
-    publicReadBaseUrl,
-    pins: {
-      networkId: lock.networkId,
-      sdkChainId: lock.sdkChainId,
-      sdkPackage: lock.sdkPackage,
-      sdkVersion: lock.sdkVersion,
-      storageProviders: [{
-        providerLabel: provider.providerLabel,
-        operatorAddress: provider.operatorAddress,
-        endpoint: provider.endpoint,
-        publicReadBaseUrls: [publicReadBaseUrl]
-      }],
-      publicReadBaseUrls: [publicReadBaseUrl]
-    }
-  };
-}
-
-function applyLockedRuntime(config: T8GreenfieldCliConfig, locked: LockedGreenfieldRuntime): T8GreenfieldCliConfig {
-  if (config.rpcUrl !== null && config.rpcUrl !== locked.rpcUrl) throw new Error("GREENFIELD_RPC_URL differs from the standards lock");
-  if (config.spEndpoint !== null && config.spEndpoint !== locked.spEndpoint) throw new Error("GREENFIELD_SP_ENDPOINT differs from the standards lock");
-  return { ...config, rpcUrl: locked.rpcUrl, spEndpoint: locked.spEndpoint, publicReadBaseUrl: locked.publicReadBaseUrl };
 }
 
 function argument(argv: readonly string[], name: string): string | null {
@@ -206,8 +125,8 @@ function argument(argv: readonly string[], name: string): string | null {
 
 function commandFrom(argv: readonly string[]): Command {
   const value = argv[0] ?? "plan";
-  if (value === "plan" || value === "publish" || value === "reconcile" || value === "create-bucket") return value;
-  throw new Error("Usage: t8-greenfield-publish.ts <plan|publish|reconcile|create-bucket> [--artifact-file path] [--idempotency-key key]");
+  if (value === "plan" || value === "publish" || value === "reconcile" || value === "create-bucket" || value === "reconcile-bucket") return value;
+  throw new Error("Usage: t8-greenfield-publish.ts <plan|publish|reconcile|create-bucket|reconcile-bucket> [--artifact-file path] [--idempotency-key key]");
 }
 
 async function jsonInput(path: string): Promise<unknown> {
@@ -326,7 +245,13 @@ function requireBucketLiveWrite(config: T8GreenfieldCliConfig): void {
   }
 }
 
-function safeBucketResult(result: GreenfieldBucketEnsureReceipt): Record<string, unknown> {
+function requireBucketReadConfig(config: T8GreenfieldCliConfig): void {
+  if (config.rpcUrl === null || config.creator === "" || config.spEndpoint === null) {
+    throw new Error("T8 Greenfield bucket reconciliation configuration is incomplete");
+  }
+}
+
+function safeBucketResult(result: GreenfieldBucketEnsureReceipt | GreenfieldBucketReconcileReceipt): Record<string, unknown> {
   return {
     status: result.status,
     bucketName: result.bucketName,
@@ -353,8 +278,26 @@ export async function runT8GreenfieldCli(
   env: NodeJS.ProcessEnv = process.env
 ): Promise<Record<string, unknown>> {
   const command = commandFrom(argv);
-  const locked = await readLockedGreenfieldRuntime();
-  const config = applyLockedRuntime(readT8GreenfieldCliConfig(env), locked);
+  const config = readT8GreenfieldCliConfig(env);
+  if (command === "reconcile-bucket") {
+    requireBucketReadConfig(config);
+    const greenfield = new GreenfieldSdkPublisher({
+      network: config.network,
+      chainId: config.chainId,
+      rpcUrl: config.rpcUrl as string,
+      bucket: config.bucket,
+      creator: config.creator,
+      // Read-only reconciliation never loads this placeholder reference and
+      // cannot reach the adapter's create/upload/broadcast paths.
+      keyReference: config.keyReference ?? "T8_READ_ONLY_RECONCILIATION",
+      loadSecret: () => {
+        throw new Error("T8 Greenfield read-only reconciliation cannot load secrets");
+      },
+      spEndpoint: config.spEndpoint as string,
+      standardsPins: GREENFIELD_CANDIDATE_STANDARDS_PINS
+    });
+    return safeBucketResult(await greenfield.reconcileCanaryBucket());
+  }
   if (command === "create-bucket") {
     requireBucketLiveWrite(config);
     const greenfield = new GreenfieldSdkPublisher({
@@ -366,8 +309,7 @@ export async function runT8GreenfieldCli(
       keyReference: config.keyReference as string,
       loadSecret: createGreenfieldEnvironmentSecretLoader(env),
       spEndpoint: config.spEndpoint as string,
-      publicBaseUrl: config.publicReadBaseUrl as string,
-      standardsPins: locked.pins
+      standardsPins: GREENFIELD_CANDIDATE_STANDARDS_PINS
     });
     return safeBucketResult(await greenfield.ensureCanaryBucket());
   }
@@ -400,8 +342,7 @@ export async function runT8GreenfieldCli(
       keyReference: config.keyReference as string,
       loadSecret: createGreenfieldEnvironmentSecretLoader(env),
       spEndpoint: config.spEndpoint as string,
-      publicBaseUrl: config.publicReadBaseUrl as string,
-      standardsPins: locked.pins
+      standardsPins: GREENFIELD_CANDIDATE_STANDARDS_PINS
     });
     const publisher = new EvidencePublisher({ store, configuration: publication, greenfield, sleep: t8GreenfieldSleep });
     const result = command === "publish"

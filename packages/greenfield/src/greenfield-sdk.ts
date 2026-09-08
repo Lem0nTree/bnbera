@@ -73,7 +73,7 @@ interface GreenfieldSdkObjectApi {
 
 interface GreenfieldSdkBucketApi {
   /** Official SDK shape: createBucket returns a simulate/broadcast tx object. */
-  readonly createBucket: (message: UnknownRecord) => Promise<GreenfieldSdkTxResponse>;
+  readonly createBucket?: (message: UnknownRecord) => Promise<GreenfieldSdkTxResponse>;
   /** Official SDK query shape: headBucket receives the bucket name directly. */
   readonly headBucket: (bucketName: string) => Promise<UnknownRecord>;
   /** SP metadata includes the operator address used to bind a bucket to its SP. */
@@ -148,6 +148,15 @@ export interface GreenfieldBucketEnsureReceipt {
   readonly owner: string;
   readonly primarySpAddress: string;
   readonly visibility: "public-read";
+  readonly creationTransactionHash: string | null;
+}
+
+export interface GreenfieldBucketReconcileReceipt {
+  readonly status: "present" | "missing" | "unknown";
+  readonly bucketName: string;
+  readonly owner: string | null;
+  readonly primarySpAddress: string | null;
+  readonly visibility: "public-read" | null;
   readonly creationTransactionHash: string | null;
 }
 
@@ -651,7 +660,7 @@ export class GreenfieldSdkPublisher implements GreenfieldPublisher {
       result = await tx.broadcast(broadcastOptions);
     } catch {
       this.canaryBucketUnknown = true;
-      return this.reconcileCanaryBucket(provider);
+      return this.reconcileCanaryBucketAfterUnknown(provider);
     }
     if (responseCode(result) !== 0) {
       throw new PublicationProviderError("CREATE_FAILED", "Greenfield bucket creation transaction was rejected", false);
@@ -659,7 +668,7 @@ export class GreenfieldSdkPublisher implements GreenfieldPublisher {
     const creationTransactionHash = transactionHashFromResponse(result);
     if (creationTransactionHash === null) {
       this.canaryBucketUnknown = true;
-      return this.reconcileCanaryBucket(provider);
+      return this.reconcileCanaryBucketAfterUnknown(provider);
     }
     this.canaryBucketUnknown = false;
     return this.bucketReceipt("created", creationTransactionHash, provider);
@@ -697,7 +706,30 @@ export class GreenfieldSdkPublisher implements GreenfieldPublisher {
     };
   }
 
-  private async reconcileCanaryBucket(provider: GreenfieldStorageProviderPin): Promise<GreenfieldBucketEnsureReceipt> {
+  async reconcileCanaryBucket(): Promise<GreenfieldBucketReconcileReceipt> {
+    const provider = this.bucketProviderPin();
+    const inspected = await this.inspectCanaryBucket(provider);
+    if (inspected.status === "present") {
+      return {
+        status: "present",
+        bucketName: this.options.bucket,
+        owner: this.options.creator,
+        primarySpAddress: provider.operatorAddress,
+        visibility: "public-read",
+        creationTransactionHash: inspected.creationTransactionHash
+      };
+    }
+    return {
+      status: inspected.status,
+      bucketName: this.options.bucket,
+      owner: null,
+      primarySpAddress: null,
+      visibility: null,
+      creationTransactionHash: null
+    };
+  }
+
+  private async reconcileCanaryBucketAfterUnknown(provider: GreenfieldStorageProviderPin): Promise<GreenfieldBucketEnsureReceipt> {
     const inspected = await this.inspectCanaryBucket(provider);
     if (inspected.status === "present") {
       this.canaryBucketUnknown = false;
