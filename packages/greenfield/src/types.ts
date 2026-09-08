@@ -19,6 +19,7 @@ export const publicationFailureCodes = [
   "ARTIFACT_TOO_LARGE",
   "OBJECT_TOO_LARGE",
   "CREATE_FAILED",
+  "CREATE_UNKNOWN",
   "UPLOAD_FAILED",
   "PROVIDER_FAILED",
   "MALFORMED_TRANSACTION",
@@ -177,13 +178,60 @@ export interface GreenfieldPublisher {
     readonly objectName: string;
     readonly sizeBytes: number;
     readonly mimeType: "application/json";
+    /**
+     * Canonical payload material needed by Greenfield's create transaction.
+     * Greenfield stores Reed-Solomon checksums in that transaction, so this
+     * seam deliberately carries the already canonical bytes/checksums without
+     * making the provider-neutral publication record retain them.
+     */
+    readonly canonicalBytes?: Uint8Array;
+    readonly expectedChecksums?: readonly Uint8Array[];
   }) => Promise<GreenfieldCreateReceipt>;
-  readonly uploadObject: (input: PublicationUploadInput & { readonly objectReference: string }) => Promise<GreenfieldUploadReceipt>;
+  readonly uploadObject: (input: PublicationUploadInput & {
+    readonly objectReference: string;
+    readonly creationTransactionHash?: string | null;
+  }) => Promise<GreenfieldUploadReceipt>;
   readonly waitForSeal: (input: {
     readonly objectReference: string;
     readonly attempt: number;
   }) => Promise<GreenfieldSealReceipt>;
   readonly readObject: (input: { readonly objectReference: string }) => Promise<Uint8Array>;
+  /**
+   * Inspect deterministic object identity before a retry after an unknown
+   * create outcome. Implementations must not submit another create while an
+   * existing object can be found. It is optional to preserve the provider
+   * contract for existing fakes/adapters.
+   */
+  readonly inspectObject?: (input: {
+    readonly objectName: string;
+    readonly sizeBytes?: number;
+    /** Canonical bytes let the provider recompute/compare its RS checksums
+     * before a recovered object is uploaded or reused. */
+    readonly canonicalBytes?: Uint8Array;
+    readonly expectedChecksums?: readonly Uint8Array[];
+  }) => Promise<GreenfieldInspectReceipt>;
+  /** Reconcile an unknown create broadcast against chain state and object
+   * metadata. A missing SP object alone is never sufficient evidence. */
+  readonly reconcileCreate?: (input: {
+    readonly objectName: string;
+    readonly sizeBytes: number;
+    readonly canonicalBytes?: Uint8Array;
+    readonly expectedChecksums?: readonly Uint8Array[];
+  }) => Promise<GreenfieldCreateReconciliation>;
+}
+
+export interface GreenfieldInspectReceipt {
+  readonly status: "missing" | "created" | "sealed";
+  readonly objectReference: string | null;
+  readonly creationTransactionHash: string | null;
+  readonly sealTransactionHash: string | null;
+}
+
+export interface GreenfieldCreateReconciliation {
+  readonly status: "missing" | "present" | "unknown";
+  readonly objectReference: string | null;
+  readonly creationTransactionHash: string | null;
+  readonly sealTransactionHash: string | null;
 }
 
 export interface PublicationAuditEvent {
