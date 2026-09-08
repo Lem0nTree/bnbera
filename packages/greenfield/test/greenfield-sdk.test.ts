@@ -119,7 +119,7 @@ function sdkFixture(options: {
   return { publisher, bytes, counts: () => ({ createCalls, uploadCalls, broadcastCalls }), createMessage: () => seenCreateMessage, upload: () => seenUpload, seal: () => { sealed = true; } };
 }
 
-type BucketMismatch = "owner" | "sp" | "visibility" | "payment";
+type BucketMismatch = "owner" | "sp" | "endpoint" | "visibility" | "payment";
 
 function bucketSdkFixture(options: {
   readonly bucketExists?: boolean;
@@ -140,6 +140,8 @@ function bucketSdkFixture(options: {
   let delayedIndexPolls = 0;
   let headCalls = 0;
   let metaCalls = 0;
+  let familyCalls = 0;
+  let storageProviderCalls = 0;
   let createCalls = 0;
   let simulateCalls = 0;
   let broadcastCalls = 0;
@@ -175,7 +177,8 @@ function bucketSdkFixture(options: {
           Owner: options.mismatch === "owner" ? "0xcccccccccccccccccccccccccccccccccccccccc" : creator,
           PaymentAddress: options.mismatch === "payment" ? "0xcccccccccccccccccccccccccccccccccccccccc" : creator,
           Visibility: options.mismatch === "visibility" ? 2 : 1,
-          BucketStatus: 0
+          BucketStatus: 0,
+          GlobalVirtualGroupFamilyId: 7
         }
       };
     },
@@ -194,8 +197,9 @@ function bucketSdkFixture(options: {
         body: {
           GfSpGetBucketMetaResponse: {
             Bucket: {
-              Operator: options.mismatch === "sp" ? "0xcccccccccccccccccccccccccccccccccccccccc" : operator,
-              CreateTxHash: createHash
+              Operator: creator,
+              CreateTxHash: createHash,
+              Vgf: { PrimarySpId: "1" }
             }
           }
         }
@@ -232,7 +236,26 @@ function bucketSdkFixture(options: {
       getObjectMeta: async () => ({ code: 0, statusCode: 404, body: {} })
     },
     bucket: bucketApi,
-    sp: { getSPUrlByBucket: async () => "https://sp.example" }
+    sp: {
+      getSPUrlByBucket: async () => "https://sp.example",
+      getStorageProviders: async function (this: unknown) {
+        expect(this).toBe(client.sp);
+        storageProviderCalls += 1;
+        return [{
+          id: 1,
+          operatorAddress: options.mismatch === "sp" ? "0xcccccccccccccccccccccccccccccccccccccccc" : operator,
+          endpoint: options.mismatch === "endpoint" ? "https://other-sp.example" : "https://sp.example"
+        }];
+      }
+    },
+    virtualGroup: {
+      getGlobalVirtualGroupFamily: async function (this: unknown, request: Record<string, unknown>) {
+        expect(this).toBe(client.virtualGroup);
+        familyCalls += 1;
+        expect(request).toEqual({ familyId: 7 });
+        return { globalVirtualGroupFamily: { PrimarySpId: "1" } };
+      }
+    }
   };
   const publisher = new GreenfieldSdkPublisher({
     network: GREENFIELD_TESTNET_NETWORK,
@@ -256,7 +279,7 @@ function bucketSdkFixture(options: {
   });
   return {
     publisher,
-    counts: () => ({ headCalls, metaCalls, createCalls, simulateCalls, broadcastCalls }),
+    counts: () => ({ headCalls, metaCalls, familyCalls, storageProviderCalls, createCalls, simulateCalls, broadcastCalls }),
     createMessage: () => seenCreateMessage,
     simulation: () => seenSimulation,
     broadcast: () => seenBroadcast
@@ -378,7 +401,7 @@ describe("official Greenfield SDK adapter boundary", () => {
       visibility: "public-read",
       creationTransactionHash: createHash
     });
-    expect(fixture.counts()).toMatchObject({ headCalls: 1, metaCalls: 1, createCalls: 0 });
+    expect(fixture.counts()).toMatchObject({ headCalls: 1, familyCalls: 1, storageProviderCalls: 1, metaCalls: 1, createCalls: 0 });
   });
 
   it("treats the official no-such-bucket query as missing and creates once", async () => {
@@ -430,7 +453,7 @@ describe("official Greenfield SDK adapter boundary", () => {
     expect(fixture.counts()).toMatchObject({ createCalls: 1, broadcastCalls: 1, metaCalls: 1 });
   });
 
-  it.each(["owner", "sp", "visibility", "payment"] as const)("rejects a canary bucket with a %s binding mismatch", async (mismatch) => {
+  it.each(["owner", "sp", "endpoint", "visibility", "payment"] as const)("rejects a canary bucket with a %s binding mismatch", async (mismatch) => {
     const fixture = bucketSdkFixture({ bucketExists: true, mismatch });
     await expect(fixture.publisher.ensureCanaryBucket()).rejects.toMatchObject({ code: "DURABLE_GRAPH_INVALID" });
     expect(fixture.counts().createCalls).toBe(0);

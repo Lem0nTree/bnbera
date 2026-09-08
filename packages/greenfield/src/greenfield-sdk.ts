@@ -79,10 +79,20 @@ interface GreenfieldSdkBucketApi {
   readonly getBucketMeta?: (params: UnknownRecord) => Promise<UnknownRecord>;
 }
 
+interface GreenfieldSdkVirtualGroupApi {
+  readonly getGlobalVirtualGroupFamily?: (request: UnknownRecord) => Promise<unknown>;
+}
+
+interface GreenfieldSdkSpApi {
+  readonly getSPUrlByBucket?: (bucketName: string) => Promise<string>;
+  readonly getStorageProviders?: () => Promise<unknown>;
+}
+
 interface GreenfieldSdkClient {
   readonly object: GreenfieldSdkObjectApi;
   readonly bucket?: GreenfieldSdkBucketApi;
-  readonly sp?: { readonly getSPUrlByBucket?: (bucketName: string) => Promise<string> };
+  readonly sp?: GreenfieldSdkSpApi;
+  readonly virtualGroup?: GreenfieldSdkVirtualGroupApi;
 }
 
 interface GreenfieldSdkModule {
@@ -526,6 +536,29 @@ function bucketInfoFromResponse(response: UnknownRecord): UnknownRecord | null {
   return null;
 }
 
+function virtualGroupFamilyFromResponse(response: UnknownRecord): UnknownRecord | null {
+  const direct = recordValue(firstField(response, "globalVirtualGroupFamily", "GlobalVirtualGroupFamily", "global_virtual_group_family"));
+  if (direct !== null) return direct;
+  const body = recordValue(response.body);
+  const bodyFamily = recordValue(firstField(body, "globalVirtualGroupFamily", "GlobalVirtualGroupFamily", "global_virtual_group_family"));
+  if (bodyFamily !== null) return bodyFamily;
+  return firstField(response, "primarySpId", "PrimarySpId", "primary_sp_id") === undefined ? null : response;
+}
+
+function storageProvidersFromResponse(response: unknown): readonly UnknownRecord[] | null {
+  const source = Array.isArray(response)
+    ? response
+    : (() => {
+        const record = recordValue(response);
+        const body = recordValue(record?.body);
+        return firstField(record, "sps", "Sps", "storageProviders", "StorageProviders") ??
+          firstField(body, "sps", "Sps", "storageProviders", "StorageProviders");
+      })();
+  if (!Array.isArray(source)) return null;
+  const records = source.map(recordValue);
+  return records.every((entry): entry is UnknownRecord => entry !== null) ? records : null;
+}
+
 function bucketMetaFromResponse(response: UnknownRecord): UnknownRecord | null {
   const body = recordValue(response.body);
   if (body === null) return null;
@@ -798,47 +831,96 @@ export class GreenfieldSdkPublisher implements GreenfieldPublisher {
       throw new PublicationProviderError("DURABLE_GRAPH_INVALID", "Greenfield canary bucket payment address differs", false);
     }
 
-    let operator = stringField(firstField(info, "operator", "Operator", "primarySpAddress", "PrimarySpAddress", "primary_sp_address"));
-    let creationTransactionHash = hashOrNull(firstField(info, "createTxHash", "CreateTxHash", "create_tx_hash"));
-    if (operator === null) {
-      const getBucketMeta = bucketApi.getBucketMeta;
-      if (getBucketMeta === undefined) {
-        throw new PublicationProviderError("UNSUPPORTED_PROVIDER", "Greenfield SP bucket metadata API is unavailable", false);
-      }
-      let metaResponse: UnknownRecord;
-      try {
-        metaResponse = await getBucketMeta.call(bucketApi, {
-          bucketName: this.options.bucket,
-          endpoint: provider.endpoint
-        });
-      } catch {
-        // An SP 404 or transient error does not prove the chain bucket is
-        // absent; keep creation blocked until a later reconciliation.
-        return { status: "unknown", creationTransactionHash: null };
-      }
-      const metaStatus = responseStatus(metaResponse);
-      const metaCode = responseCode(metaResponse);
-      if (metaStatus === 404 || metaCode === 404 || (metaStatus !== null && metaStatus >= 400) || metaCode !== 0) {
-        return { status: "unknown", creationTransactionHash: null };
-      }
-      const metadata = bucketMetaFromResponse(metaResponse);
-      if (metadata === null) {
-        throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield bucket metadata response was malformed", false);
-      }
-      operator = stringField(firstField(metadata, "operator", "Operator", "primarySpAddress", "PrimarySpAddress", "primary_sp_address"));
-      const createValue = firstField(metadata, "createTxHash", "CreateTxHash", "create_tx_hash");
-      if (createValue !== undefined && createValue !== "") {
-        creationTransactionHash = hashOrNull(createValue);
-        if (creationTransactionHash === null) {
-          throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield bucket create transaction hash was malformed", false);
-        }
-      }
+    const familyId = numericField(firstField(info, "globalVirtualGroupFamilyId", "GlobalVirtualGroupFamilyId", "global_virtual_group_family_id"));
+    if (familyId === null || !Number.isSafeInteger(familyId) || familyId < 0) {
+      throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield bucket virtual-group family metadata was malformed", false);
     }
-    if (operator === null || !/^0x[0-9a-fA-F]{40}$/.test(operator)) {
-      throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield bucket SP operator metadata was malformed", false);
+    const virtualGroup = this.client.virtualGroup;
+    if (virtualGroup?.getGlobalVirtualGroupFamily === undefined) {
+      throw new PublicationProviderError("UNSUPPORTED_PROVIDER", "Greenfield virtual-group query API is unavailable", false);
     }
-    if (operator.toLowerCase() !== provider.operatorAddress.toLowerCase()) {
-      throw new PublicationProviderError("DURABLE_GRAPH_INVALID", "Greenfield canary bucket SP differs from the pinned operator", false);
+    let familyResponse: unknown;
+    try {
+      familyResponse = await virtualGroup.getGlobalVirtualGroupFamily.call(virtualGroup, { familyId });
+    } catch {
+      // A chain query failure does not prove that the bucket is absent.
+      return { status: "unknown", creationTransactionHash: null };
+    }
+    const familyRecord = recordValue(familyResponse);
+    if (familyRecord !== null && responseCode(familyRecord) !== 0) {
+      return { status: "unknown", creationTransactionHash: null };
+    }
+    const family = familyRecord === null ? null : virtualGroupFamilyFromResponse(familyRecord);
+    const primarySpId = numericField(firstField(family, "primarySpId", "PrimarySpId", "primary_sp_id"));
+    if (primarySpId === null || !Number.isSafeInteger(primarySpId) || primarySpId < 0) {
+      throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield virtual-group primary SP metadata was malformed", false);
+    }
+    const sp = this.client.sp;
+    if (sp?.getStorageProviders === undefined) {
+      throw new PublicationProviderError("UNSUPPORTED_PROVIDER", "Greenfield storage-provider query API is unavailable", false);
+    }
+    let storageProvidersResponse: unknown;
+    try {
+      storageProvidersResponse = await sp.getStorageProviders.call(sp);
+    } catch {
+      return { status: "unknown", creationTransactionHash: null };
+    }
+    const storageProviders = storageProvidersFromResponse(storageProvidersResponse);
+    if (storageProviders === null) {
+      throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield storage-provider metadata response was malformed", false);
+    }
+    const storageProvider = storageProviders.find((candidate) =>
+      numericField(firstField(candidate, "id", "Id", "spId", "SpId", "sp_id")) === primarySpId
+    );
+    if (storageProvider === undefined) {
+      throw new PublicationProviderError("DURABLE_GRAPH_INVALID", "Greenfield bucket primary SP is not in the provider set", false);
+    }
+    const operator = stringField(firstField(storageProvider, "operatorAddress", "OperatorAddress", "operator_address"));
+    const endpoint = stringField(firstField(storageProvider, "endpoint", "Endpoint"));
+    if (operator === null || endpoint === null || !/^0x[0-9a-fA-F]{40}$/.test(operator)) {
+      throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield storage-provider metadata was malformed", false);
+    }
+    let normalizedEndpoint: string;
+    try {
+      normalizedEndpoint = canonicalHttpsUrl(endpoint, "storage provider endpoint");
+    } catch {
+      throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield storage-provider endpoint was malformed", false);
+    }
+    if (operator.toLowerCase() !== provider.operatorAddress.toLowerCase() || normalizedEndpoint !== provider.endpoint) {
+      throw new PublicationProviderError("DURABLE_GRAPH_INVALID", "Greenfield canary bucket SP differs from the pinned provider", false);
+    }
+
+    const getBucketMeta = bucketApi.getBucketMeta;
+    if (getBucketMeta === undefined) {
+      throw new PublicationProviderError("UNSUPPORTED_PROVIDER", "Greenfield SP bucket metadata API is unavailable", false);
+    }
+    let metaResponse: UnknownRecord;
+    try {
+      metaResponse = await getBucketMeta.call(bucketApi, {
+        bucketName: this.options.bucket,
+        endpoint: provider.endpoint
+      });
+    } catch {
+      // An SP 404 or transient error does not prove the chain bucket is
+      // absent; keep creation blocked until a later reconciliation.
+      return { status: "unknown", creationTransactionHash: null };
+    }
+    const metaStatus = responseStatus(metaResponse);
+    const metaCode = responseCode(metaResponse);
+    if (metaStatus === 404 || metaCode === 404 || (metaStatus !== null && metaStatus >= 400) || metaCode !== 0) {
+      return { status: "unknown", creationTransactionHash: null };
+    }
+    const metadata = bucketMetaFromResponse(metaResponse);
+    if (metadata === null) {
+      throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield bucket metadata response was malformed", false);
+    }
+    const createValue = firstField(metadata, "createTxHash", "CreateTxHash", "create_tx_hash");
+    if (createValue === undefined || createValue === "") {
+      throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield bucket create transaction hash metadata was missing", false);
+    }
+    const creationTransactionHash = hashOrNull(createValue);
+    if (creationTransactionHash === null) {
+      throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield bucket create transaction hash was malformed", false);
     }
     return { status: "present", creationTransactionHash };
   }
