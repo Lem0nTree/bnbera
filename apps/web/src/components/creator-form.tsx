@@ -17,7 +17,7 @@ export function CreatorForm() {
     <label>Description<textarea name="description" required minLength={20} maxLength={500} /></label>
     <label>Refresh interval<select name="refreshMinutes" defaultValue="15"><option value="5">5 minutes</option><option value="15">15 minutes</option><option value="30">30 minutes</option></select></label>
     <label><input name="publicationConsent" type="checkbox" required /> I consent to publish this fixed-template agent after verification.</label>
-    <button type="submit">Save audited-template draft</button>
+    <button type="submit">Save reviewed-configuration draft</button>
     {message === null ? null : <p role="status">{message}</p>}
   </form>;
 }

@@ -51,7 +51,11 @@ export async function runCreatorSwap(input: { readonly adapter: CreatorSwapAdapt
   return result.status;
 }
 
-/** One bounded Studio step. Unknown outcomes reconcile rather than rerun. */
+/**
+ * Fake-adapter/preparation seam only. It is not wired to a live worker: a
+ * real Studio spawn must first persist a provider operation ID that the
+ * provider can reconcile after process loss.
+ */
 export async function runCreatorStudioStep(input: { readonly deploymentId: string; readonly readiness: StudioReadiness; readonly store: CreatorWorkerStore; readonly studio: CreatorStudioAdapter }): Promise<CreatorStage | null> {
   const current = await input.store.load(input.deploymentId);
   if (!input.readiness.ready || current.stage !== "studio_scaffold_package") return null;

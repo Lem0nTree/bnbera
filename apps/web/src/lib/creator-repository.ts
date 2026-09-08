@@ -23,11 +23,17 @@ export class CreatorRepository {
       [creatorTemplate.slug, creatorTemplate.semanticVersion, creatorTemplate.category, json(creatorTemplate.displayMetadata), json(creatorTemplate.configurationSchema), json(creatorTemplate.capabilityManifest), json(creatorTemplate.protocolManifest), json(policy), creatorTemplate.artifactDigest, creatorTemplate.sourceCommit]
     );
     if (row.rows[0] !== undefined) return row.rows[0].id;
-    const existing = await this.pool.query<{ id: string; artifact_digest: string; configuration_schema: unknown; capability_manifest: unknown; protocol_manifest: unknown; contract_selector_allowlist: unknown }>(
-      `SELECT id, artifact_digest, configuration_schema, capability_manifest, protocol_manifest, contract_selector_allowlist FROM agent_templates WHERE slug=$1 AND semantic_version=$2`, [creatorTemplate.slug, creatorTemplate.semanticVersion]
+    // PostgreSQL JSONB equality is key-order independent. Do not stringify a
+    // returned JSONB value: PostgreSQL may normalize its object key order.
+    const existing = await this.pool.query<{ id: string }>(
+      `SELECT id FROM agent_templates
+        WHERE slug=$1 AND semantic_version=$2 AND artifact_digest=$3
+          AND configuration_schema=$4::jsonb AND capability_manifest=$5::jsonb
+          AND protocol_manifest=$6::jsonb AND contract_selector_allowlist=$7::jsonb`,
+      [creatorTemplate.slug, creatorTemplate.semanticVersion, creatorTemplate.artifactDigest, json(creatorTemplate.configurationSchema), json(creatorTemplate.capabilityManifest), json(creatorTemplate.protocolManifest), json(policy)]
     );
     const value = existing.rows[0];
-    if (value === undefined || value.artifact_digest !== creatorTemplate.artifactDigest || json(value.configuration_schema) !== json(creatorTemplate.configurationSchema) || json(value.capability_manifest) !== json(creatorTemplate.capabilityManifest) || json(value.protocol_manifest) !== json(creatorTemplate.protocolManifest) || json(value.contract_selector_allowlist) !== json(policy)) throw new CreatorRepositoryError("TEMPLATE_IMMUTABLE_MISMATCH", "The fixed Creator template version differs from its persisted manifest.");
+    if (value === undefined) throw new CreatorRepositoryError("TEMPLATE_IMMUTABLE_MISMATCH", "The fixed Creator template version differs from its persisted manifest.");
     return value.id;
   }
 
