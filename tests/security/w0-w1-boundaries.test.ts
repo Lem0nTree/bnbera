@@ -110,8 +110,8 @@ describe("W0/W1 optional rails fail closed", () => {
     // The testnet Altana contracts have read-only runtime evidence, but no
     // Creator authority or write rail is enabled by this lock.
     expect(lock.altana.testnet.verificationStatus).toBe("verified-read-only-runtime-at-block-129582452");
-    expect(lock.toolchain.agentStudioRuntime.integrity).toBeNull();
-    expect(lock.toolchain.agentStudioRuntime.verificationStatus).toMatch(/pending|blocked/i);
+    expect(lock.toolchain.agentStudioRuntime.integrity).toBe("sha512-8/ZuHCDjVihrQdeZzAayR/QiZW8or7ca5nDiDOrhGDqIHO836Ktta+s+yTxvck9mSOXQQWTs6VbCSNZkcJbgLQ==");
+    expect(lock.toolchain.agentStudioRuntime.verificationStatus).toBe("pinned-from-npm-registry");
     expect(lock.releaseGates.bscMainTrackNetworkDecision).toBe("unresolved");
     expect(lock.releaseGates.erc8004ValidationRegistry).toBe("disabled-no-official-bsc-address");
   });

@@ -162,6 +162,9 @@ export function normalizePolicy(policy: ScopedPolicy): ScopedPolicy {
     adminAddress: normalizeAddress(policy.adminAddress),
     walletAddress: normalizeAddress(policy.walletAddress),
     sessionPublicAddress: normalizeAddress(policy.sessionPublicAddress),
+    ...(policy.sessionPublicKey === undefined
+      ? {}
+      : { sessionPublicKey: normalizeSessionPublicKey(policy.sessionPublicKey) }),
     calls: calls
       .sort((left, right) => left.target.localeCompare(right.target))
       .map((entry) => ({ ...entry, selectors: [...entry.selectors] })),
@@ -170,6 +173,13 @@ export function normalizePolicy(policy: ScopedPolicy): ScopedPolicy {
       .map((entry) => ({ ...entry })),
     expiresAtUnix: policy.expiresAtUnix,
   };
+}
+
+function normalizeSessionPublicKey(value: string): `0x${string}` {
+  if (typeof value !== "string" || !/^0x[a-fA-F0-9]{64,260}$/.test(value) || (value.length - 2) % 2 !== 0) {
+    throw new AltanaBoundaryError("INVALID_ADDRESS", "A session public key must be a non-empty hexadecimal key.");
+  }
+  return `0x${value.slice(2).toLowerCase()}` as `0x${string}`;
 }
 
 export function createScopedPolicy(draft: PolicyDraft): ScopedPolicy {
@@ -412,6 +422,7 @@ export function serializePolicy(policy: ScopedPolicy): string {
     adminAddress: normalized.adminAddress,
     walletAddress: normalized.walletAddress,
     sessionPublicAddress: normalized.sessionPublicAddress,
+    ...(normalized.sessionPublicKey === undefined ? {} : { sessionPublicKey: normalized.sessionPublicKey }),
     calls: normalized.calls.map((entry) => ({
       target: entry.target,
       selectors: [...entry.selectors],

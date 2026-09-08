@@ -39,6 +39,12 @@ export interface ScopedPolicy {
   readonly walletAddress: Address;
   /** Exact public address of the delegated runtime session key. */
   readonly sessionPublicAddress: Address;
+  /**
+   * The Altana SDK's registered session-key public key.  This is public
+   * authority metadata (not a private key) and is required to reconcile the
+   * SDK's KeyStore registration; older callers may omit it until grant time.
+   */
+  readonly sessionPublicKey?: HexString;
   readonly calls: readonly CallPermission[];
   readonly spend: readonly SpendPermission[];
   /** Unix seconds; policy must always expire in the future at grant time. */
