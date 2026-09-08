@@ -4,29 +4,49 @@ import { keccak256, stringToHex } from "viem";
 import { z } from "zod";
 
 /** The only Creator artifact in the MVP. This is deliberately not a builder. */
+export const creatorTradingPairs = {
+  "tbnb-cake": {
+    label: "tBNB → CAKE",
+    token: "0x8d008b313c1d6c7fe2982f62d32da7507cf43551",
+    pair: "0xd08759b57bbd0158feac17457ce5871b45e85bd9",
+  },
+  "tbnb-busd": {
+    label: "tBNB → BUSD",
+    token: "0x78867bbeef44f2326bf8ddd1941a4439382ef2a7",
+    pair: "0x85ecdcdd01ebe0bfd0aba74b81ca6d7f4a53582b",
+  },
+} as const;
+
 const creatorTemplateSource = {
   slug: "pancakeswap-one-shot-swap",
-  semanticVersion: "1.0.0",
+  semanticVersion: "1.1.0",
   // This template performs one bounded swap; it has no price bands or repeat
   // loop, so calling it a grid strategy would be misleading.
   category: "uncategorized",
-  sourceCommit: "creator-fixed-template-v1",
+  sourceCommit: "creator-bounded-customization-v1.1.0",
   displayMetadata: {
-    title: "Bounded one-shot tBNB → CAKE swap agent",
+    title: "Bounded one-shot PancakeSwap native swap agent",
     description: "A reviewed BSC-testnet PancakeSwap V2 template that performs one bounded swap; it is not a grid or rebalancing strategy."
   },
   configurationSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["protocol"],
-    properties: { protocol: { const: "pancakeswap-v2" } }
+    required: ["protocol", "tradingPair", "inputAmountWei", "slippageBps", "quoteMaxAgeSeconds", "deadlineSeconds"],
+    properties: {
+      protocol: { const: "pancakeswap-v2" },
+      tradingPair: { enum: Object.keys(creatorTradingPairs) },
+      inputAmountWei: { enum: ["100000000000000", "500000000000000", "1000000000000000"] },
+      slippageBps: { enum: [10, 25, 50] },
+      quoteMaxAgeSeconds: { enum: [30, 60] },
+      deadlineSeconds: { enum: [60, 120] },
+    }
   },
   capabilityManifest: { capabilities: ["pancakeswap_v2_exact_native_swap"], writeCapabilities: ["pancakeswap_v2_exact_native_swap"] },
   protocolManifest: { network: "bsc-testnet", protocols: ["A2A"], delegatedLifecycle: "erc8004_uri_and_fixed_swap" },
   // Exact BSC-testnet ERC-8004 IdentityRegistry `setAgentURI(uint256,string)`
   // lifecycle permission. Target is standards-lock chain 97; selector is from
   // the pinned IdentityRegistry ABI. The health computation remains HTTP-only.
-  contractSelectorAllowlist: { chainId: 97, calls: [{ target: "0x8004a818bfb912233c491871b3d84c89a494bd9e", selectors: ["0x0af28bd3"], maxNativeValueWei: "0" }, { target: "0xd99d1c33f9fc3444f8101754abc46c52416550d1", selectors: ["0x7ff36ab5"], maxNativeValueWei: "1000000000000000" }], spend: [{ token: "native", limitAtomic: "2000000000000000", period: "hour" }], expirySeconds: 3600, intent: "own-agent-uri-or-fixed-swap" }
+  contractSelectorAllowlist: { chainId: 97, calls: [{ target: "0x8004a818bfb912233c491871b3d84c89a494bd9e", selectors: ["0x0af28bd3"], maxNativeValueWei: "0" }, { target: "0xd99d1c33f9fc3444f8101754abc46c52416550d1", selectors: ["0x7ff36ab5"], maxNativeValueWei: "1000000000000000" }], spend: [{ token: "native", limitAtomic: "2000000000000000", period: "hour" }], expirySeconds: 3600, intent: "own-agent-uri-or-bounded-native-swap" }
 } as const;
 
 const templateArtifactFiles = ["package.json", "app/agent/package.json", "app/agent/studio.toml", "app/agent/src/unifiedMain.ts"] as const;
@@ -50,12 +70,12 @@ export const creatorLifecycleAction = {
 export const creatorSwapPolicy = {
   router: "0xd99d1c33f9fc3444f8101754abc46c52416550d1",
   wbnb: "0xae13d989dac2f0debff460ac112a837c89baa7cd",
-  cake: "0x8d008b313c1d6c7fe2982f62d32da7507cf43551",
-  pair: "0xd08759b57bbd0158feac17457ce5871b45e85bd9",
+  pairs: creatorTradingPairs,
   selector: "0x7ff36ab5",
-  amountInWei: "1000000000000000",
+  maxInputAmountWei: "1000000000000000",
   maxSlippageBps: 50,
-  deadlineSeconds: 120
+  maxQuoteAgeSeconds: 60,
+  maxDeadlineSeconds: 120
 } as const;
 
 export const creatorProductionProfile = {
@@ -80,12 +100,17 @@ export const creatorSwapIntentSchema = z.object({
   quoteBlock: z.number().int().nonnegative(),
   quotedAtUnix: z.number().int().positive(),
   calldataDigest: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+  tradingPair: z.enum(["tbnb-cake", "tbnb-busd"]),
+  inputAmountWei: z.enum(["100000000000000", "500000000000000", "1000000000000000"]),
+  slippageBps: z.union([z.literal(10), z.literal(25), z.literal(50)]),
+  quoteMaxAgeSeconds: z.union([z.literal(30), z.literal(60)]),
+  deadlineSeconds: z.union([z.literal(60), z.literal(120)]),
   nowUnix: z.number().int().positive()
 }).strict();
 export function assertCreatorSwapIntent(value: z.infer<typeof creatorSwapIntentSchema>): void {
   const input = creatorSwapIntentSchema.parse(value);
   if (input.recipient.toLowerCase() !== input.sessionWallet.toLowerCase()) throw new Error("CREATOR_SWAP_RECIPIENT_DENIED");
-  if (input.nowUnix - input.quotedAtUnix > creatorSwapPolicy.deadlineSeconds) throw new Error("CREATOR_SWAP_QUOTE_STALE");
+  if (input.nowUnix - input.quotedAtUnix > input.quoteMaxAgeSeconds) throw new Error("CREATOR_SWAP_QUOTE_STALE");
 }
 
 export const creatorUriIntentSchema = z.object({
@@ -111,13 +136,44 @@ export const creatorDraftRequestSchema = z.object({
   slug: z.string().trim().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).min(3).max(80),
   description: z.string().trim().min(20).max(500),
   protocol: z.literal("pancakeswap-v2"),
+  tradingPair: z.enum(["tbnb-cake", "tbnb-busd"]),
+  inputAmountWei: z.enum(["100000000000000", "500000000000000", "1000000000000000"]),
+  slippageBps: z.union([z.literal(10), z.literal(25), z.literal(50)]),
+  quoteMaxAgeSeconds: z.union([z.literal(30), z.literal(60)]),
+  deadlineSeconds: z.union([z.literal(60), z.literal(120)]),
   publicationConsent: z.literal(true)
 }).strict();
 
 export type CreatorDraftRequest = z.infer<typeof creatorDraftRequestSchema>;
 
+/** Parse once at every persistence boundary so JSONB reloads hash identically. */
+export function canonicalCreatorDraft(input: CreatorDraftRequest): CreatorDraftRequest {
+  return creatorDraftRequestSchema.parse(input);
+}
+
 export function canonicalDraftConfiguration(input: CreatorDraftRequest): Record<string, unknown> {
-  return { protocol: input.protocol };
+  const parsed = canonicalCreatorDraft(input);
+  return {
+    protocol: parsed.protocol,
+    tradingPair: parsed.tradingPair,
+    inputAmountWei: parsed.inputAmountWei,
+    slippageBps: parsed.slippageBps,
+    quoteMaxAgeSeconds: parsed.quoteMaxAgeSeconds,
+    deadlineSeconds: parsed.deadlineSeconds,
+  };
+}
+
+/** Stable six-field public-runtime digest; it contains no name, user, or secret. */
+export function canonicalRuntimeConfigurationDigest(configuration: Record<string, unknown>): string {
+  const value = {
+    protocol: configuration.protocol,
+    tradingPair: configuration.tradingPair,
+    inputAmountWei: configuration.inputAmountWei,
+    slippageBps: configuration.slippageBps,
+    quoteMaxAgeSeconds: configuration.quoteMaxAgeSeconds,
+    deadlineSeconds: configuration.deadlineSeconds,
+  };
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 /** Matches T6 `authorityPolicyDigest(serializePolicy(policy))`: Keccak, not SHA-256. */
@@ -126,8 +182,9 @@ export function creatorPolicyDigest(normalizedConcretePolicy: string): `0x${stri
 }
 
 export function draftConfigurationDigest(input: CreatorDraftRequest): string {
+  const parsed = canonicalCreatorDraft(input);
   return createHash("sha256").update(JSON.stringify({
-    name: input.name, slug: input.slug, description: input.description,
-    configuration: canonicalDraftConfiguration(input), publicationConsent: input.publicationConsent
+    name: parsed.name, slug: parsed.slug, description: parsed.description,
+    configuration: canonicalDraftConfiguration(parsed), publicationConsent: parsed.publicationConsent
   })).digest("hex");
 }

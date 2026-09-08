@@ -1,4 +1,5 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -54,9 +55,14 @@ export function parseNativeStudioStatus(output: string): StudioDeploymentRecord 
 
 const templateArtifactPaths = ["README.md", "package.json", "app/agent/package.json", "app/agent/studio.toml", "app/agent/tsconfig.json", "app/agent/src/unifiedMain.ts"] as const;
 const generatedWorkspaceDirectories = new Set(["node_modules", "dist", "build", ".studio", ".next"]);
+export type CreatorPublicRuntimeConfig = { readonly protocol: "pancakeswap-v2"; readonly tradingPair: "tbnb-cake" | "tbnb-busd"; readonly inputAmountWei: "100000000000000" | "500000000000000" | "1000000000000000"; readonly slippageBps: 10 | 25 | 50; readonly quoteMaxAgeSeconds: 30 | 60; readonly deadlineSeconds: 60 | 120 };
+const publicConfigPath = "app/agent/.bnbera-public-config.json";
+function publicConfigBytes(config: CreatorPublicRuntimeConfig, digest: string): string { return JSON.stringify({ configuration: config, configurationDigest: digest }) + "\n"; }
+function runtimeDigest(config: CreatorPublicRuntimeConfig): string { return createHash("sha256").update(JSON.stringify({ protocol: config.protocol, tradingPair: config.tradingPair, inputAmountWei: config.inputAmountWei, slippageBps: config.slippageBps, quoteMaxAgeSeconds: config.quoteMaxAgeSeconds, deadlineSeconds: config.deadlineSeconds })).digest("hex"); }
+function validPublicConfig(root: string, config: CreatorPublicRuntimeConfig, digest: string): boolean { try { const bytes = readFileSync(join(root, publicConfigPath), "utf8"); return digest === runtimeDigest(config) && bytes === publicConfigBytes(config, digest); } catch { return false; } }
 
 /** A workspace is reusable only when it is exactly the reviewed artifact. */
-function hasExactTemplateArtifact(root: string): boolean {
+function hasExactTemplateArtifact(root: string, config?: CreatorPublicRuntimeConfig, digest?: string): boolean {
   try {
     const source = new URL("../../../../templates/pancakeswap-one-shot/", import.meta.url);
     const expected = new Set(templateArtifactPaths);
@@ -67,8 +73,8 @@ function hasExactTemplateArtifact(root: string): boolean {
       if (entry.isDirectory() && generatedWorkspaceDirectories.has(entry.name)) return [];
       return entry.isDirectory() ? entries(join(directory, entry.name), `${relative}/`) : [relative];
     });
-    if (entries(root).some((path) => !expected.has(path as typeof templateArtifactPaths[number]))) return false;
-    return templateArtifactPaths.every((path) => statSync(join(root, path)).isFile() && readFileSync(join(root, path)).equals(readFileSync(new URL(path, source))));
+    if (entries(root).some((path) => !expected.has(path as typeof templateArtifactPaths[number]) && path !== publicConfigPath)) return false;
+    return templateArtifactPaths.every((path) => statSync(join(root, path)).isFile() && readFileSync(join(root, path)).equals(readFileSync(new URL(path, source)))) && (config === undefined || digest === undefined || validPublicConfig(root, config, digest));
   } catch { return false; }
 }
 
@@ -101,13 +107,14 @@ export function nativeStudioProcessAdapter(): import("./creator-worker").Creator
     return String(result.stdout);
   };
   return {
-    async inspect(workspaceParent, runtimeName) {
-      return hasExactTemplateArtifact(join(workspaceParent, runtimeName)) ? "STUDIO_TEMPLATE_READY" : "STUDIO_TEMPLATE_MISMATCH";
+    async inspect(workspaceParent, runtimeName, config, digest) {
+      return hasExactTemplateArtifact(join(workspaceParent, runtimeName), config, digest) ? "STUDIO_TEMPLATE_READY" : "STUDIO_TEMPLATE_MISMATCH";
     },
-    async materialize(workspaceParent, runtimeName) {
+    async materialize(workspaceParent, runtimeName, config, digest) {
       const destination = join(workspaceParent, runtimeName);
       const source = new URL("../../../../templates/pancakeswap-one-shot/", import.meta.url);
-      if (existsSync(destination)) return hasExactTemplateArtifact(destination) ? "STUDIO_TEMPLATE_READY" : "STUDIO_TEMPLATE_MISMATCH";
+      if (config === undefined || digest === undefined) return "STUDIO_TEMPLATE_MISMATCH";
+      if (existsSync(destination)) return hasExactTemplateArtifact(destination, config, digest) ? "STUDIO_TEMPLATE_READY" : "STUDIO_TEMPLATE_MISMATCH";
       try {
         // Do not recursively copy the template directory: that would copy
         // .gitignore or later generated directories into a workspace whose
@@ -117,8 +124,9 @@ export function nativeStudioProcessAdapter(): import("./creator-worker").Creator
           mkdirSync(dirname(target), { recursive: true });
           copyFileSync(new URL(path, source), target, 0);
         }
-        return hasExactTemplateArtifact(destination) ? "STUDIO_TEMPLATE_READY" : "STUDIO_TEMPLATE_MISMATCH";
-      } catch { return hasExactTemplateArtifact(destination) ? "STUDIO_TEMPLATE_READY" : "STUDIO_TEMPLATE_MISMATCH"; }
+        writeFileSync(join(destination, publicConfigPath), publicConfigBytes(config, digest), { flag: "wx" });
+        return hasExactTemplateArtifact(destination, config, digest) ? "STUDIO_TEMPLATE_READY" : "STUDIO_TEMPLATE_MISMATCH";
+      } catch { return hasExactTemplateArtifact(destination, config, digest) ? "STUDIO_TEMPLATE_READY" : "STUDIO_TEMPLATE_MISMATCH"; }
     },
     async run(command, input) {
       try { await execute(command, input.cwd); return { exitCode: 0, reasonCode: "STUDIO_COMMAND_OK" as const }; }

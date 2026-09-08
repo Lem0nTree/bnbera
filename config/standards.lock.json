@@ -322,6 +322,22 @@
       "wbnb": "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd",
       "cake": "0x8d008B313C1d6C7fE2982F62d32Da7507cF43551",
       "pair": "0xd08759B57BBd0158fEAC17457Ce5871B45e85bD9",
+      "creatorPairAllowlist": {
+        "tbnb-cake": {
+          "token": "0x8d008B313C1d6C7fE2982F62d32Da7507cF43551",
+          "pair": "0xd08759B57BBd0158fEAC17457Ce5871B45e85bD9",
+          "tokenSymbol": "Cake",
+          "tokenDecimals": 18,
+          "verification": "factory getPair, pair token0/token1, getReserves, token symbol/decimals; publicnode latest read 2026-09-08"
+        },
+        "tbnb-busd": {
+          "token": "0x78867BbEeF44f2326bF8DDd1941a4439382EF2A7",
+          "pair": "0x85eCdCDD01EbE0bfd0aBa74B81cA6D7F4A53582b",
+          "tokenSymbol": "BUSD",
+          "tokenDecimals": 18,
+          "verification": "factory getPair, pair token0/token1, getReserves, token symbol/decimals; publicnode latest read 2026-09-08"
+        }
+      },
       "verificationBlock": 129743072,
       "releaseEnabled": false,
       "verificationStatus": "verified-read-only-router-factory-pair-token-and-liquidity"

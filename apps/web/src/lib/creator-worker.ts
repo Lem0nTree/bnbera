@@ -1,6 +1,7 @@
 import type { StudioReadiness } from "./creator-studio";
 import { join } from "node:path";
 import { nativeStudioDeployCommand, nativeStudioStatusCommand, type StudioDeploymentRecord } from "./creator-studio";
+import type { CreatorPublicRuntimeConfig } from "./creator-studio";
 
 /**
  * Bounded, restart-safe progression. Every external operation must first save
@@ -22,9 +23,9 @@ export function externalOutcomePolicy(): "reconcile_before_retry" { return "reco
 
 export interface CreatorStudioAdapter {
   /** Read-only exact-artifact check used after a worker crash. */
-  inspect(workspaceParent: string, runtimeName: string): Promise<"STUDIO_TEMPLATE_READY" | "STUDIO_TEMPLATE_MISMATCH">;
+  inspect(workspaceParent: string, runtimeName: string, config?: CreatorPublicRuntimeConfig, configurationDigest?: string): Promise<"STUDIO_TEMPLATE_READY" | "STUDIO_TEMPLATE_MISMATCH">;
   /** Copies only the checked-in immutable artifact into its deterministic workspace. */
-  materialize(workspaceParent: string, runtimeName: string): Promise<"STUDIO_TEMPLATE_READY" | "STUDIO_TEMPLATE_MISMATCH">;
+  materialize(workspaceParent: string, runtimeName: string, config?: CreatorPublicRuntimeConfig, configurationDigest?: string): Promise<"STUDIO_TEMPLATE_READY" | "STUDIO_TEMPLATE_MISMATCH">;
   /** Runs only after runtime integrity/config gates pass. Output is sanitized. */
   run(command: readonly string[], input: { readonly cwd: string }): Promise<{ readonly exitCode: number; readonly reasonCode: "STUDIO_COMMAND_OK" | "STUDIO_COMMAND_FAILED" | "STUDIO_COMMAND_TIMEOUT" }>;
   /** Must run the pinned status command and return only its validated public fields. */
@@ -34,7 +35,7 @@ export interface CreatorStudioAdapter {
 }
 
 export interface CreatorWorkerStore {
-  load(deploymentId: string): Promise<{ readonly stage: CreatorStage; readonly runtimeName: string; readonly projectRoot: string; readonly publicId: string | null; readonly endpoint: string | null }>;
+  load(deploymentId: string): Promise<{ readonly stage: CreatorStage; readonly runtimeName: string; readonly projectRoot: string; readonly publicId: string | null; readonly endpoint: string | null; readonly publicConfig?: CreatorPublicRuntimeConfig; readonly configurationDigest?: string }>;
   /** Saves identifier/output before advancing any external stage. */
   record(deploymentId: string, input: { readonly stage: CreatorStage; readonly publicId: string | null; readonly endpoint?: string | null; readonly operationId?: string; readonly reasonCode: string }): Promise<void>;
   /** Durable intent event before `bag deploy` is spawned. */
@@ -88,13 +89,13 @@ export async function runCreatorStudioStep(input: { readonly deploymentId: strin
     // A prior process may have died after its durable intent. Inspection is
     // deliberately read-only: a reconciler must never create a workspace.
     if (claim === "reconcile") {
-      const inspected = await input.studio.inspect(current.projectRoot, current.runtimeName);
+    const inspected = await input.studio.inspect(current.projectRoot, current.runtimeName, current.publicConfig, current.configurationDigest);
       await input.store.record(input.deploymentId, { stage: "studio_scaffold_package", publicId: null, reasonCode: inspected });
       if (inspected !== "STUDIO_TEMPLATE_READY") return null;
       await input.store.record(input.deploymentId, { stage: "deploy_reconcile", publicId: null, reasonCode: "STUDIO_TEMPLATE_RECONCILED" });
       return "deploy_reconcile";
     }
-    const materialized = await input.studio.materialize(current.projectRoot, current.runtimeName);
+    const materialized = await input.studio.materialize(current.projectRoot, current.runtimeName, current.publicConfig, current.configurationDigest);
     await input.store.record(input.deploymentId, { stage: "studio_scaffold_package", publicId: null, reasonCode: materialized });
     if (materialized !== "STUDIO_TEMPLATE_READY") return null;
     await input.store.record(input.deploymentId, { stage: "deploy_reconcile", publicId: null, reasonCode: "STUDIO_TEMPLATE_READY" });

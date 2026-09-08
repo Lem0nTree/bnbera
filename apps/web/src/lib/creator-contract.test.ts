@@ -2,17 +2,21 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { assertCreatorNetworkExecution, assertCreatorSwapIntent, assertCreatorUriIntent, creatorDraftRequestSchema, creatorLifecycleAction, creatorProductionProfile, creatorSwapPolicy, creatorTemplate, creatorUriIntentDigest } from "./creator-contract";
+import { assertCreatorNetworkExecution, assertCreatorSwapIntent, assertCreatorUriIntent, canonicalRuntimeConfigurationDigest, creatorDraftRequestSchema, creatorLifecycleAction, creatorProductionProfile, creatorSwapPolicy, creatorTemplate, creatorUriIntentDigest } from "./creator-contract";
 import { unavailableCreatorRuntimeAuthority } from "./creator-authority-runtime";
 import { nativeStudioDeployCommand, nativeStudioPingUrl, nativeStudioProcessAdapter, nativeStudioStatusCommand, parseNativeStudioStatus, studioReadiness } from "./creator-studio";
 import { externalOutcomePolicy, nextCreatorStage, runCreatorStudioStep, type CreatorStage } from "./creator-worker";
 
 describe("Creator fixed-template boundary", () => {
-  const draft = { idempotencyKey: "00000000-0000-4000-8000-000000000001", name: "Safe swap", slug: "safe-swap", description: "A bounded PancakeSwap testnet CAKE swap agent.", protocol: "pancakeswap-v2", publicationConsent: true };
-  it("accepts only the fixed audited parameters", () => {
+  const runtimeConfig = { protocol: "pancakeswap-v2", tradingPair: "tbnb-cake", inputAmountWei: "1000000000000000", slippageBps: 50, quoteMaxAgeSeconds: 60, deadlineSeconds: 120 } as const;
+  const runtimeConfigDigest = canonicalRuntimeConfigurationDigest(runtimeConfig);
+  const draft = { idempotencyKey: "00000000-0000-4000-8000-000000000001", name: "Safe swap", slug: "safe-swap", description: "A bounded PancakeSwap testnet CAKE swap agent.", protocol: "pancakeswap-v2", tradingPair: "tbnb-cake", inputAmountWei: "1000000000000000", slippageBps: 50, quoteMaxAgeSeconds: 60, deadlineSeconds: 120, publicationConsent: true };
+  it("accepts only curated bounded user configuration", () => {
     expect(creatorDraftRequestSchema.safeParse(draft).success).toBe(true);
     expect(creatorDraftRequestSchema.safeParse({ ...draft, prompt: "write arbitrary code" }).success).toBe(false);
     expect(creatorDraftRequestSchema.safeParse({ ...draft, protocol: "other" }).success).toBe(false);
+    expect(creatorDraftRequestSchema.safeParse({ ...draft, tradingPair: "0xarbitrary" }).success).toBe(false);
+    expect(creatorDraftRequestSchema.safeParse({ ...draft, inputAmountWei: "1000000000000001" }).success).toBe(false);
   });
   it("uses the native non-interactive Studio deployment shape", () => {
     expect(nativeStudioDeployCommand("/srv/creator/studio")).toEqual(["bag", "deploy", "--provider", "bnb", "--project-root", "/srv/creator/studio", "--yes"]);
@@ -30,10 +34,12 @@ describe("Creator fixed-template boundary", () => {
     expect(() => assertCreatorUriIntent({ allowedAgentId: "78", allowedUriDigest: digest, intent, authorityStatus: "active" })).toThrow("CREATOR_URI_INTENT_DENIED");
     expect(() => assertCreatorUriIntent({ allowedAgentId: "77", allowedUriDigest: digest, intent, authorityStatus: "revoked" })).toThrow("CREATOR_AUTHORITY_NOT_ACTIVE");
   });
-  it("allows only the exact fresh self-recipient tBNB to CAKE swap", () => {
-    expect(creatorSwapPolicy.amountInWei).toBe("1000000000000000");
-    expect(() => assertCreatorSwapIntent({ recipient: "0x1111111111111111111111111111111111111111", sessionWallet: "0x1111111111111111111111111111111111111111", quoteBlock: 1, quotedAtUnix: 100, nowUnix: 220, calldataDigest: `0x${"aa".repeat(32)}` })).not.toThrow();
-    expect(() => assertCreatorSwapIntent({ recipient: "0x2222222222222222222222222222222222222222", sessionWallet: "0x1111111111111111111111111111111111111111", quoteBlock: 1, quotedAtUnix: 100, nowUnix: 101, calldataDigest: `0x${"aa".repeat(32)}` })).toThrow("CREATOR_SWAP_RECIPIENT_DENIED");
+  it("allows only curated fresh self-recipient native swaps", () => {
+    expect(creatorSwapPolicy.maxInputAmountWei).toBe("1000000000000000");
+    const intent = { recipient: "0x1111111111111111111111111111111111111111", sessionWallet: "0x1111111111111111111111111111111111111111", quoteBlock: 1, quotedAtUnix: 100, nowUnix: 130, calldataDigest: `0x${"aa".repeat(32)}`, tradingPair: "tbnb-busd" as const, inputAmountWei: "500000000000000" as const, slippageBps: 25 as const, quoteMaxAgeSeconds: 30 as const, deadlineSeconds: 60 as const };
+    expect(() => assertCreatorSwapIntent(intent)).not.toThrow();
+    expect(() => assertCreatorSwapIntent({ ...intent, recipient: "0x2222222222222222222222222222222222222222" })).toThrow("CREATOR_SWAP_RECIPIENT_DENIED");
+    expect(() => assertCreatorSwapIntent({ ...intent, nowUnix: 131 })).toThrow("CREATOR_SWAP_QUOTE_STALE");
   });
   it("keeps the chain-56 profile read-only until an explicit release gate", () => {
     expect(creatorProductionProfile.writesEnabled).toBe(false);
@@ -115,17 +121,26 @@ describe("Creator fixed-template boundary", () => {
     const parent = mkdtempSync(join(tmpdir(), "bnbera-creator-"));
     try {
       const studio = nativeStudioProcessAdapter();
-      await expect(studio.materialize(parent, "bnberahf123")).resolves.toBe("STUDIO_TEMPLATE_READY");
+      await expect(studio.materialize(parent, "bnberahf123", runtimeConfig, runtimeConfigDigest)).resolves.toBe("STUDIO_TEMPLATE_READY");
       // Package installation and Studio state must not become part of the
       // immutable source artifact or make a restart look tampered.
       mkdirSync(join(parent, "bnberahf123", "app/agent/node_modules/example"), { recursive: true });
       mkdirSync(join(parent, "bnberahf123", ".studio/wallets"), { recursive: true });
       writeFileSync(join(parent, "bnberahf123", "app/agent/node_modules/example/index.js"), "generated");
       writeFileSync(join(parent, "bnberahf123", ".studio/wallets/altana-session.json"), "generated-session-state");
-      await expect(studio.materialize(parent, "bnberahf123")).resolves.toBe("STUDIO_TEMPLATE_READY");
+      await expect(studio.materialize(parent, "bnberahf123", runtimeConfig, runtimeConfigDigest)).resolves.toBe("STUDIO_TEMPLATE_READY");
       const partial = join(parent, "bnberahf456");
       writeFileSync(partial, "partial artifact");
-      await expect(studio.materialize(parent, "bnberahf456")).resolves.toBe("STUDIO_TEMPLATE_MISMATCH");
+      await expect(studio.materialize(parent, "bnberahf456", runtimeConfig, runtimeConfigDigest)).resolves.toBe("STUDIO_TEMPLATE_MISMATCH");
+    } finally { rmSync(parent, { recursive: true, force: true }); }
+  });
+  it("denies reload when generated public config or digest is tampered", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "bnbera-creator-config-"));
+    try {
+      const studio = nativeStudioProcessAdapter();
+      await expect(studio.materialize(parent, "bnberahf999", runtimeConfig, runtimeConfigDigest)).resolves.toBe("STUDIO_TEMPLATE_READY");
+      writeFileSync(join(parent, "bnberahf999", "app/agent/.bnbera-public-config.json"), JSON.stringify({ configuration: runtimeConfig, configurationDigest: "0".repeat(64) }));
+      await expect(studio.inspect(parent, "bnberahf999", runtimeConfig, runtimeConfigDigest)).resolves.toBe("STUDIO_TEMPLATE_MISMATCH");
     } finally { rmSync(parent, { recursive: true, force: true }); }
   });
   it("reconciles a crash after scaffold intent from an exact artifact and fails a partial one", async () => {

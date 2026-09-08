@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 
-type Draft = { id: string; name: string; slug: string; status: string; deploymentState: string | null; currentStep: string | null; authorityId: string | null };
+type Draft = { id: string; name: string; slug: string; status: string; deploymentState: string | null; currentStep: string | null; authorityId: string | null; configuration?: { tradingPair?: string; inputAmountWei?: string; slippageBps?: number } };
 export function CreatorDashboard() {
   const [drafts, setDrafts] = useState<readonly Draft[] | null>(null); const [error, setError] = useState<string | null>(null);
   const [authority, setAuthority] = useState<string | null>(null);
@@ -10,5 +10,5 @@ export function CreatorDashboard() {
   if (error !== null) return <p role="alert">{error}</p>;
   if (drafts === null) return <p>Loading persisted Creator drafts…</p>;
   if (drafts.length === 0) return <p>No Creator drafts yet.</p>;
-  return <><ul>{drafts.map((draft) => <li key={draft.id}><strong>{draft.name}</strong> · {draft.status} · {draft.deploymentState ?? "not queued"} {draft.currentStep === null ? "" : `(${draft.currentStep})`}<br />{draft.authorityId === null ? <small>No delegated authority is recorded.</small> : <><button type="button" onClick={() => void authorityAction(draft.authorityId!)}>Authority status</button> <button type="button" onClick={() => void authorityAction(draft.authorityId!, true)}>Revoke authority</button></>}<br /><small>Studio owns its managed ALTANA_SESSION handoff; this UI never reads it. Deployment remains fail-closed without the reviewed T6 gateway and sink.</small></li>)}</ul>{authority === null ? null : <p role="status">{authority}</p>}</>;
+  return <><ul>{drafts.map((draft) => <li key={draft.id}><strong>{draft.name}</strong> · {draft.status} · {draft.deploymentState ?? "not queued"} {draft.currentStep === null ? "" : `(${draft.currentStep})`}<br />{draft.configuration === undefined ? null : <small>Bounded configuration: {draft.configuration.tradingPair ?? "unknown pair"}, {draft.configuration.inputAmountWei ?? "unknown amount"} wei, {draft.configuration.slippageBps ?? "unknown"} bps max slippage.</small>}<br />{draft.authorityId === null ? <small>No delegated authority is recorded.</small> : <><button type="button" onClick={() => void authorityAction(draft.authorityId!)}>Authority status</button> <button type="button" onClick={() => void authorityAction(draft.authorityId!, true)}>Revoke authority</button></>}<br /><small>Studio owns its managed ALTANA_SESSION handoff; this UI never reads it. Deployment remains fail-closed without the reviewed T6 gateway and sink.</small></li>)}</ul>{authority === null ? null : <p role="status">{authority}</p>}</>;
 }

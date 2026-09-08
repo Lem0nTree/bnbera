@@ -16,7 +16,7 @@ and the guarded 2206 marketplace provider path.
 | --- | --- | --- |
 | G1 persistent marketplace | Retained/local scope only | T1–T3 discovery, enrichment, category, vector, publication, API/SSR, restart and freshness evidence remains accepted for the retained/local scope. No stable public HTTPS/deployed-browser claim is made. |
 | G2 paid hiring | Pending interactive WalletConnect browser acceptance | The merged T5 implementation and authorized operator EOA canary provide live chain evidence for agent 2206, including useful health-factor work, paid cycle `job1103`, settlement and a verified-purchase review. The operator harness is not interactive WalletConnect pairing, browser SIWE/session binding or browser recovery acceptance. |
-| G3 Creator | Planned | Altana grant/status/revoke and Agent Studio creation remain unaccepted. |
+| G3 Creator | Planned | Altana grant/status/revoke and Agent Studio creation remain unaccepted. Template 1.1.0 stores only bounded public configuration (curated pairs, amount, slippage, quote freshness and deadline); its runtime is plan-only pending the Studio session-permission mismatch. |
 | G4 Greenfield | Planned | Greenfield pins, upload/seal/readback and final walkthrough remain unaccepted. |
 | ERC-8183 release | Disabled | The standards-lock `releaseEnabled` value remains `false`; the quick tunnel and operator canary are development evidence only. |
 
