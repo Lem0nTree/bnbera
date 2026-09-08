@@ -102,28 +102,28 @@ export async function runCreatorStudioStep(input: { readonly deploymentId: strin
   if (current.stage === "erc8004_register_reconcile") {
     if (current.endpoint === null || input.handoffs === undefined) return null;
     const result = await input.handoffs.registerAndVerify({ deploymentId: input.deploymentId, endpoint: current.endpoint });
-    if (!isConfirmed(result)) return null;
+    if (!isConfirmed(result)) { await input.store.record(input.deploymentId, { stage: current.stage, publicId: current.publicId, endpoint: current.endpoint, operationId: result.operationId, reasonCode: "ERC8004_BROWSER_SIGNATURE_OR_FINALIZED_READ_PENDING" }); return null; }
     await input.store.record(input.deploymentId, { stage: "marketplace_publish", publicId: current.publicId, endpoint: current.endpoint, operationId: result.operationId, reasonCode: "G1_REGISTRATION_CONFIRMED" });
     return "marketplace_publish";
   }
   if (current.stage === "marketplace_publish") {
     if (input.handoffs === undefined) return null;
     const publication = await input.handoffs.publishMarketplace({ deploymentId: input.deploymentId });
-    if (!isConfirmed(publication)) return null;
+    if (!isConfirmed(publication)) { await input.store.record(input.deploymentId, { stage: current.stage, publicId: current.publicId, endpoint: current.endpoint, operationId: publication.operationId, reasonCode: "G1_PUBLICATION_RECONCILIATION_PENDING" }); return null; }
     await input.store.record(input.deploymentId, { stage: "g2_funded_job_reconcile", publicId: current.publicId, endpoint: current.endpoint, operationId: publication.operationId, reasonCode: "G1_PUBLICATION_CONFIRMED" });
     return "g2_funded_job_reconcile";
   }
   if (current.stage === "g2_funded_job_reconcile") {
     if (input.handoffs === undefined || current.endpoint === null) return null;
     const funded = await input.handoffs.verifyFundedJob({ deploymentId: input.deploymentId, endpoint: current.endpoint });
-    if (!isConfirmed(funded)) return null;
+    if (!isConfirmed(funded)) { await input.store.record(input.deploymentId, { stage: current.stage, publicId: current.publicId, endpoint: current.endpoint, operationId: funded.operationId, reasonCode: "G2_FUNDED_JOB_RECONCILIATION_PENDING" }); return null; }
     await input.store.record(input.deploymentId, { stage: "g2_activation_reconcile", publicId: current.publicId, endpoint: current.endpoint, operationId: funded.operationId, reasonCode: "G2_FUNDED_JOB_CONFIRMED" });
     return "g2_activation_reconcile";
   }
   if (current.stage === "g2_activation_reconcile") {
     if (input.handoffs === undefined || current.endpoint === null) return null;
     const activation = await input.handoffs.activateCommerce({ deploymentId: input.deploymentId });
-    if (!isConfirmed(activation)) return null;
+    if (!isConfirmed(activation)) { await input.store.record(input.deploymentId, { stage: current.stage, publicId: current.publicId, endpoint: current.endpoint, operationId: activation.operationId, reasonCode: "G2_ACTIVATION_OFFER_RECONCILIATION_PENDING" }); return null; }
     await input.store.record(input.deploymentId, { stage: "completed", publicId: current.publicId, endpoint: current.endpoint, operationId: activation.operationId, reasonCode: "G1_PUBLICATION_G2_FUNDED_JOB_AND_ACTIVATION_CONFIRMED" });
     return "completed";
   }

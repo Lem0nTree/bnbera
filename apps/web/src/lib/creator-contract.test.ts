@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -115,6 +115,12 @@ describe("Creator fixed-template boundary", () => {
     try {
       const studio = nativeStudioProcessAdapter();
       await expect(studio.materialize(parent, "bnberahf123")).resolves.toBe("STUDIO_TEMPLATE_READY");
+      // Package installation and Studio state must not become part of the
+      // immutable source artifact or make a restart look tampered.
+      mkdirSync(join(parent, "bnberahf123", "app/agent/node_modules/example"), { recursive: true });
+      mkdirSync(join(parent, "bnberahf123", ".studio/wallets"), { recursive: true });
+      writeFileSync(join(parent, "bnberahf123", "app/agent/node_modules/example/index.js"), "generated");
+      writeFileSync(join(parent, "bnberahf123", ".studio/wallets/altana-session.json"), "generated-session-state");
       await expect(studio.materialize(parent, "bnberahf123")).resolves.toBe("STUDIO_TEMPLATE_READY");
       const partial = join(parent, "bnberahf456");
       writeFileSync(partial, "partial artifact");

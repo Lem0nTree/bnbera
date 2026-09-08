@@ -1,5 +1,5 @@
-import { cpSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { assertSafePublicNetworkTarget } from "@bnbera/agent-ingestion";
@@ -53,6 +53,7 @@ export function parseNativeStudioStatus(output: string): StudioDeploymentRecord 
 }
 
 const templateArtifactPaths = ["README.md", "package.json", "app/agent/package.json", "app/agent/studio.toml", "app/agent/tsconfig.json", "app/agent/src/unifiedMain.ts"] as const;
+const generatedWorkspaceDirectories = new Set(["node_modules", "dist", "build", ".studio", ".next"]);
 
 /** A workspace is reusable only when it is exactly the reviewed artifact. */
 function hasExactTemplateArtifact(root: string): boolean {
@@ -61,6 +62,9 @@ function hasExactTemplateArtifact(root: string): boolean {
     const expected = new Set(templateArtifactPaths);
     const entries = (directory: string, prefix = ""): string[] => readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
       const relative = `${prefix}${entry.name}`;
+      // Studio/package-manager output is not part of the immutable source
+      // artifact. It is ignored during reuse, never copied from the template.
+      if (entry.isDirectory() && generatedWorkspaceDirectories.has(entry.name)) return [];
       return entry.isDirectory() ? entries(join(directory, entry.name), `${relative}/`) : [relative];
     });
     if (entries(root).some((path) => !expected.has(path as typeof templateArtifactPaths[number]))) return false;
@@ -102,7 +106,14 @@ export function nativeStudioProcessAdapter(): import("./creator-worker").Creator
       const source = new URL("../../../../templates/pancakeswap-one-shot/", import.meta.url);
       if (existsSync(destination)) return hasExactTemplateArtifact(destination) ? "STUDIO_TEMPLATE_READY" : "STUDIO_TEMPLATE_MISMATCH";
       try {
-        cpSync(source, destination, { recursive: true, errorOnExist: true });
+        // Do not recursively copy the template directory: that would copy
+        // .gitignore or later generated directories into a workspace whose
+        // immutable source manifest deliberately has only these six files.
+        for (const path of templateArtifactPaths) {
+          const target = join(destination, path);
+          mkdirSync(dirname(target), { recursive: true });
+          copyFileSync(new URL(path, source), target, 0);
+        }
         return hasExactTemplateArtifact(destination) ? "STUDIO_TEMPLATE_READY" : "STUDIO_TEMPLATE_MISMATCH";
       } catch { return hasExactTemplateArtifact(destination) ? "STUDIO_TEMPLATE_READY" : "STUDIO_TEMPLATE_MISMATCH"; }
     },

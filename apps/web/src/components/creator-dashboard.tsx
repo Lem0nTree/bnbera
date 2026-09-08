@@ -1,12 +1,14 @@
 "use client";
 import { useEffect, useState } from "react";
 
-type Draft = { id: string; name: string; slug: string; status: string; deploymentState: string | null; currentStep: string | null };
+type Draft = { id: string; name: string; slug: string; status: string; deploymentState: string | null; currentStep: string | null; authorityId: string | null };
 export function CreatorDashboard() {
   const [drafts, setDrafts] = useState<readonly Draft[] | null>(null); const [error, setError] = useState<string | null>(null);
+  const [authority, setAuthority] = useState<string | null>(null);
+  async function authorityAction(id: string, revoke = false) { setAuthority("Checking delegated authority…"); const response = await fetch(`/api/creator/authorities/${id}`, { method: revoke ? "DELETE" : "GET", cache: "no-store" }); const data = await response.json() as { authority?: { status?: string; expiresAtUnix?: number }; error?: { safeMessage?: string } }; setAuthority(response.ok ? `Authority ${data.authority?.status ?? "unknown"}${data.authority?.expiresAtUnix === undefined ? "" : `; expires ${new Date(data.authority.expiresAtUnix * 1000).toLocaleString()}`}.` : (data.error?.safeMessage ?? "Authority is unavailable.")); }
   useEffect(() => { void fetch("/api/creator/drafts", { cache: "no-store" }).then(async (response) => { if (!response.ok) throw new Error(response.status === 401 ? "Sign in to view Creator drafts." : "Creator drafts are temporarily unavailable."); return response.json() as Promise<{ drafts: Draft[] }>; }).then((data) => setDrafts(data.drafts)).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "Creator drafts are temporarily unavailable.")); }, []);
   if (error !== null) return <p role="alert">{error}</p>;
   if (drafts === null) return <p>Loading persisted Creator drafts…</p>;
   if (drafts.length === 0) return <p>No Creator drafts yet.</p>;
-  return <ul>{drafts.map((draft) => <li key={draft.id}><strong>{draft.name}</strong> · {draft.status} · {draft.deploymentState ?? "not queued"} {draft.currentStep === null ? "" : `(${draft.currentStep})`}</li>)}</ul>;
+  return <><ul>{drafts.map((draft) => <li key={draft.id}><strong>{draft.name}</strong> · {draft.status} · {draft.deploymentState ?? "not queued"} {draft.currentStep === null ? "" : `(${draft.currentStep})`}<br />{draft.authorityId === null ? <small>No delegated authority is recorded.</small> : <><button type="button" onClick={() => void authorityAction(draft.authorityId!)}>Authority status</button> <button type="button" onClick={() => void authorityAction(draft.authorityId!, true)}>Revoke authority</button></>}<br /><small>Studio owns its managed ALTANA_SESSION handoff; this UI never reads it. Deployment remains fail-closed without the reviewed T6 gateway and sink.</small></li>)}</ul>{authority === null ? null : <p role="status">{authority}</p>}</>;
 }

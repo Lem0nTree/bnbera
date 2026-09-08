@@ -5,7 +5,7 @@ import type { CreatorRuntimeAuthority } from "./creator-authority-runtime";
 import { creatorStages, type CreatorStage, type CreatorWorkerStore } from "./creator-worker";
 import { assertSafePublicNetworkTarget } from "@bnbera/agent-ingestion";
 
-export type CreatorDraft = { readonly id: string; readonly name: string; readonly slug: string; readonly status: string; readonly createdAt: string; readonly deploymentId: string | null; readonly deploymentState: string | null; readonly currentStep: string | null; };
+export type CreatorDraft = { readonly id: string; readonly name: string; readonly slug: string; readonly status: string; readonly createdAt: string; readonly deploymentId: string | null; readonly deploymentState: string | null; readonly currentStep: string | null; readonly authorityId: string | null; };
 
 const pricing = { model: "fixed", amountAtomic: "1000000000000000", currency: "U", chainId: 97 };
 const policy = creatorTemplate.contractSelectorAllowlist;
@@ -56,14 +56,15 @@ export class CreatorRepository {
       name: row.name, slug: row.slug, description: row.description, configuration: persisted, publicationConsent: row.publicationConsent
     })).digest("hex");
     if (persistedDigest !== digest) throw new CreatorRepositoryError("IDEMPOTENCY_CONFLICT", "That idempotency key was already used for a different draft.");
-    return { ...row, deploymentId: null, deploymentState: null, currentStep: null };
+    return { ...row, deploymentId: null, deploymentState: null, currentStep: null, authorityId: null };
   }
 
   async listDrafts(userId: string): Promise<readonly CreatorDraft[]> {
     const result = await this.pool.query<CreatorDraft>(
-      `SELECT d.id, d.name, d.slug, d.status, d.created_at AS "createdAt", x.id AS "deploymentId", x.state AS "deploymentState", x.current_step AS "currentStep"
+      `SELECT d.id, d.name, d.slug, d.status, d.created_at AS "createdAt", x.id AS "deploymentId", x.state AS "deploymentState", x.current_step AS "currentStep", au.id AS "authorityId"
          FROM agent_drafts d
          LEFT JOIN LATERAL (SELECT id, state, current_step FROM agent_deployments WHERE draft_id = d.id ORDER BY created_at DESC LIMIT 1) x ON true
+         LEFT JOIN LATERAL (SELECT id FROM agent_authorities WHERE draft_id=d.id ORDER BY "updatedAt" DESC LIMIT 1) au ON true
         WHERE d.creator_user_id = $1 ORDER BY d.created_at DESC`, [userId]
     );
     return result.rows;
@@ -105,7 +106,7 @@ export class CreatorRepository {
     );
     if (prior.rows[0] !== undefined) {
       const existing = prior.rows[0];
-      return { id: draft.rows[0]!.id, name: draft.rows[0]!.name, slug: draft.rows[0]!.slug, status: draft.rows[0]!.status, createdAt: draft.rows[0]!.created_at, deploymentId: existing.id, deploymentState: existing.state, currentStep: existing.current_step };
+      return { id: draft.rows[0]!.id, name: draft.rows[0]!.name, slug: draft.rows[0]!.slug, status: draft.rows[0]!.status, createdAt: draft.rows[0]!.created_at, deploymentId: existing.id, deploymentState: existing.state, currentStep: existing.current_step, authorityId: authority.authorityId };
     }
     const deployment = await pool.query<{ id: string; state: string; current_step: string | null }>(
       `INSERT INTO agent_deployments (draft_id, provider, region, agent_core_arn, template_digest, configuration_digest, state, current_step, attempt, started_at)
@@ -118,7 +119,7 @@ export class CreatorRepository {
        SELECT $1, 0, NULL, $2, 'T6 authority accepted; Studio scaffold is queued.', jsonb_build_object('runtimeName',$3,'authorityId',$4,'policyDigest',$5,'secretReference',$6,'authorityExpiresAt',$7,'agentWallet',$8), false
        WHERE NOT EXISTS (SELECT 1 FROM deployment_events WHERE deployment_id = $1 AND next_state = $2)`, [existing.id, existing.state, runtimeName, authority.authorityId, authority.policyDigest, authority.secretReference, authority.expiresAt, executionWallet]
     );
-    return { id: draft.rows[0]!.id, name: draft.rows[0]!.name, slug: draft.rows[0]!.slug, status: draft.rows[0]!.status, createdAt: draft.rows[0]!.created_at, deploymentId: existing.id, deploymentState: existing.state, currentStep: existing.current_step };
+    return { id: draft.rows[0]!.id, name: draft.rows[0]!.name, slug: draft.rows[0]!.slug, status: draft.rows[0]!.status, createdAt: draft.rows[0]!.created_at, deploymentId: existing.id, deploymentState: existing.state, currentStep: existing.current_step, authorityId: authority.authorityId };
   }
 
   /** Existing deployment/event tables hold only public provider facts. */

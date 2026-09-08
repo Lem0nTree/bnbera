@@ -480,3 +480,6 @@ change; do not add a second provider silently.
 Focused verification after the recovery passed: agent-ingestion `111/111`
 tests, database schema/legacy tests `17/17`, and `pnpm db:check` (`Everything's
 fine`).
+# G3 composition update (not live acceptance)
+
+The Creator code now has a bounded, opt-in worker and reconciliation handoffs to the existing ERC-8004/G1 and ERC-8183/G2 projections. It does not hold an operator key: an absent or uncomposed T6 authority gateway blocks status, revoke, deployment and the worker; missing ERC-8004 ownership/agent-wallet finality leaves a canonical browser-signature reconciliation request pending. The reviewed handoff is Studio-owned `.studio/wallets/altana-session.json`, managed as `ALTANA_SESSION`; no raw session reaches HTTP, PostgreSQL or logs. PostgreSQL stores only the T6 secret reference and public policy/receipt metadata. No testnet deployment, browser grant/revoke/deny, registration, listing or paid hire evidence has been collected, so G3 remains unaccepted.
