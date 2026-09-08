@@ -1,6 +1,6 @@
 # MVP tasks and gates
 
-Active backlog for [MVP-MASTER-PLAN.md](MVP-MASTER-PLAN.md). Merged GitHub `main` baseline: `3cbd4135d809fe865e2a88285e9b79b8e357085a`; PRs #20–#24 are merged, including the T5 WalletConnect-only EOA/SIWE and commerce implementation. Reconciled 2026-09-08. Two implementation agents maximum; coordinator reviews each handoff before dispatching its dependent replacement.
+Active backlog for [MVP-MASTER-PLAN.md](MVP-MASTER-PLAN.md). Merged GitHub `main` baseline: `40a209300317d2a81adf0f96b00f2b679e9ddb94`; PRs #20–#28 are merged and PR #28 validation is green. This includes the T5 WalletConnect-only EOA/SIWE commerce path, refund-projection repair and completed active T6/T7 Creator scope. Reconciled 2026-09-08. Two implementation agents maximum; coordinator reviews each handoff before dispatching its dependent replacement.
 
 Status key: **Completed** means the source and stated retained/live evidence meet the accepted scope; **Implemented canary** means the bounded source path and operator evidence exist but an explicit browser or other gate requirement remains open; **Pending** means implementation or verification remains without the required acceptance evidence; **Blocked** names an external or safety prerequisite; **Planned** has no accepted implementation yet. A branch test is never a substitute for a live gate. Scope qualifiers distinguish retained/local acceptance from a public or paid claim.
 
@@ -35,15 +35,15 @@ This table distinguishes code merged to GitHub `main`, retained-runtime evidence
 | G3 — No-code Creator | Completed (active documented scope; temporary Studio trial) | T6–T7 | Browser grant/revoke, browser Creator deployment/registration, exact identity reconciliation, publication/category/vector follow-through and pre-Studio denial are evidenced. This does not claim G2 WalletConnect browser acceptance. |
 | G4 — Greenfield | Planned | T8–T9 | No accepted public profile/result objects or final walkthrough. |
 
-CI note: the redundant second web build is tracked as a nonblocking P2 item;
-CI is unchanged by this documentation reconciliation.
+CI note: PR #26 (`0353f72`) removed the redundant second web build; the runtime
+check reuses the root build.
 
 ### Immediate critical path
 
 1. Preserve the accepted T1–T3/G1 scope and close any final public-preview follow-up without weakening the truthful listing gate.
 2. Preserve the completed 2206 authorized tunnel/card and finalized reingestion/publication sub-gate and operator EOA canary evidence, then complete T5's single wagmi `walletConnect` connector EOA/SIWE browser-to-chain paid journey. WalletConnect may reach compatible extension wallets or mobile wallets through QR/deep links; no separate injected/MetaMask connector is part of T5. Do not call G2 complete from T4, the operator harness or marketplace/tunnel evidence alone.
 3. Preserve the completed active T6/T7/G3 evidence, keep the Studio trial temporary, and keep Creator denial/revoke/settlement safeguards intact. **T7 is the task that uses BNB Agent Studio to let a user create an agent; T6 supplies the user-controlled Altana authority used during and after deployment. This completion does not claim G2 WalletConnect browser acceptance.**
-4. Complete the bounded T8 integration and T9 submission evidence.
+4. Implement T8 Greenfield next while keeping the deferred G2 browser acceptance visible; then complete T9 public deployment, browser acceptance and submission evidence.
 
 Competition acceptance and partner-track distinctions are summarized in [HACKATHON-REQUIREMENTS.md](HACKATHON-REQUIREMENTS.md).
 
@@ -115,7 +115,7 @@ Use these items as the bounded handoff for the next implementation agent. `[x] *
 - [x] Add exact ERC-8004 registry-log decoding and identity upsert ordering fixes plus a guarded owner-authorized registration harness for reference identity 2206. The harness is plan/read-only by default and does not itself prove a registration or listing.
 - [x] Add the guarded reference health-factor provider and disabled-by-default PostgreSQL worker; it resolves only a secret reference and uses the existing ERC-8183 submission boundary.
 - [x] **Completed (2206 marketplace/tunnel sub-gate):** Serve the 2206 card and invocation through the authorized quick HTTPS tunnel, register the URI, run finalized reingestion and publish only after ownership, capability and healthy service evidence pass. Evidence: URI transaction `0xe023...c9b` at block `129625704`; finalized sync `129619955–129625757` with 65 observations across 8 identities; 2206 is verified/live/published as a health-factor service with healthy card/invocation; persisted vector/hybrid evidence from the prior run remains available; the fixed `0.001 U` local ERC-8183 activation offer is enabled.
-- [x] **Completed operator EOA canary (supporting evidence, not browser acceptance):** Agent 2206 returned a useful live health-factor result in paid cycle `job1103`; the canonical path reached settlement and a verified-purchase review. The exact quote, transaction, result digest and review evidence is recorded first in `MVP-STATUS.md`. Canonical refund `job1101` reached expired/refund; its parent summary's `funded` state is a P1 projection issue under separate repair.
+- [x] **Completed operator EOA canary (supporting evidence, not browser acceptance):** Agent 2206 returned a useful live health-factor result in paid cycle `job1103`; the canonical path reached settlement and a verified-purchase review. The exact quote, transaction, result digest and review evidence is recorded first in `MVP-STATUS.md`. Canonical refund `job1101` reached expired/refund; transactional and restart projection repair is merged in `b7356a7`, while verification against the retained job1101 summary remains pending.
 - [ ] **Pending:** Complete the real interactive EOA/SIWE buyer run through wagmi's single `walletConnect` connector: `createJob` -> actual-ID/register/budget/approve/fund -> provider submit -> 900-second dispute wait -> EOA settle/dispute/refund -> verified-purchase review. WalletConnect may reach compatible extension wallets or mobile wallets through QR/deep links; no separate injected/MetaMask connector is used and not every extension is guaranteed. Include reload, duplicate-submit, account/chain-change and unknown-step recovery evidence. Do not mark T5 or G2 complete before this passes. The quick tunnel is canary-only with no uptime guarantee, and `releaseEnabled=false` remains.
 - [ ] **Pending:** Capture the first real Agent Advantage comparison and record any unavailable category honestly.
 
@@ -216,7 +216,7 @@ Done: real authorized testnet hire, submit and buyer settlement were confirmed; 
 
 ### T5 — Hire UI, result, jobs and reviews
 
-Status: Pending: WalletConnect-only EOA/SIWE and commerce implementation is merged in `main` at `3cbd413`; the 2206 marketplace/tunnel sub-gate and operator EOA canary passed, and interactive browser acceptance remains release-gated.
+Status: Pending: WalletConnect-only EOA/SIWE and commerce implementation is merged in `main`; the dated 2206 health-factor marketplace/tunnel sub-gate and operator EOA canary passed, and interactive browser acceptance remains release-gated. Identity 2206 was later used by the G3 rebalancing canary, so reverify its current version/category/endpoint before the G2 browser run.
 
 Owner: WEB. Parallel with T4 after their API contract is agreed; real acceptance depends on T4. Paths: existing detail CTA, job/result routes, review/read-model projection.
 
