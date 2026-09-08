@@ -18,7 +18,8 @@ persistent adapter must implement atomic create-or-get plus revision-and
 lease-owner compare-and-set writes before provider calls are enabled. Attempts
 record the trusted configuration digest, network, bucket and provider label;
 durable hydration rejects a `verified` graph unless its locator, readback
-hashes, size, version and (for Greenfield) non-null seal transaction all
-match. `PersistentEvidenceRepositories.unitOfWork` is the transaction seam
+hashes, size, version and (for Greenfield) confirmed seal status all match.
+Greenfield may report the all-zero `SealTxHash` placeholder; it is normalized
+to `null` and never displayed as a transaction claim. `PersistentEvidenceRepositories.unitOfWork` is the transaction seam
 for object, attempt, locator and verification rows. Live adapters remain
 blocked until their SDK, credentials and storage contract are approved.

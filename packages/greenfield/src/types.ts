@@ -19,6 +19,7 @@ export const publicationFailureCodes = [
   "ARTIFACT_TOO_LARGE",
   "OBJECT_TOO_LARGE",
   "CREATE_FAILED",
+  "CREATE_UNKNOWN",
   "UPLOAD_FAILED",
   "PROVIDER_FAILED",
   "MALFORMED_TRANSACTION",
@@ -93,6 +94,14 @@ export function publicationConfigurationDigest(input: PublicationConfiguration):
 const timestampSchema = z.string().datetime({ offset: true });
 const digestSchema = z.string().regex(/^[0-9a-fA-F]{64}$/);
 const transactionHashSchema = z.string().regex(/^0x[0-9a-fA-F]{64}$/);
+const zeroTransactionHashPattern = /^0x0{64}$/i;
+
+/** Greenfield uses the all-zero transaction hash as an unset seal value on
+ * some object metadata responses. Treat it as absent at the schema boundary
+ * so it can never become a public or durable transaction claim. */
+function normalizeOptionalTransactionHash(value: unknown): unknown {
+  return typeof value === "string" && zeroTransactionHashPattern.test(value.trim()) ? null : value;
+}
 
 export const publicationAttemptRecordSchema = z
   .object({
@@ -115,8 +124,8 @@ export const publicationAttemptRecordSchema = z
     leaseOwner: z.string().uuid().nullable(),
     leaseExpiresAt: timestampSchema.nullable(),
     providerReference: z.string().trim().min(1).max(512).nullable(),
-    creationTransactionHash: transactionHashSchema.nullable(),
-    sealTransactionHash: transactionHashSchema.nullable(),
+    creationTransactionHash: z.preprocess(normalizeOptionalTransactionHash, transactionHashSchema.nullable()),
+    sealTransactionHash: z.preprocess(normalizeOptionalTransactionHash, transactionHashSchema.nullable()),
     locator: evidenceLocatorSchema.nullable(),
     verification: verificationResultSchema.nullable(),
     retryCount: z.number().int().nonnegative(),
@@ -177,13 +186,60 @@ export interface GreenfieldPublisher {
     readonly objectName: string;
     readonly sizeBytes: number;
     readonly mimeType: "application/json";
+    /**
+     * Canonical payload material needed by Greenfield's create transaction.
+     * Greenfield stores Reed-Solomon checksums in that transaction, so this
+     * seam deliberately carries the already canonical bytes/checksums without
+     * making the provider-neutral publication record retain them.
+     */
+    readonly canonicalBytes?: Uint8Array;
+    readonly expectedChecksums?: readonly Uint8Array[];
   }) => Promise<GreenfieldCreateReceipt>;
-  readonly uploadObject: (input: PublicationUploadInput & { readonly objectReference: string }) => Promise<GreenfieldUploadReceipt>;
+  readonly uploadObject: (input: PublicationUploadInput & {
+    readonly objectReference: string;
+    readonly creationTransactionHash?: string | null;
+  }) => Promise<GreenfieldUploadReceipt>;
   readonly waitForSeal: (input: {
     readonly objectReference: string;
     readonly attempt: number;
   }) => Promise<GreenfieldSealReceipt>;
   readonly readObject: (input: { readonly objectReference: string }) => Promise<Uint8Array>;
+  /**
+   * Inspect deterministic object identity before a retry after an unknown
+   * create outcome. Implementations must not submit another create while an
+   * existing object can be found. It is optional to preserve the provider
+   * contract for existing fakes/adapters.
+   */
+  readonly inspectObject?: (input: {
+    readonly objectName: string;
+    readonly sizeBytes?: number;
+    /** Canonical bytes let the provider recompute/compare its RS checksums
+     * before a recovered object is uploaded or reused. */
+    readonly canonicalBytes?: Uint8Array;
+    readonly expectedChecksums?: readonly Uint8Array[];
+  }) => Promise<GreenfieldInspectReceipt>;
+  /** Reconcile an unknown create broadcast against chain state and object
+   * metadata. A missing SP object alone is never sufficient evidence. */
+  readonly reconcileCreate?: (input: {
+    readonly objectName: string;
+    readonly sizeBytes: number;
+    readonly canonicalBytes?: Uint8Array;
+    readonly expectedChecksums?: readonly Uint8Array[];
+  }) => Promise<GreenfieldCreateReconciliation>;
+}
+
+export interface GreenfieldInspectReceipt {
+  readonly status: "missing" | "created" | "sealed";
+  readonly objectReference: string | null;
+  readonly creationTransactionHash: string | null;
+  readonly sealTransactionHash: string | null;
+}
+
+export interface GreenfieldCreateReconciliation {
+  readonly status: "missing" | "present" | "unknown";
+  readonly objectReference: string | null;
+  readonly creationTransactionHash: string | null;
+  readonly sealTransactionHash: string | null;
 }
 
 export interface PublicationAuditEvent {
@@ -293,8 +349,8 @@ export function assertDurablePublicationAttempt(record: PublicationAttemptRecord
   }
   if (record.provider === "greenfield") {
     if (
-      record.sealTransactionHash === null ||
-      !validTransactionHash.test(record.sealTransactionHash) ||
+      (record.sealTransactionHash !== null &&
+        (!validTransactionHash.test(record.sealTransactionHash) || zeroTransactionHashPattern.test(record.sealTransactionHash))) ||
       verification?.sealConfirmed !== true
     ) {
       throw new PublicationProviderError(

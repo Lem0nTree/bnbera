@@ -39,6 +39,66 @@ function FeedbackUri({ value }: { readonly value: string }) {
     : <a href={href} target="_blank" rel="noreferrer">{value}</a>;
 }
 
+function safeEvidenceLink(value: string | null): string | null {
+  if (value === null) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "https:" || parsed.username !== "" || parsed.password !== "" || parsed.hostname === "") return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+export function evidenceVersionLabel(
+  artifact: Pick<MarketplaceAgentReadModel["evidence"]["profile"], "version">,
+  currentVersion: number | null
+): string {
+  if (artifact.version === null) return "Not observed";
+  return currentVersion !== null && artifact.version !== currentVersion
+    ? `Agent version ${artifact.version} · historical snapshot`
+    : `Agent version ${artifact.version}`;
+}
+
+export function evidenceSealLabel(
+  artifact: Pick<MarketplaceAgentReadModel["evidence"]["profile"], "status" | "sealTransactionHash">
+): string {
+  if (artifact.status === "verified") {
+    return artifact.sealTransactionHash === null
+      ? "Seal confirmed; transaction hash unavailable."
+      : "Seal confirmed";
+  }
+  return "Seal not confirmed";
+}
+
+function EvidenceArtifactRow({
+  label,
+  artifact,
+  currentVersion
+}: {
+  readonly label: string;
+  readonly artifact: MarketplaceAgentReadModel["evidence"]["profile"];
+  readonly currentVersion: number | null;
+}) {
+  const readUrl = artifact.status === "verified" ? safeEvidenceLink(artifact.readUrl) : null;
+  return (
+    <div className="capability-card">
+      <div className="detail-actions">
+        <strong>{label}</strong>
+        <StatusBadge value={titleCase(artifact.status)} tone={artifact.status === "verified" ? "success" : artifact.status === "failed" ? "danger" : artifact.status === "pending" ? "warning" : "neutral"} />
+      </div>
+      <div className="detail-kv"><span>Status</span><span>{artifact.summary}</span></div>
+      <div className="detail-kv"><span>Version</span><span>{evidenceVersionLabel(artifact, currentVersion)}</span></div>
+      {artifact.artifactType === "run_bundle" && <div className="detail-kv"><span>Bound commerce job</span><span><code>{artifact.jobId ?? "Not observed"}</code></span></div>}
+      <div className="detail-kv"><span>Greenfield seal</span><span>{evidenceSealLabel(artifact)}{artifact.sealTransactionHash === null ? null : <> · <code>{artifact.sealTransactionHash}</code></>}</span></div>
+      <div className="detail-kv"><span>Greenfield read URL</span><span>{readUrl === null ? "Unavailable" : <a href={readUrl} target="_blank" rel="noreferrer">Open verified JSON</a>}</span></div>
+      <div className="detail-kv"><span>Internal locator</span><span><code>{artifact.locator ?? "Unavailable"}</code></span></div>
+      <div className="detail-kv"><span>Last verified</span><span>{formatObservedAt(artifact.verifiedAt)}</span></div>
+      {artifact.reason !== null && <p className="muted-label">{artifact.reason}</p>}
+    </div>
+  );
+}
+
 function ReputationFeedbackRecord({ feedback }: { readonly feedback: ReputationFeedback }) {
   const tags: Array<readonly [string, string]> = [
     ["Indexed tag", feedback.indexedTag1] as const,
@@ -126,6 +186,7 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
   const identityBlock = identityRead.observedBlock === null
     ? "Not observed"
     : `${identityRead.observedBlock} · ${identityConsistency}`;
+  const profileReadUrl = safeEvidenceLink(agent.evidence.greenfieldUri);
   return (
     <div className="page-shell page-shell--tight">
       <section className="detail-hero">
@@ -310,7 +371,7 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
             <div className="detail-kv"><span>Pricing</span><span>{agent.pricing.label}</span></div>
             <div className="detail-kv"><span>Method</span><span>{titleCase(agent.pricing.activationMethod)}</span></div>
             <p className="detail-section__lede">{agent.pricing.explanation}</p>
-            <ActivationPanel activation={agent.activation} detail identityKey={erc8004IdentityKey(agent.identity)} />
+            <ActivationPanel activation={agent.activation} detail identityKey={erc8004IdentityKey(agent.identity)} runBundle={agent.evidence.runBundle} />
           </div>
         </section>
 
@@ -322,8 +383,13 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
             <StatusBadge value={agent.evidence.status} tone={statusTone(agent.evidence.status)} />
             <p className="detail-section__lede">{agent.evidence.summary}</p>
             <div className="detail-kv"><span>IPFS</span><span>{agent.evidence.ipfsUri ?? "Unavailable"}</span></div>
-            <div className="detail-kv"><span>Greenfield</span><span>{agent.evidence.greenfieldUri ?? "Unavailable"}</span></div>
+            <div className="detail-kv"><span>Greenfield</span><span>{profileReadUrl === null ? "Unavailable" : <a href={profileReadUrl} target="_blank" rel="noreferrer">Open verified profile JSON</a>}</span></div>
+            <div className="detail-kv"><span>Profile locator</span><span><code>{agent.evidence.greenfieldLocator ?? "Unavailable"}</code></span></div>
             <div className="detail-kv"><span>Last verified</span><span>{formatObservedAt(agent.evidence.lastVerifiedAt)}</span></div>
+            <div className="detail-section__body">
+              <EvidenceArtifactRow label="Versioned agent_profile" artifact={agent.evidence.profile} currentVersion={agent.evidence.currentVersion} />
+              <EvidenceArtifactRow label="Completed-job run_bundle" artifact={agent.evidence.runBundle} currentVersion={agent.evidence.currentVersion} />
+            </div>
           </div>
         </section>
       </div>

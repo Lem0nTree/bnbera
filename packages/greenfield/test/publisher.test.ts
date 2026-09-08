@@ -53,6 +53,7 @@ const artifact = {
     finalStatus: "simulated"
   }
 } as const;
+const zeroTransactionHash = `0x${"0".repeat(64)}`;
 
 function configuration(
   overrides: Partial<PublicationConfiguration> = {}
@@ -300,21 +301,21 @@ describe("independent evidence publication", () => {
     expect(malformedSealResult.attempts[0]?.lastErrorCode).toBe("MALFORMED_TRANSACTION");
   });
 
-  it("fails closed when Greenfield says sealed without a seal transaction", async () => {
+  it("verifies a sealed object when Greenfield reports an all-zero seal hash", async () => {
     const base = new DeterministicGreenfieldPublisher();
     const noncanonicalSeal: GreenfieldPublisher = {
       createObject: (input) => base.createObject(input),
       uploadObject: (input) => base.uploadObject(input),
-      waitForSeal: async () => ({ status: "sealed", sealTransactionHash: null }),
+      waitForSeal: async () => ({ status: "sealed", sealTransactionHash: zeroTransactionHash }),
       readObject: (input) => base.readObject(input)
     };
     const result = await publisher({
       greenfield: noncanonicalSeal,
       config: configuration({ enabledProviders: ["greenfield"] })
     }).publish({ artifact, idempotencyKey: "missing-seal-transaction" });
-    expect(result.attempts[0]?.state).toBe("provider_failed");
-    expect(result.attempts[0]?.lastErrorCode).toBe("SEAL_TRANSACTION_MISSING");
-    expect(result.attempts[0]?.verification).toBeNull();
+    expect(result.attempts[0]?.state).toBe("verified");
+    expect(result.attempts[0]?.sealTransactionHash).toBeNull();
+    expect(result.attempts[0]?.verification).toMatchObject({ sealConfirmed: true, readbackStatus: "matched" });
   });
 
   it("persists validation_failed for artifacts over the configured limit", async () => {

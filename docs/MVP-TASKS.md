@@ -23,7 +23,7 @@ This table distinguishes code merged to GitHub `main`, retained-runtime evidence
 | T5 | Implemented/merged; interactive WalletConnect browser acceptance pending | PRs #20–#24 merge exact registry-log/identity-ordering fixes, guarded 2206 reference registration, quote/hire/reload/approval/review UI and APIs, persisted results/reviews, the WalletConnect-only EOA/SIWE boundary and a disabled-by-default reference-provider worker. The operator EOA canary completed useful 2206 health-factor work, paid cycle `job1103`, settlement and a score-5 active review; passkey bootstrap/recovery now supports the completed active T6/T7 Creator scope. The authorized quick tunnel/card, finalized reingestion and publication evidence for 2206 passed. | Complete the interactive WalletConnect browser pairing and chain-97 SIWE/account binding, then verify the sequential `createJob`/actual-ID -> router registration -> `setBudget` -> bounded approval -> `fund` flow, provider submit and EOA settle/dispute/refund. Verify reload, duplicate, account/chain change and unknown-step recovery. The operator harness is not a browser acceptance substitute. WalletConnect may reach compatible extension wallets or mobile wallets through QR/deep links, but there is no separate injected/MetaMask connector and not every extension is guaranteed. The quick tunnel is canary-only with no uptime guarantee; `releaseEnabled=false` remains. |
 | T6 | Completed (active documented browser-canary scope) | Browser grant/revoke canary used wallet `0x1a295...d370`: grant `0xdb9118...20e9e`, revoke `0xdcfa54...5d911`, and persisted status `revoked`; explicit over-cap/expiry denial and managed action/settle/refund evidence remain recorded. | No remaining T6 acceptance in the active documented scope. Keep session material secret-referenced only; the Studio trial is temporary. |
 | T7 | Completed (active documented Studio-trial scope) | Browser Creator tBNB→BUSD flow used exact configuration digest `5f2fe561...f93e`; Studio agent `01M212RS9NVG13X6JQM5BS00AF` exposed the reviewed A2A card, finalized identity `2283` and exact mint/URI reconciliation; the complete publication/category/vector path is evidenced below. | No remaining T7 acceptance in the active documented scope. Preserve the audited template/allowlist and do not infer G2 WalletConnect acceptance. |
-| T8 | Planned | Publisher abstractions exist only. | Publish and verify one profile plus one completed-job bundle on Greenfield. |
+| T8 | Implemented canary; final app-runtime smoke pending | Greenfield testnet bucket `25041` is public-read. Historical agent-2206 version 11 profile and settled job-1103 run bundle are sealed, independently read back with matching SHA-256, persisted, retry-safe and projected by exact agent/version/job joins. | Run the local/deployed API/detail smoke with the final runtime environment and capture both labeled links; do not claim a seal transaction hash when Greenfield returns the zero/unavailable value. |
 | T9 | Planned | Requirements and gate structure exist. | Public walkthrough, current evidence/status, Agent Advantage Report and submission package. |
 
 ### Gate mapping
@@ -33,7 +33,7 @@ This table distinguishes code merged to GitHub `main`, retained-runtime evidence
 | G1 — Persistent marketplace | Completed (retained/local scope only) | T1–T3 | T1/T2/T3 retained/local acceptance is complete. Stable public HTTPS/deployed-browser alignment remains a final public-preview follow-up and is not claimed here. |
 | G2 — Paid hiring | Pending; interactive WalletConnect browser acceptance required | T4–T5 | T4/T5 implementation is merged. The 2206 tunnel/card/reingestion/publication sub-gate and operator EOA canary passed with a useful result, settlement and verified review; T5 must still prove the WalletConnect connector/SIWE path and browser recovery evidence. `releaseEnabled=false` remains. |
 | G3 — No-code Creator | Completed (active documented scope; temporary Studio trial) | T6–T7 | Browser grant/revoke, browser Creator deployment/registration, exact identity reconciliation, publication/category/vector follow-through and pre-Studio denial are evidenced. This does not claim G2 WalletConnect browser acceptance. |
-| G4 — Greenfield | Planned | T8–T9 | No accepted public profile/result objects or final walkthrough. |
+| G4 — Greenfield | Pending final app walkthrough | T8–T9 | T8 public objects and readback verification passed; final API/detail walkthrough and T9 public demo remain. |
 
 CI note: PR #26 (`0353f72`) removed the redundant second web build; the runtime
 check reuses the root build.
@@ -272,16 +272,18 @@ ERC-8183 buyer path.
 
 ## G4 — Greenfield and final demo (T8–T9)
 
-Status: Planned; no Greenfield or final public walkthrough evidence is accepted.
+Status: T8 implemented canary; final application/public walkthrough remains pending.
 
 ### T8 — Publish two useful Greenfield artifacts
 
-Status: Planned.
+Status: Implemented canary; final app-runtime display smoke pending.
 
 Owner: EVIDENCE. After G3. Paths: current evidence/Greenfield publisher, profile/job evidence panel; pins through coordinator.
 
-- Pin provider/SDK/network. Publish one public profile and one completed-job bundle with approved public fields, result digest and receipt references.
-- Verify seal, readback and matching hash; persist locator/status and show links. Resume an interrupted upload. If the same deliverable is in IPFS, compare hashes.
+- [x] Pin `@bnb-chain/greenfield-js-sdk@2.2.0`, Reed-Solomon `1.1.4`, Greenfield testnet and official SP1 in `standards.lock.json`.
+- [x] Create public-read bucket `25041` (transaction `0x4c1bcde206b6ebc889d3c28d92f25e96968d33cde1626dff57bc728f8e0fe4cd`) and publish the version-11 profile plus settled job-1103 run bundle.
+- [x] Verify public readback SHA-256 `69e0294f...279d8` and `12cba7d6...24446`, persist exact bindings/status, and prove projection/write replay does not duplicate the run or objects.
+- [ ] Run the final local/deployed API and agent-detail smoke and capture both version-labeled links. The UI must say the evidence is historical when current version differs; zero `SealTxHash` is normalized to unavailable, not displayed as transaction evidence.
 - Keep raw monitoring data, secrets and unapproved private task inputs out. No mirrors or custom contracts.
 
 Done: two real verified artifacts visible in the app. Gate G4 passes without making storage availability a prerequisite for browsing or hiring.

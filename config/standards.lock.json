@@ -279,10 +279,25 @@
     "networkId": "greenfield_5600-1",
     "sdkChainId": "5600",
     "sdkPackage": "@bnb-chain/greenfield-js-sdk",
-    "sdkVersion": null,
-    "storageProviders": [],
+    "sdkVersion": "2.2.0",
+    "sdkIntegrity": "sha512-TDLmmy8aj1UDlRYkfzfrZnej4/vLQqmTcYM/3kh0drdiEpvIiYvCcmn0zXem39hijnnjcLcoJ2qiqaR8cC/9gA==",
+    "reedSolomonPackage": "@bnb-chain/reed-solomon",
+    "reedSolomonVersion": "1.1.4",
+    "reedSolomonIntegrity": "sha512-mebL6p1iHt9B6lpxX1pxW/K3KA35sVdMsIyW/B31URjktSJ0osGEvVUoYGb53nuSIUIUtm2wPtE0+0dZV1CMLw==",
+    "rpcUrl": "https://gnfd-testnet-fullnode-tendermint-ap.bnbchain.org",
+    "storageProviders": [
+      {
+        "providerLabel": "bnbchain-testnet-sp1",
+        "operatorAddress": "0x89A1CC91B642DECbC4789474694C606E0E0c420b",
+        "endpoint": "https://gnfd-testnet-sp1.bnbchain.org",
+        "publicReadBaseUrls": [
+          "https://gnfd-testnet-sp1.bnbchain.org/view/"
+        ],
+        "verificationStatus": "verified-official-list-and-live-status-2026-09-08"
+      }
+    ],
     "selectionPolicy": "official-allowlist-with-runtime-health-check",
-    "verificationStatus": "pending-sdk-pin-and-provider-allowlist"
+    "verificationStatus": "verified-testnet-sdk-rpc-sp1-bucket-25041-and-two-object-public-readback-2026-09-08; final-app-smoke-pending"
   },
   "altana": {
     "mainnet": {
@@ -370,7 +385,7 @@
       "verificationStatus": "verified-read-only-linkage-and-router-whitelist"
     },
     "b402HostedSettlement": "disabled-until-real-facilitator-canary",
-    "greenfieldProvider": "must-select-from-official-allowlist-at-runtime"
+    "greenfieldProvider": "verified-testnet-sp1-canary; final-app-smoke-pending"
   },
   "requiredVerification": [
     "eth_chainId",

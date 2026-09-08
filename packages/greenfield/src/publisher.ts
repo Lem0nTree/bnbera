@@ -102,13 +102,30 @@ function assertImmutableObjectName(value: string): string {
 }
 
 function errorMessage(error: unknown): string {
-  const value = error instanceof Error ? error.message : "Provider operation failed";
-  return value
-    .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/gi, "[redacted-secret]")
-    .replace(/(?:private[_ -]?key|password|passphrase|secret|token|credential)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]")
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/[^\x20-\x7E]/g, "")
-    .slice(0, 500) || "Provider operation failed";
+  const code = errorCode(error, "PROVIDER_FAILED");
+  const fixed: Partial<Record<PublicationFailureCode, string>> = {
+    INVALID_ARTIFACT: "Canonical evidence artifact is invalid",
+    FORBIDDEN_PUBLIC_FIELD: "Canonical evidence artifact contains a forbidden public field",
+    ARTIFACT_TOO_LARGE: "Canonical evidence artifact exceeds the configured size limit",
+    OBJECT_TOO_LARGE: "Published evidence object exceeds the configured size limit",
+    CREATE_FAILED: "Greenfield object creation failed",
+    CREATE_UNKNOWN: "Greenfield object creation outcome is unknown and requires reconciliation",
+    UPLOAD_FAILED: "Greenfield object upload failed",
+    PROVIDER_FAILED: "Greenfield provider operation failed",
+    MALFORMED_TRANSACTION: "Provider returned a malformed transaction hash",
+    TIMEOUT: "Greenfield provider operation timed out",
+    MISSING_OBJECT: "Greenfield object is unavailable",
+    HASH_MISMATCH: "Greenfield readback hash did not match canonical bytes",
+    SIZE_MISMATCH: "Greenfield readback size did not match canonical bytes",
+    DUPLICATE_IDEMPOTENCY_KEY: "Publication idempotency key is already bound",
+    UNSUPPORTED_PROVIDER: "Greenfield provider is not supported by trusted configuration",
+    CONFIGURATION_CHANGED: "Publication configuration changed",
+    DURABLE_GRAPH_INVALID: "Durable evidence graph is invalid",
+    SEAL_TRANSACTION_MISSING: "Greenfield seal transaction hash is missing",
+    CONCURRENT_UPDATE: "Publication state was concurrently updated",
+    LEASE_LOST: "Publication lease is no longer held"
+  };
+  return fixed[code] ?? "Provider operation failed";
 }
 
 function errorCode(error: unknown, fallback: PublicationFailureCode): PublicationFailureCode {
@@ -125,10 +142,14 @@ function checkedTransactionHash(value: string | null, field: string): string | n
   if (value === null) {
     return null;
   }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(value)) {
+  const normalized = value.trim().toLowerCase();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(normalized)) {
     throw new PublicationProviderError("MALFORMED_TRANSACTION", `${field} hash is malformed`, false);
   }
-  return value.toLowerCase();
+  // Greenfield reports an all-zero SealTxHash while the object is sealed but
+  // no seal transaction is available. It is a confirmed seal status, not a
+  // transaction claim.
+  return /^0x0{64}$/.test(normalized) ? null : normalized;
 }
 
 function checkedNetwork(actual: string, expected: string, provider: PublicationProvider): void {
@@ -255,7 +276,8 @@ export class EvidencePublisher {
     }
     this.assertCurrentConfiguration(existing, provider);
     assertDurablePublicationAttempt(existing);
-    if (existing.state === "verified" || (!result.created && !existing.retryable && terminalStates.has(existing.state))) {
+    const unknownCreate = existing.state === "create_failed" && existing.lastErrorCode === "CREATE_UNKNOWN";
+    if (existing.state === "verified" || (!result.created && !existing.retryable && terminalStates.has(existing.state) && !unknownCreate)) {
       return existing;
     }
 
@@ -276,6 +298,15 @@ export class EvidencePublisher {
     let outcome: PublicationAttemptRecord | null = null;
     try {
       if (!result.created && terminalStates.has(existing.state)) {
+        if (unknownCreate) {
+          const reconciled = await this.reconcileUnknownCreate(initial, digest);
+          if (reconciled !== null) {
+            outcome = reconciled;
+            return reconciled;
+          }
+          outcome = initial;
+          return initial;
+        }
         if (!existing.retryable) {
           return existing;
         }
@@ -378,6 +409,49 @@ export class EvidencePublisher {
     }
   }
 
+  private async reconcileUnknownCreate(
+    initial: PublicationAttemptRecord,
+    digest: ArtifactDigest
+  ): Promise<PublicationAttemptRecord | null> {
+    const adapter = this.dependencies.greenfield;
+    if (adapter?.reconcileCreate === undefined) return null;
+    let reconciliation;
+    try {
+      reconciliation = await adapter.reconcileCreate({
+        objectName: initial.objectName,
+        sizeBytes: digest.sizeBytes,
+        canonicalBytes: digest.canonicalBytes
+      });
+    } catch {
+      return null;
+    }
+    if (reconciliation.status === "unknown") return null;
+    if (reconciliation.status === "present") {
+      if (reconciliation.objectReference === null || reconciliation.creationTransactionHash === null) return null;
+      // Return to the normal deterministic inspection path. It will compare
+      // canonical bytes/checksums again before upload and will not rebroadcast.
+    }
+    const retrying = await this.transition(initial, "retrying", {
+      retryCount: initial.retryCount + 1,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      retryable: false,
+      startedAt: null,
+      completedAt: null,
+      // Re-run the normal canonical inspection path after the durable
+      // reconciliation. This keeps all provider metadata/bytes checks in one
+      // place and avoids treating a partial reconciliation receipt as an
+      // upload authorization.
+      providerReference: null,
+      creationTransactionHash: null,
+      sealTransactionHash: null,
+      locator: null,
+      verification: null
+    });
+    const pending = await this.transition(retrying, "pending");
+    return this.runProvider(digest, "greenfield", pending);
+  }
+
   private async validateSizeBounds(record: PublicationAttemptRecord, digest: ArtifactDigest): Promise<PublicationAttemptRecord | null> {
     if (digest.sizeBytes > this.configuration.maxArtifactBytes) {
       return this.fail(record, "validation_failed", "ARTIFACT_TOO_LARGE", "Canonical artifact exceeds the configured size limit");
@@ -467,28 +541,100 @@ export class EvidencePublisher {
     if (record.state === "validating" || record.state === "creating_object") {
       if (objectReference === null) {
         record = record.state === "creating_object" ? record : await this.transition(record, "creating_object");
-        let created;
-        try {
-          created = await adapter.createObject({
-            objectName: record.objectName,
-            sizeBytes: digest.sizeBytes,
-            mimeType: "application/json"
-          });
-          const creationTransactionHash = checkedTransactionHash(
-            created.creationTransactionHash,
-            "Greenfield creation transaction"
-          );
-          record = await this.transition(record, created.status === "submitted" ? "submitted" : "uploading", {
-            providerReference: created.objectReference,
-            creationTransactionHash,
-            submittedAt: created.status === "submitted" ? nowIso(this.clock) : null
-          });
-          objectReference = created.objectReference;
-        } catch (error) {
-          return this.fail(record, "create_failed", errorCode(error, "CREATE_FAILED"), errorMessage(error));
+
+        // A create broadcast can be accepted by the chain while the worker
+        // loses its response. Reconcile the deterministic bucket/object first
+        // so a retry can never blindly submit a second create transaction.
+        if (adapter.inspectObject !== undefined) {
+          let inspected;
+          try {
+            inspected = await adapter.inspectObject({
+              objectName: record.objectName,
+              sizeBytes: digest.sizeBytes,
+              canonicalBytes: digest.canonicalBytes
+            });
+          } catch (error) {
+            return this.fail(record, "provider_failed", errorCode(error, "PROVIDER_FAILED"), errorMessage(error));
+          }
+          if (inspected.status !== "missing") {
+            if (inspected.objectReference === null) {
+              return this.fail(
+                record,
+                "create_failed",
+                "CREATE_FAILED",
+                "Greenfield inspection found an object without a provider reference"
+              );
+            }
+            const creationTransactionHash = checkedTransactionHash(
+              inspected.creationTransactionHash,
+              "Greenfield creation transaction"
+            );
+            if (creationTransactionHash === null) {
+              return this.fail(
+                record,
+                "create_failed",
+                "CREATE_FAILED",
+                "Greenfield inspection found an object without its creation transaction hash"
+              );
+            }
+            objectReference = inspected.objectReference;
+            if (inspected.status === "sealed") {
+              const locator = createEvidenceLocator({
+                provider: "greenfield",
+                providerLabel: this.configuration.greenfield.providerLabel,
+                network: this.configuration.greenfield.network,
+                uri: `greenfield://${this.configuration.greenfield.bucket}/${record.objectName}`,
+                bucket: this.configuration.greenfield.bucket,
+                objectName: record.objectName,
+                providerReference: objectReference,
+                version: digest.artifact.version,
+                sha256Digest: digest.sha256Digest,
+                keccak256Digest: digest.keccak256Digest,
+                sizeBytes: digest.sizeBytes
+              });
+              record = await this.transition(record, "awaiting_seal", {
+                providerReference: objectReference,
+                creationTransactionHash,
+                sealTransactionHash: checkedTransactionHash(inspected.sealTransactionHash, "Greenfield seal transaction"),
+                locator
+              });
+              return this.awaitSeal(adapter, digest, record, objectReference);
+            }
+            record = await this.transition(record, "uploading", {
+              providerReference: objectReference,
+              creationTransactionHash
+            });
+          }
         }
-        if (objectReference === null) {
-          return this.fail(record, "create_failed", "CREATE_FAILED", "Provider did not return an object reference");
+
+        if (objectReference !== null) {
+          // The inspection above recovered a durable create. Continue with
+          // upload/seal handling below; no create call is made.
+        } else {
+          let created;
+          try {
+            created = await adapter.createObject({
+              objectName: record.objectName,
+              sizeBytes: digest.sizeBytes,
+              mimeType: "application/json",
+              canonicalBytes: digest.canonicalBytes
+            });
+            const creationTransactionHash = checkedTransactionHash(
+              created.creationTransactionHash,
+              "Greenfield creation transaction"
+            );
+            record = await this.transition(record, created.status === "submitted" ? "submitted" : "uploading", {
+              providerReference: created.objectReference,
+              creationTransactionHash,
+              submittedAt: created.status === "submitted" ? nowIso(this.clock) : null
+            });
+            objectReference = created.objectReference;
+          } catch (error) {
+            return this.fail(record, "create_failed", errorCode(error, "CREATE_FAILED"), errorMessage(error));
+          }
+          if (objectReference === null) {
+            return this.fail(record, "create_failed", "CREATE_FAILED", "Provider did not return an object reference");
+          }
         }
       }
     }
@@ -510,7 +656,8 @@ export class EvidencePublisher {
             keccak256Digest: digest.keccak256Digest,
             sizeBytes: digest.sizeBytes,
             mimeType: "application/json",
-            objectReference
+            objectReference,
+            creationTransactionHash: record.creationTransactionHash
           });
           checkedNetwork(receipt.network, this.configuration.greenfield.network, "greenfield");
           if (receipt.bucket !== this.configuration.greenfield.bucket) {
@@ -571,14 +718,6 @@ export class EvidencePublisher {
         seal = await adapter.waitForSeal({ objectReference, attempt });
         const sealTransactionHash = checkedTransactionHash(seal.sealTransactionHash, "Greenfield seal transaction");
         if (seal.status === "sealed") {
-          if (sealTransactionHash === null) {
-            return this.fail(
-              record,
-              "provider_failed",
-              "SEAL_TRANSACTION_MISSING",
-              "Greenfield reported sealed without a canonical seal transaction hash"
-            );
-          }
           record = await this.transition(record, "reading_back", { sealTransactionHash });
           return this.verifyReadback(record, digest, () => adapter.readObject({ objectReference }), true);
         }
@@ -710,6 +849,7 @@ export class EvidencePublisher {
       code !== "MISSING_OBJECT" &&
       code !== "ARTIFACT_TOO_LARGE" &&
       code !== "OBJECT_TOO_LARGE" &&
+      code !== "CREATE_UNKNOWN" &&
       code !== "INVALID_ARTIFACT" &&
       code !== "FORBIDDEN_PUBLIC_FIELD" &&
       code !== "MALFORMED_TRANSACTION" &&

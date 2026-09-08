@@ -4,6 +4,7 @@ import {
   MarketplaceReadService,
   marketplaceRetrievalModes,
   marketplaceSourceKinds,
+  marketplaceEvidenceArtifactSchema,
   marketplaceReputationSchema,
   marketplaceScoreExplanationSchema,
   type MarketplaceAgentCard as CoreMarketplaceAgentCard,
@@ -67,13 +68,61 @@ const pricingSchema = z.object({
   explanation: z.string().trim().min(1).max(500)
 });
 
+export const emptyPublicEvidenceArtifact = (
+  artifactType: "agent_profile" | "run_bundle",
+  reason: string,
+  status: "pending" | "failed" | "unavailable" = "unavailable",
+  jobId: string | null = null
+) => ({
+  artifactType,
+  artifactId: null,
+  jobId,
+  version: null,
+  status,
+  summary: status === "pending"
+    ? "Greenfield publication is pending seal/read-back verification; no link is exposed yet."
+    : status === "failed"
+      ? "Greenfield publication failed verification; no link is exposed."
+      : "No verified Greenfield publication is available.",
+  provider: null,
+  readUrl: null,
+  locator: null,
+  sha256Digest: null,
+  keccak256Digest: null,
+  sizeBytes: null,
+  sealTransactionHash: null,
+  verifiedAt: null,
+  reason
+});
+
+/** The shared projection enforces HTTPS/greenfield:// and matching proof. */
+export const marketplaceEvidenceReadArtifactSchema = marketplaceEvidenceArtifactSchema.catch((ctx) => {
+  const input = ctx.input;
+  const artifactType = input && typeof input === "object" && (input as { artifactType?: unknown }).artifactType === "run_bundle"
+    ? "run_bundle"
+    : "agent_profile";
+  const status = input && typeof input === "object" && ((input as { status?: unknown }).status === "pending" || (input as { status?: unknown }).status === "failed")
+    ? (input as { status: "pending" | "failed" }).status
+    : "unavailable";
+  const rawJobId = input && typeof input === "object" ? (input as { jobId?: unknown }).jobId : null;
+  const jobId = typeof rawJobId === "string" && z.string().uuid().safeParse(rawJobId).success ? rawJobId : null;
+  return emptyPublicEvidenceArtifact(artifactType, status === "failed" ? "GREENFIELD_PUBLICATION_FAILED" : status === "pending" ? "GREENFIELD_VERIFICATION_PENDING" : "GREENFIELD_EVIDENCE_UNAVAILABLE", status, jobId);
+});
+
 const evidenceSummarySchema = z.object({
-  status: z.enum(["verified", "pending", "unavailable"]),
+  status: z.enum(["verified", "pending", "failed", "unavailable"]),
   summary: z.string().trim().min(1).max(500),
   ipfsUri: z.string().url().nullable(),
+  /** Backwards-compatible alias for the profile read URL. */
   greenfieldUri: z.string().url().nullable(),
-  lastVerifiedAt: z.string().datetime({ offset: true }).nullable()
+  greenfieldLocator: z.string().nullable().default(null),
+  lastVerifiedAt: z.string().datetime({ offset: true }).nullable(),
+  currentVersion: z.number().int().positive().nullable().default(null),
+  profile: marketplaceEvidenceReadArtifactSchema.default(emptyPublicEvidenceArtifact("agent_profile", "AGENT_PROFILE_UNAVAILABLE")),
+  runBundle: marketplaceEvidenceReadArtifactSchema.default(emptyPublicEvidenceArtifact("run_bundle", "RUN_BUNDLE_UNAVAILABLE"))
 });
+
+export type MarketplaceEvidenceReadArtifact = z.infer<typeof marketplaceEvidenceReadArtifactSchema>;
 
 const currentDataSchema = z.object({
   status: z.enum(["available", "stale", "unavailable"]),
@@ -571,25 +620,38 @@ function mapEvidence(card: CoreMarketplaceAgentCard): MarketplaceAgentReadModel[
       summary: "Execution evidence is labelled fixture data; no live execution or publication proof is claimed.",
       ipfsUri: null,
       greenfieldUri: null,
-      lastVerifiedAt: null
+      greenfieldLocator: null,
+      lastVerifiedAt: null,
+      currentVersion: null,
+      profile: emptyPublicEvidenceArtifact("agent_profile", "FIXTURE_EVIDENCE_UNAVAILABLE"),
+      runBundle: emptyPublicEvidenceArtifact("run_bundle", "FIXTURE_EVIDENCE_UNAVAILABLE")
     };
   }
-  const status = card.executionEvidence.status === "verified"
-    ? "verified"
-    : card.executionEvidence.status === "unavailable"
-      ? "unavailable"
-      : "pending";
-  return {
+  const source = card.evidence;
+  const profile = marketplaceEvidenceReadArtifactSchema.parse(source?.profile ?? emptyPublicEvidenceArtifact("agent_profile", "AGENT_PROFILE_UNAVAILABLE"));
+  const runBundle = marketplaceEvidenceReadArtifactSchema.parse(source?.runBundle ?? emptyPublicEvidenceArtifact("run_bundle", "RUN_BUNDLE_UNAVAILABLE"));
+  const primary = profile.status !== "unavailable" ? profile : runBundle;
+  const status = primary.status;
+  const summary = status === "verified"
+    ? "Verified Greenfield publication is available for this read model."
+    : status === "pending"
+      ? "Greenfield evidence is pending seal/read-back verification; no link is exposed yet."
+      : status === "failed"
+        ? "Greenfield evidence failed verification; browsing and hiring remain available without a publication link."
+        : card.executionEvidence.status === "verified"
+          ? "Execution evidence is observed, but no verified Greenfield publication link is available."
+          : "No verified Greenfield publication is available in this read model.";
+  return evidenceSummarySchema.parse({
     status,
-    summary: status === "verified"
-      ? "The read model includes an execution-evidence observation. Publication integrity remains a separate gate."
-      : status === "unavailable"
-        ? "No execution-evidence record is available in this read model."
-        : "Execution evidence is pending verification in this read model.",
+    summary,
     ipfsUri: null,
-    greenfieldUri: null,
-    lastVerifiedAt: card.executionEvidence.lastVerifiedAt
-  };
+    greenfieldUri: profile.readUrl,
+    greenfieldLocator: profile.locator,
+    lastVerifiedAt: profile.verifiedAt,
+    currentVersion: source?.currentVersion ?? null,
+    profile,
+    runBundle
+  });
 }
 
 function mapActivation(card: CoreMarketplaceAgentCard): MarketplaceAgentReadModel["activation"] {

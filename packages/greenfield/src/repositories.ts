@@ -71,10 +71,11 @@ function optionalTransactionHash(value: string | null, field: string): string | 
   if (value === null) {
     return null;
   }
-  if (!/^0x[0-9a-f]{64}$/i.test(value)) {
+  const normalized = value.trim().toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/i.test(normalized)) {
     throw new Error(`${field} must be a canonical transaction hash`);
   }
-  return value;
+  return /^0x0{64}$/i.test(normalized) ? null : normalized;
 }
 
 function requiredVersion(value: number, field: string): number {
@@ -306,8 +307,8 @@ export function toEvidenceObjectRow(record: EvidenceObjectRecord): EvidenceObjec
     ipfs_uri: record.ipfsUri,
     greenfield_bucket: record.greenfieldBucket,
     greenfield_object: record.greenfieldObject,
-    creation_transaction_hash: record.creationTransactionHash,
-    seal_transaction_hash: record.sealTransactionHash,
+    creation_transaction_hash: optionalTransactionHash(record.creationTransactionHash, "creation_transaction_hash"),
+    seal_transaction_hash: optionalTransactionHash(record.sealTransactionHash, "seal_transaction_hash"),
     sha256_digest: record.sha256Digest,
     keccak256_digest: record.keccak256Digest,
     size_bytes: record.sizeBytes,
@@ -373,8 +374,8 @@ export function toEvidencePublicationAttemptRow(
     object_name: record.objectName,
     state: record.state,
     provider_reference: record.providerReference,
-    creation_transaction_hash: record.creationTransactionHash,
-    seal_transaction_hash: record.sealTransactionHash,
+    creation_transaction_hash: optionalTransactionHash(record.creationTransactionHash, "creation_transaction_hash"),
+    seal_transaction_hash: optionalTransactionHash(record.sealTransactionHash, "seal_transaction_hash"),
     submitted_at: record.submittedAt === null ? null : asDate(record.submittedAt, "submitted_at"),
     last_error_code: record.lastErrorCode,
     sanitized_error: record.lastErrorMessage,
@@ -416,8 +417,8 @@ export function fromEvidencePublicationAttemptRow(
     leaseOwner: row.lease_owner === null ? null : requireUuid(row.lease_owner, "lease owner"),
     leaseExpiresAt: row.lease_expires_at === null ? null : fromDate(row.lease_expires_at, "lease_expires_at"),
     providerReference: row.provider_reference,
-    creationTransactionHash: row.creation_transaction_hash,
-    sealTransactionHash: row.seal_transaction_hash,
+    creationTransactionHash: optionalTransactionHash(row.creation_transaction_hash, "creation_transaction_hash"),
+    sealTransactionHash: optionalTransactionHash(row.seal_transaction_hash, "seal_transaction_hash"),
     locator,
     verification,
     retryCount: row.attempt_number,
@@ -563,12 +564,40 @@ export class InMemoryEvidenceObjectRepository implements EvidenceObjectRepositor
     requireUuid(record.id, "evidence object id");
     const existing = await this.findByIdempotencyKey(record.idempotencyKey);
     if (existing !== null && existing.sha256Digest !== record.sha256Digest) {
-      throw new Error("Evidence idempotency key is already bound to different content");
+      throw new PublicationProviderError("DUPLICATE_IDEMPOTENCY_KEY", "Evidence idempotency key is already bound to different content", false);
     }
     if (existing !== null && existing.id !== record.id) {
-      throw new Error("Evidence idempotency key already has an immutable object");
+      throw new PublicationProviderError("DURABLE_GRAPH_INVALID", "Evidence idempotency key already has an immutable object", false);
     }
-    this.objects.set(record.id, record);
+    if (existing !== null) {
+      for (const [field, label] of [
+        ["agentId", "agent ownership"],
+        ["runId", "run ownership"],
+        ["resourceId", "resource binding"]
+      ] as const) {
+        const prior = existing[field];
+        const incoming = record[field];
+        if (prior !== null && incoming !== null && prior !== incoming) {
+          throw new PublicationProviderError("DURABLE_GRAPH_INVALID", `Evidence ${label} changed`, false);
+        }
+      }
+    }
+    if (existing === null) {
+      this.objects.set(record.id, record);
+      return;
+    }
+    this.objects.set(record.id, {
+      ...record,
+      agentId: record.agentId ?? existing.agentId,
+      runId: record.runId ?? existing.runId,
+      resourceId: existing.resourceId,
+      ipfsUri: record.ipfsUri ?? existing.ipfsUri,
+      greenfieldBucket: record.greenfieldBucket ?? existing.greenfieldBucket,
+      greenfieldObject: record.greenfieldObject ?? existing.greenfieldObject,
+      creationTransactionHash: record.creationTransactionHash ?? existing.creationTransactionHash,
+      sealTransactionHash: record.sealTransactionHash ?? existing.sealTransactionHash,
+      readbackVerifiedAt: record.readbackVerifiedAt ?? existing.readbackVerifiedAt
+    });
   }
 }
 
@@ -720,6 +749,161 @@ export class PersistentEvidenceRepositories implements EvidenceRepositoryBundle 
     this.unitOfWork = {
       run: (work) => adapter.transaction((transaction) => work(new PersistentEvidenceRepositories(transaction, this.evidenceObjectIdForAttempt)))
     };
+  }
+}
+
+export interface EvidenceObjectFactory {
+  readonly create: (record: PublicationAttemptRecord) => EvidenceObjectRecord;
+}
+
+export interface EvidenceObjectBinding {
+  readonly agentId: string | null;
+  readonly agentVersionId: string | null;
+  readonly runId: string | null;
+  readonly jobId: string | null;
+  readonly resourceId: string;
+}
+
+/** Stable object identity shared by IPFS and Greenfield attempts for one
+ * immutable artifact version. Provider-specific idempotency remains on the
+ * publication attempt row. */
+export function deterministicEvidenceObjectId(record: PublicationAttemptRecord): string {
+  return deterministicEvidenceObjectIdForBinding(record, {
+    agentId: null,
+    agentVersionId: null,
+    runId: null,
+    jobId: null,
+    resourceId: record.artifactId
+  });
+}
+
+/** Include every durable ownership/resource component in the object id. The
+ * tuple is intentionally not shortened to artifact id/version: two persisted
+ * resources with the same public label must never alias one evidence row. */
+export function deterministicEvidenceObjectIdForBinding(
+  record: PublicationAttemptRecord,
+  binding: EvidenceObjectBinding
+): string {
+  return deterministicUuid([
+    "bnbera.evidence-object",
+    record.artifactType,
+    record.artifactId,
+    String(record.artifactVersion),
+    binding.agentId ?? "",
+    binding.agentVersionId ?? "",
+    binding.runId ?? "",
+    binding.jobId ?? "",
+    binding.resourceId
+  ].join(":"));
+}
+
+function defaultEvidenceObjectBinding(record: PublicationAttemptRecord): EvidenceObjectBinding {
+  return {
+    agentId: null,
+    agentVersionId: null,
+    runId: null,
+    jobId: null,
+    resourceId: record.artifactId
+  };
+}
+
+export function defaultEvidenceObjectForAttempt(
+  record: PublicationAttemptRecord,
+  binding: EvidenceObjectBinding = defaultEvidenceObjectBinding(record)
+): EvidenceObjectRecord {
+  const timestamp = record.createdAt;
+  return {
+    id: deterministicEvidenceObjectIdForBinding(record, binding),
+    runId: binding.runId,
+    agentId: binding.agentId,
+    benchmarkId: null,
+    artifactId: record.artifactId,
+    artifactType: record.artifactType,
+    artifactSchemaVersion: "bnbera.evidence/v1",
+    resourceId: binding.resourceId,
+    version: record.artifactVersion,
+    idempotencyKey: `artifact:${record.artifactType}:${record.artifactId}:${record.artifactVersion}`,
+    state: "pending",
+    ipfsUri: null,
+    greenfieldBucket: record.provider === "greenfield" ? record.configuredBucket : null,
+    greenfieldObject: null,
+    creationTransactionHash: null,
+    sealTransactionHash: null,
+    sha256Digest: record.sha256Digest,
+    keccak256Digest: record.keccak256Digest,
+    sizeBytes: record.sizeBytes,
+    mimeType: "application/json",
+    readbackVerifiedAt: null,
+    createdAt: timestamp,
+    updatedAt: record.updatedAt
+  };
+}
+
+/**
+ * PublicationStore facade that creates the shared evidence object and its
+ * provider attempt atomically. The underlying adapter's transaction-scoped
+ * implementation gives create-or-get and object insertion one unit of work.
+ */
+export class PersistentEvidencePublicationStore implements PublicationStore {
+  private readonly repositories: PersistentEvidenceRepositories;
+  private readonly evidenceObjectFactory: EvidenceObjectFactory;
+  private readonly evidenceObjectIdForAttempt: (record: PublicationAttemptRecord) => string;
+
+  constructor(
+    private readonly adapter: PersistentEvidenceAdapter,
+    options?: {
+      readonly evidenceObjectIdForAttempt?: (record: PublicationAttemptRecord) => string;
+      readonly evidenceObjectFactory?: EvidenceObjectFactory;
+    }
+  ) {
+    this.evidenceObjectIdForAttempt = options?.evidenceObjectIdForAttempt ?? deterministicEvidenceObjectId;
+    this.repositories = new PersistentEvidenceRepositories(
+      adapter,
+      this.evidenceObjectIdForAttempt
+    );
+    this.evidenceObjectFactory = options?.evidenceObjectFactory ?? { create: defaultEvidenceObjectForAttempt };
+  }
+
+  async findByIdempotencyKey(idempotencyKey: string): Promise<PublicationAttemptRecord | null> {
+    return this.repositories.attempts.findByIdempotencyKey(idempotencyKey);
+  }
+
+  async findByAttemptId(attemptId: string): Promise<PublicationAttemptRecord | null> {
+    return this.repositories.attempts.findByAttemptId(attemptId);
+  }
+
+  async createOrGet(record: PublicationAttemptRecord): Promise<{ readonly record: PublicationAttemptRecord; readonly created: boolean }> {
+    const object = this.evidenceObjectFactory.create(record);
+    const objectId = this.evidenceObjectIdForAttempt(record);
+    if (object.id !== objectId) {
+      throw new PublicationProviderError("DURABLE_GRAPH_INVALID", "Evidence object factory returned an inconsistent id", false);
+    }
+    return this.adapter.transaction(async (transaction) => {
+      await transaction.objects.save(toEvidenceObjectRow(object));
+      const repositories = new PersistentEvidenceRepositories(transaction, this.evidenceObjectIdForAttempt);
+      return repositories.attempts.createOrGet(record);
+    });
+  }
+
+  save(record: PublicationAttemptRecord, expectedRevision: number, leaseToken: string, now?: string): Promise<void> {
+    return this.repositories.attempts.save(record, expectedRevision, leaseToken, now);
+  }
+
+  acquireLease(
+    attemptId: string,
+    leaseToken: string,
+    now: string,
+    durationMs: number
+  ): Promise<{ readonly acquired: boolean; readonly record: PublicationAttemptRecord | null }> {
+    return this.repositories.attempts.acquireLease(attemptId, leaseToken, now, durationMs);
+  }
+
+  releaseLease(attemptId: string, leaseToken: string, now?: string): Promise<PublicationAttemptRecord | null> {
+    return this.repositories.attempts.releaseLease(attemptId, leaseToken, now);
+  }
+
+  appendAudit(event: PublicationAuditEvent): Promise<void> {
+    return this.repositories.attempts.appendAudit(event);
   }
 }
 

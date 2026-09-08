@@ -19,8 +19,10 @@
     "check": "pnpm build && pnpm lint && pnpm typecheck && pnpm test"
   },
   "dependencies": {
-    "@bnbera/evidence": "workspace:*",
+    "@bnb-chain/greenfield-js-sdk": "2.2.0",
+    "@bnb-chain/reed-solomon": "1.1.4",
     "@bnbera/domain": "workspace:*",
+    "@bnbera/evidence": "workspace:*",
     "zod": "3.24.1"
   }
 }
