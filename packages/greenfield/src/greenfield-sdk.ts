@@ -448,7 +448,13 @@ function responseStatus(response: UnknownRecord): number | null {
 }
 
 function hashOrNull(value: unknown): string | null {
-  return typeof value === "string" && transactionHashPattern.test(value) ? value.toLowerCase() : null;
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (!transactionHashPattern.test(normalized)) return null;
+  // Greenfield uses the all-zero seal hash to represent an unset transaction
+  // hash. ObjectStatus remains the source of truth for whether the object is
+  // sealed.
+  return /^0x0{64}$/.test(normalized) ? null : normalized;
 }
 
 function transactionHashFromResponse(response: UnknownRecord): string | null {
@@ -982,10 +988,12 @@ export class GreenfieldSdkPublisher implements GreenfieldPublisher {
     const creationTransactionHash = hashOrNull(metadata.CreateTxHash);
     const sealTransactionHash = hashOrNull(metadata.SealTxHash);
     return {
-      status: status === 1 || sealTransactionHash !== null ? "sealed" : "created",
+      status: status === 1 ? "sealed" : "created",
       objectReference,
       creationTransactionHash,
-      sealTransactionHash
+      // A non-sealed object must not carry a seal claim even if a provider
+      // returns a stale SealTxHash field.
+      sealTransactionHash: status === 1 ? sealTransactionHash : null
     };
   }
 

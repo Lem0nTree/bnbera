@@ -142,10 +142,14 @@ function checkedTransactionHash(value: string | null, field: string): string | n
   if (value === null) {
     return null;
   }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(value)) {
+  const normalized = value.trim().toLowerCase();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(normalized)) {
     throw new PublicationProviderError("MALFORMED_TRANSACTION", `${field} hash is malformed`, false);
   }
-  return value.toLowerCase();
+  // Greenfield reports an all-zero SealTxHash while the object is sealed but
+  // no seal transaction is available. It is a confirmed seal status, not a
+  // transaction claim.
+  return /^0x0{64}$/.test(normalized) ? null : normalized;
 }
 
 function checkedNetwork(actual: string, expected: string, provider: PublicationProvider): void {
@@ -714,14 +718,6 @@ export class EvidencePublisher {
         seal = await adapter.waitForSeal({ objectReference, attempt });
         const sealTransactionHash = checkedTransactionHash(seal.sealTransactionHash, "Greenfield seal transaction");
         if (seal.status === "sealed") {
-          if (sealTransactionHash === null) {
-            return this.fail(
-              record,
-              "provider_failed",
-              "SEAL_TRANSACTION_MISSING",
-              "Greenfield reported sealed without a canonical seal transaction hash"
-            );
-          }
           record = await this.transition(record, "reading_back", { sealTransactionHash });
           return this.verifyReadback(record, digest, () => adapter.readObject({ objectReference }), true);
         }

@@ -54,6 +54,7 @@ const artifact = {
     finalStatus: "simulated"
   }
 } as const;
+const zeroTransactionHash = `0x${"0".repeat(64)}`;
 
 describe("persistent evidence row mappings", () => {
   it("round-trips object and publication-attempt metadata without raw bytes", () => {
@@ -128,6 +129,13 @@ describe("persistent evidence row mappings", () => {
     expect(objectRoundTrip).toEqual(object);
     expect(objectRoundTrip.artifactId).not.toBe(objectRoundTrip.resourceId);
     expect(attemptRoundTrip).toEqual(record);
+
+    const normalizedObject = fromEvidenceObjectRow(
+      toEvidenceObjectRow({ ...object, sealTransactionHash: zeroTransactionHash })
+    );
+    expect(normalizedObject.sealTransactionHash).toBeNull();
+    const normalizedAttempt = publicationAttemptRecordSchema.parse({ ...record, sealTransactionHash: zeroTransactionHash });
+    expect(normalizedAttempt.sealTransactionHash).toBeNull();
   });
 
   it("maps locator and verification rows as separate correlated records", () => {
@@ -280,6 +288,17 @@ describe("persistent evidence row mappings", () => {
     const attemptRow = toEvidencePublicationAttemptRow(record, object.id);
     expect(
       fromEvidencePublicationAttemptRow(attemptRow, objectRow, locator, verification).state
+    ).toBe("verified");
+
+    const nullableSealRecord = publicationAttemptRecordSchema.parse({ ...record, sealTransactionHash: zeroTransactionHash });
+    expect(nullableSealRecord.sealTransactionHash).toBeNull();
+    expect(
+      fromEvidencePublicationAttemptRow(
+        toEvidencePublicationAttemptRow(nullableSealRecord, object.id),
+        objectRow,
+        locator,
+        verification
+      ).state
     ).toBe("verified");
     const mismatchedLocator = { ...locator, sha256Digest: "f".repeat(64) };
     expect(() => fromEvidencePublicationAttemptRow(attemptRow, objectRow, mismatchedLocator, verification)).toThrow(

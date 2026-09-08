@@ -13,6 +13,7 @@ export type MarketplaceEvidenceStatus = (typeof marketplaceEvidenceStatuses)[num
 
 const digestSchema = z.string().regex(/^[0-9a-fA-F]{64}$/u);
 const transactionHashSchema = z.string().regex(/^0x[0-9a-fA-F]{64}$/u);
+const zeroTransactionHashPattern = /^0x0{64}$/u;
 const timestampSchema = z.string().datetime({ offset: true });
 
 function safeHttpsUrl(value: string): string | null {
@@ -77,10 +78,19 @@ function digest(value: unknown): string | null {
   return digestSchema.safeParse(normalized).success ? normalized.toLowerCase() : null;
 }
 
-function txHash(value: unknown): string | null {
-  return typeof value === "string" && transactionHashSchema.safeParse(value.trim()).success
-    ? value.trim().toLowerCase()
-    : null;
+function normalizedOptionalTxHash(value: unknown): { readonly value: string | null; readonly valid: boolean } {
+  if (value === null || value === undefined) return { value: null, valid: true };
+  if (typeof value !== "string") return { value: null, valid: false };
+  const candidate = value.trim();
+  if (candidate.length === 0 || zeroTransactionHashPattern.test(candidate)) return { value: null, valid: true };
+  return transactionHashSchema.safeParse(candidate).success
+    ? { value: candidate.toLowerCase(), valid: true }
+    : { value: null, valid: false };
+}
+
+function normalizedSchemaTxHash(value: unknown): unknown {
+  const normalized = normalizedOptionalTxHash(value);
+  return normalized.valid ? normalized.value : value;
 }
 
 function timestamp(value: unknown): string | null {
@@ -137,7 +147,7 @@ export const marketplaceEvidenceArtifactSchema = z.object({
   sha256Digest: digestSchema.nullable(),
   keccak256Digest: digestSchema.nullable(),
   sizeBytes: z.number().int().nonnegative().nullable(),
-  sealTransactionHash: transactionHashSchema.nullable(),
+  sealTransactionHash: z.preprocess(normalizedSchemaTxHash, transactionHashSchema.nullable()),
   verifiedAt: timestampSchema.nullable(),
   reason: z.string().trim().min(1).max(500).nullable()
 }).superRefine((value, context) => {
@@ -151,8 +161,8 @@ export const marketplaceEvidenceArtifactSchema = z.object({
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["locator"], message: "Evidence locators must be internal greenfield:// references" });
   }
   if (value.status === "verified") {
-    if (value.provider !== "greenfield" || value.readUrl === null || value.locator === null || value.sha256Digest === null || value.keccak256Digest === null || value.sizeBytes === null || value.sealTransactionHash === null || value.verifiedAt === null) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["status"], message: "Verified Greenfield evidence must include a safe read URL, locator, matching digests/size, seal, and verification time" });
+    if (value.provider !== "greenfield" || value.readUrl === null || value.locator === null || value.sha256Digest === null || value.keccak256Digest === null || value.sizeBytes === null || value.verifiedAt === null) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["status"], message: "Verified Greenfield evidence must include a safe read URL, locator, matching digests/size, seal confirmation, and verification time" });
     }
     if (value.reason !== null) context.addIssue({ code: z.ZodIssueCode.custom, path: ["reason"], message: "Verified evidence cannot carry a failure reason" });
   } else {
@@ -306,10 +316,10 @@ function verifiedGraph(input: MarketplaceEvidenceGraphInput): {
   readonly keccak256Digest: string;
   readonly sizeBytes: number;
   readonly version: number;
-  readonly sealTransactionHash: string;
   readonly verifiedAt: string;
   readonly locator: string;
   readonly readUrl: string;
+  readonly sealTransactionHash: string | null;
 } | null {
   const locator = input.locator;
   const verification = input.verification;
@@ -332,10 +342,11 @@ function verifiedGraph(input: MarketplaceEvidenceGraphInput): {
   const observedKeccak256Digest = digest(verification.observedKeccak256Digest);
   const expectedSizeBytes = nonNegativeInteger(verification.expectedSizeBytes);
   const observedSizeBytes = nonNegativeInteger(verification.observedSizeBytes);
-  const sealTransactionHash = txHash(input.objectSealTransactionHash);
+  const sealTransaction = normalizedOptionalTxHash(input.objectSealTransactionHash);
+  const sealTransactionHash = sealTransaction.value;
   const verifiedAt = timestamp(locator.verifiedAt) ?? timestamp(input.objectReadbackVerifiedAt) ?? timestamp(verification.checkedAt);
   const locatorValueResult = locatorValue(input);
-  if (version === null || locatorVersion !== version || objectSha256Digest === null || objectKeccak256Digest === null || objectSizeBytes === null || locatorSha256Digest === null || locatorKeccak256Digest === null || locatorSizeBytes === null || expectedSha256Digest === null || observedSha256Digest === null || expectedKeccak256Digest === null || observedKeccak256Digest === null || expectedSizeBytes === null || observedSizeBytes === null || sealTransactionHash === null || verifiedAt === null || locatorValueResult === null) return null;
+  if (version === null || locatorVersion !== version || objectSha256Digest === null || objectKeccak256Digest === null || objectSizeBytes === null || locatorSha256Digest === null || locatorKeccak256Digest === null || locatorSizeBytes === null || expectedSha256Digest === null || observedSha256Digest === null || expectedKeccak256Digest === null || observedKeccak256Digest === null || expectedSizeBytes === null || observedSizeBytes === null || !sealTransaction.valid || verifiedAt === null || locatorValueResult === null) return null;
   if (objectSha256Digest !== locatorSha256Digest || objectKeccak256Digest !== locatorKeccak256Digest || objectSizeBytes !== locatorSizeBytes || objectSha256Digest !== expectedSha256Digest || expectedSha256Digest !== observedSha256Digest || objectKeccak256Digest !== expectedKeccak256Digest || expectedKeccak256Digest !== observedKeccak256Digest || objectSizeBytes !== expectedSizeBytes || expectedSizeBytes !== observedSizeBytes) return null;
   return {
     sha256Digest: objectSha256Digest,

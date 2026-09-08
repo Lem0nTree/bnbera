@@ -71,10 +71,11 @@ function optionalTransactionHash(value: string | null, field: string): string | 
   if (value === null) {
     return null;
   }
-  if (!/^0x[0-9a-f]{64}$/i.test(value)) {
+  const normalized = value.trim().toLowerCase();
+  if (!/^0x[0-9a-f]{64}$/i.test(normalized)) {
     throw new Error(`${field} must be a canonical transaction hash`);
   }
-  return value;
+  return /^0x0{64}$/i.test(normalized) ? null : normalized;
 }
 
 function requiredVersion(value: number, field: string): number {
@@ -306,8 +307,8 @@ export function toEvidenceObjectRow(record: EvidenceObjectRecord): EvidenceObjec
     ipfs_uri: record.ipfsUri,
     greenfield_bucket: record.greenfieldBucket,
     greenfield_object: record.greenfieldObject,
-    creation_transaction_hash: record.creationTransactionHash,
-    seal_transaction_hash: record.sealTransactionHash,
+    creation_transaction_hash: optionalTransactionHash(record.creationTransactionHash, "creation_transaction_hash"),
+    seal_transaction_hash: optionalTransactionHash(record.sealTransactionHash, "seal_transaction_hash"),
     sha256_digest: record.sha256Digest,
     keccak256_digest: record.keccak256Digest,
     size_bytes: record.sizeBytes,
@@ -373,8 +374,8 @@ export function toEvidencePublicationAttemptRow(
     object_name: record.objectName,
     state: record.state,
     provider_reference: record.providerReference,
-    creation_transaction_hash: record.creationTransactionHash,
-    seal_transaction_hash: record.sealTransactionHash,
+    creation_transaction_hash: optionalTransactionHash(record.creationTransactionHash, "creation_transaction_hash"),
+    seal_transaction_hash: optionalTransactionHash(record.sealTransactionHash, "seal_transaction_hash"),
     submitted_at: record.submittedAt === null ? null : asDate(record.submittedAt, "submitted_at"),
     last_error_code: record.lastErrorCode,
     sanitized_error: record.lastErrorMessage,
@@ -416,8 +417,8 @@ export function fromEvidencePublicationAttemptRow(
     leaseOwner: row.lease_owner === null ? null : requireUuid(row.lease_owner, "lease owner"),
     leaseExpiresAt: row.lease_expires_at === null ? null : fromDate(row.lease_expires_at, "lease_expires_at"),
     providerReference: row.provider_reference,
-    creationTransactionHash: row.creation_transaction_hash,
-    sealTransactionHash: row.seal_transaction_hash,
+    creationTransactionHash: optionalTransactionHash(row.creation_transaction_hash, "creation_transaction_hash"),
+    sealTransactionHash: optionalTransactionHash(row.seal_transaction_hash, "seal_transaction_hash"),
     locator,
     verification,
     retryCount: row.attempt_number,

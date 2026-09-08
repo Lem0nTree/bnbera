@@ -8,6 +8,7 @@ import {
 const SHA = "a".repeat(64);
 const KECCAK = "b".repeat(64);
 const SEAL = `0x${"c".repeat(64)}`;
+const ZERO_SEAL = `0x${"0".repeat(64)}`;
 const CHECKED_AT = "2026-09-08T00:00:00.000Z";
 const PUBLICATION_ATTEMPT = "00000000-0000-4000-8000-000000000001";
 
@@ -74,6 +75,15 @@ describe("marketplace Greenfield evidence projection", () => {
       keccak256Digest: KECCAK,
       sealTransactionHash: SEAL
     });
+  });
+
+  it("allows a verified seal status with an unset all-zero transaction hash", () => {
+    const result = projectGreenfieldEvidence(graph({ objectSealTransactionHash: ZERO_SEAL }), {
+      allowedReadUrlOrigins: ["https://greenfield.example"]
+    });
+    expect(result.status).toBe("verified");
+    expect(result.sealTransactionHash).toBeNull();
+    expect(JSON.stringify(result)).not.toContain(ZERO_SEAL);
   });
 
   it.each([

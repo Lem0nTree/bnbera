@@ -9,6 +9,7 @@ import {
 
 const createHash = `0x${"1".repeat(64)}`;
 const sealHash = `0x${"2".repeat(64)}`;
+const zeroHash = `0x${"0".repeat(64)}`;
 const privateKey = `0x${"3".repeat(64)}`;
 
 function sdkFixture(options: {
@@ -18,6 +19,8 @@ function sdkFixture(options: {
   readonly thrownMetadataError?: "official-missing" | "generic-404";
   readonly metadataDelay?: number;
   readonly privateKeyValue?: string;
+  readonly objectStatus?: 0 | 1;
+  readonly metadataSealHash?: string;
 } = {}) {
   const bytes = new TextEncoder().encode("canonical bytes");
   const configuredPrivateKey = options.privateKeyValue ?? privateKey;
@@ -68,13 +71,13 @@ function sdkFixture(options: {
             GfSpGetObjectMetaResponse: {
               Object: {
                 CreateTxHash: createHash,
-                SealTxHash: sealed ? sealHash : "",
+                SealTxHash: options.metadataSealHash ?? (sealed ? sealHash : ""),
                 ObjectInfo: {
                   ObjectName: "evidence/hackathon/agent_profile/agent-1/versions/1/agent_profile.json",
                   Owner: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   Creator: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                   PayloadSize: bytes.byteLength,
-                  ObjectStatus: sealed ? 1 : 0,
+                  ObjectStatus: options.objectStatus ?? (sealed ? 1 : 0),
                   Checksums: ["AQ=="]
                 }
               }
@@ -343,6 +346,48 @@ describe("official Greenfield SDK adapter boundary", () => {
     await fixture.publisher.waitForSeal({ objectReference: created.objectReference!, attempt: 1 });
     await fixture.publisher.readObject({ objectReference: created.objectReference! });
     expect(fixture.counts()).toEqual({ createCalls: 1, uploadCalls: 1, broadcastCalls: 1 });
+  });
+
+  it("keeps an object pending when ObjectStatus is zero even if SealTxHash is all zero", async () => {
+    const fixture = sdkFixture({ objectStatus: 0, metadataSealHash: zeroHash });
+    const objectName = "evidence/hackathon/agent_profile/agent-1/versions/1/agent_profile.json";
+    const created = await fixture.publisher.createObject({
+      objectName,
+      sizeBytes: fixture.bytes.byteLength,
+      mimeType: "application/json",
+      canonicalBytes: fixture.bytes
+    });
+
+    await expect(fixture.publisher.inspectObject({ objectName })).resolves.toEqual({
+      status: "created",
+      objectReference: greenfieldObjectReference("greenfield-test", objectName),
+      creationTransactionHash: createHash,
+      sealTransactionHash: null
+    });
+    await expect(fixture.publisher.waitForSeal({ objectReference: created.objectReference!, attempt: 1 })).resolves.toEqual({
+      status: "pending",
+      sealTransactionHash: null
+    });
+  });
+
+  it("normalizes an all-zero seal hash while trusting only ObjectStatus one", async () => {
+    const fixture = sdkFixture({ objectStatus: 1, metadataSealHash: zeroHash });
+    const objectName = "evidence/hackathon/agent_profile/agent-1/versions/1/agent_profile.json";
+    const created = await fixture.publisher.createObject({
+      objectName,
+      sizeBytes: fixture.bytes.byteLength,
+      mimeType: "application/json",
+      canonicalBytes: fixture.bytes
+    });
+
+    await expect(fixture.publisher.inspectObject({ objectName })).resolves.toMatchObject({
+      status: "sealed",
+      sealTransactionHash: null
+    });
+    await expect(fixture.publisher.waitForSeal({ objectReference: created.objectReference!, attempt: 1 })).resolves.toEqual({
+      status: "sealed",
+      sealTransactionHash: null
+    });
   });
 
   it.each([

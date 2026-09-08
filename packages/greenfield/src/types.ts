@@ -94,6 +94,14 @@ export function publicationConfigurationDigest(input: PublicationConfiguration):
 const timestampSchema = z.string().datetime({ offset: true });
 const digestSchema = z.string().regex(/^[0-9a-fA-F]{64}$/);
 const transactionHashSchema = z.string().regex(/^0x[0-9a-fA-F]{64}$/);
+const zeroTransactionHashPattern = /^0x0{64}$/i;
+
+/** Greenfield uses the all-zero transaction hash as an unset seal value on
+ * some object metadata responses. Treat it as absent at the schema boundary
+ * so it can never become a public or durable transaction claim. */
+function normalizeOptionalTransactionHash(value: unknown): unknown {
+  return typeof value === "string" && zeroTransactionHashPattern.test(value.trim()) ? null : value;
+}
 
 export const publicationAttemptRecordSchema = z
   .object({
@@ -116,8 +124,8 @@ export const publicationAttemptRecordSchema = z
     leaseOwner: z.string().uuid().nullable(),
     leaseExpiresAt: timestampSchema.nullable(),
     providerReference: z.string().trim().min(1).max(512).nullable(),
-    creationTransactionHash: transactionHashSchema.nullable(),
-    sealTransactionHash: transactionHashSchema.nullable(),
+    creationTransactionHash: z.preprocess(normalizeOptionalTransactionHash, transactionHashSchema.nullable()),
+    sealTransactionHash: z.preprocess(normalizeOptionalTransactionHash, transactionHashSchema.nullable()),
     locator: evidenceLocatorSchema.nullable(),
     verification: verificationResultSchema.nullable(),
     retryCount: z.number().int().nonnegative(),
@@ -341,8 +349,8 @@ export function assertDurablePublicationAttempt(record: PublicationAttemptRecord
   }
   if (record.provider === "greenfield") {
     if (
-      record.sealTransactionHash === null ||
-      !validTransactionHash.test(record.sealTransactionHash) ||
+      (record.sealTransactionHash !== null &&
+        (!validTransactionHash.test(record.sealTransactionHash) || zeroTransactionHashPattern.test(record.sealTransactionHash))) ||
       verification?.sealConfirmed !== true
     ) {
       throw new PublicationProviderError(
