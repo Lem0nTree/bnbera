@@ -116,7 +116,9 @@ export async function runT8GreenfieldInputsCli(
       await emit(value, outputPath(argument(argv, "--output")));
       return { command: "export", readOnly: true, kind: requestedKind, commerceJobId: artifacts.commerceJobId, runId: artifacts.runId, profile: digestSummary(profileDigest), run: digestSummary(runDigest) };
     }
-    if (!argv.includes("--write") && !argv.some((value) => value === "--write" || value.startsWith("--write="))) {
+    const invalidWriteFlag = argv.find((value) => value.startsWith("--write=") || (value.startsWith("--write") && value !== "--write"));
+    if (invalidWriteFlag !== undefined) throw new Error("Use the exact --write flag to authorize projection");
+    if (!argv.includes("--write")) {
       return {
         command: "project",
         readOnly: true,

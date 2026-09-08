@@ -70,7 +70,7 @@ function facts(overrides: Record<string, unknown> = {}): T8SettledCommerceFacts 
       agent_version_id: ids.version,
       agent_version: 3,
       agent_version_created_at: "2026-09-08T09:00:00Z",
-      public_metadata: { name: "Persisted agent", description: "A public result agent" },
+      public_metadata: { name: "Persisted agent", description: "A public result agent", category: "rebalancing" },
       capability_manifest: { secretReference: "do-not-export", capabilities: ["rebalance"] },
       pricing_manifest: { currency: "U", amount_atomic: "42", network: 97 },
       identity_namespace: "eip155",
@@ -121,10 +121,24 @@ describe("T8 persisted canary input/projection", () => {
     const result = buildT8FrozenArtifacts(facts());
     expect(result.profileArtifact.payload.pricing).toMatchObject({ network: "97" });
     expect(result.runArtifact.payload.finalStatus).toBe("confirmed");
+    expect(result.runArtifact.payload.receiptSummary).toEqual({
+      status: "confirmed",
+      summary: "Submission and settlement transaction receipts are persisted"
+    });
     expect(JSON.stringify(result)).not.toContain("do-not-export");
     expect(JSON.stringify(result)).not.toContain("result_url");
     expect(result.runRows.settledResult).toMatchObject({ commerce_job_id: ids.commerceJob, agent_version_id: ids.version });
     expect(result.runRows.run).toMatchObject({ id: result.runId, agent_id: ids.agent, job_id: ids.commerceJob });
+  });
+
+  it("accepts submission and settlement receipts with the same block timestamp", () => {
+    expect(() => buildT8FrozenInputs(facts({ result_settled_at: "2026-09-08T10:01:00Z" }))).not.toThrow();
+  });
+
+  it("requires the historical version to carry its own category", () => {
+    expect(() => buildT8FrozenInputs(facts({
+      public_metadata: { name: "Persisted agent", description: "A public result agent" }
+    }))).toThrow(T8GreenfieldInputError);
   });
 
   it.each([

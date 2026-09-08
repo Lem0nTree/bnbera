@@ -435,7 +435,8 @@ function safeMetadata(row: T8CommerceFactRow): Record<string, unknown> {
   const name = publicString(source, "name");
   const description = publicString(source, "description");
   if (name === undefined || description === undefined) fail("PUBLIC_FACT_INCOMPLETE", "persisted public metadata needs name and description");
-  const category = publicString(source, "category") ?? boundedString(row.agent_category, "agent category", 128);
+  const category = publicString(source, "category");
+  if (category === undefined) fail("PUBLIC_FACT_INCOMPLETE", "historical version metadata needs its own category");
   const output: Record<string, unknown> = { name, description, category };
   const protocols = field(source, "supportedProtocols", "supported_protocols");
   if (Array.isArray(protocols)) {
@@ -524,7 +525,7 @@ function validateFacts(facts: T8SettledCommerceFacts): {
   if (parentFunding === null || protocolFunding === null || parentFunding !== protocolFunding) fail("PUBLIC_FACT_INCOMPLETE", "settled job is missing matching funding receipt");
   const submittedAt = timestamp(row.result_submitted_at, "result submitted_at");
   const settledAt = timestamp(row.result_settled_at, "result settled_at");
-  if (Date.parse(settledAt) <= Date.parse(submittedAt)) fail("PUBLIC_FACT_INVALID", "settlement timestamp must be after submission");
+  if (Date.parse(settledAt) < Date.parse(submittedAt)) fail("PUBLIC_FACT_INVALID", "settlement timestamp cannot precede submission");
   const submissionBlockNumber = decimal(row.result_submission_block_number, "submission block number");
   const settlementBlockNumber = decimal(row.result_settlement_block_number, "settlement block number");
   const submissionBlockHash = transaction(row.result_submission_block_hash, "submission block hash");
@@ -749,6 +750,10 @@ export function buildT8FrozenInputs(
     agentRow,
     identityRow,
     versionRow,
+    receiptSummary: {
+      status: "confirmed",
+      summary: "Submission and settlement transaction receipts are persisted"
+    },
     settledResult: {
       state: "settled",
       commerce_job_id: validated.commerceJobId,
