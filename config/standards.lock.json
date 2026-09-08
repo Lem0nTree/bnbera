@@ -286,7 +286,7 @@
       "verificationBlock": 120599051,
       "keyStoreRuntimeSha256": "a6fd38a6c657bf35a02ad3505be00a58893ae058b886264e4c6ac69c51c4d368",
       "controllerRuntimeSha256": "7930e45bbc782cf9d5ac050df5f77df3e8318832285ec6183cc2026449905c56",
-      "verificationStatus": "verified-read-only-runtime-from-official-sdk-addresses"
+      "verificationStatus": "verified-read-only-runtime-from-official-sdk-addresses; pending-mainnet-write-canary-and-release"
     },
     "testnet": {
       "chainId": 97,
