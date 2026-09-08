@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { erc8183ManifestHash, signerFromPrivateKey, type Erc8183Job, type Session } from "@altananetwork/sdk";
+import { buildSubmitCall as sdkBuildSubmitCall, encodeErc8183Manifest, erc8183Addresses as sdkErc8183Addresses, erc8183ManifestHash, signerFromPrivateKey, type Erc8183Job, type Session } from "@altananetwork/sdk";
 import { decodeFunctionData, hexToString, type Address, type Hex } from "viem";
 import {
   BoundedRuntimeError,
@@ -190,6 +190,7 @@ test("confirmed execution derives the pinned swap and submit calls and returns p
   if (deliverableUrl === undefined) throw new Error("missing canonical deliverable URL");
   assert.match(deliverableUrl, /^data:application\/json;base64,/u);
   const manifestText = Buffer.from(deliverableUrl.slice("data:application/json;base64,".length), "base64").toString("utf8");
+  assert.equal(encodeErc8183Manifest(JSON.parse(manifestText)), manifestText);
   assert.equal(erc8183ManifestHash(JSON.parse(manifestText)), result.resultSubmission.deliverable);
   assert.equal(JSON.stringify(result).includes(PRIVATE_KEY), false);
 });
@@ -237,6 +238,7 @@ test("canonical ERC-8183 submission uses the exact permission and data URL", asy
           });
           submittedDeliverable = decoded.args[1];
           submittedUrl = (JSON.parse(hexToString(decoded.args[2])) as { deliverable_url: string }).deliverable_url;
+          assert.deepEqual(calls[1], sdkBuildSubmitCall({ addresses: sdkErc8183Addresses(97), jobId: 1n, deliverable: decoded.args[1], optParams: decoded.args[2] }));
           return { status: "CONFIRMED" as const, callsId: HASH_A, transactionHash: HASH_B };
         },
       }),

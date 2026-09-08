@@ -3,26 +3,21 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import {
   BNB_TESTNET,
-  buildSubmitCall,
   createClient,
-  deserializeSession,
-  encodeErc8183Manifest,
   erc8183Addresses,
-  erc8183ManifestHash,
-  erc8183SubmitPermissions,
   getErc8183Job,
   signerFromPrivateKey,
   type Call,
-  type Erc8183DeliverableManifest,
   type Erc8183Job,
   type ExecuteResult,
-  type SerializedSession,
   type Session,
 } from "@altananetwork/sdk";
 import {
   createPublicClient,
   encodeFunctionData,
   http,
+  keccak256,
+  toHex,
   stringToHex,
   type Address,
   type Chain,
@@ -32,7 +27,6 @@ import {
   configuration as generatedConfiguration,
   configurationDigest,
 } from "./bnbera-public-config.js";
-
 export const EXECUTE_ACTION = "execute_swap" as const;
 const JOB_ACTION = "execute_paid_swap" as const;
 const TEMPLATE_ID = "pancakeswap-one-shot@1.1.0" as const;
@@ -41,7 +35,7 @@ const BUDGET = 1_000_000_000_000_000n;
 const MAX_NATIVE_PER_HOUR = 2_000_000_000_000_000n;
 const MAX_UINT256 = (1n << 256n) - 1n;
 const SWAP_SIGNATURE = "swapExactETHForTokens(uint256,address[],address,uint256)";
-
+const SUBMIT_SIGNATURE = "submit(uint256,bytes32,bytes)";
 export const PINNED_ERC8183 = {
   commerce: "0xa206c0517B6371C6638CD9e4a42Cc9f02A33B0DE" as Address,
   router: "0xD7d36D66d2F1B608A0F943f722D27e3744f66F25" as Address,
@@ -58,7 +52,6 @@ export const PINNED_PANCAKESWAP = {
   },
   selector: "0x7ff36ab5" as Hex,
 } as const;
-
 export type PublicConfig = {
   protocol: "pancakeswap-v2";
   tradingPair: "tbnb-cake" | "tbnb-busd";
@@ -67,36 +60,38 @@ export type PublicConfig = {
   quoteMaxAgeSeconds: 30 | 60;
   deadlineSeconds: 60 | 120;
 };
+type StoredSession = { walletAddress: Address; publicKey: Hex; expiry: number; permissions: { calls?: readonly ({ signature: string; to: Address } | { signature: string } | { to: Address })[]; spend?: readonly { limit: string; period: "minute" | "hour" | "day" | "week" | "month" | "year"; token?: Address }[] } };
+type DeliverableManifest = { version: 1; job_id: number; chain_id: number; contracts: { commerce: Address; router: Address; policy: Address }; response: { content: string; content_type: string }; metadata: Record<string, unknown> };
 export type BoundedExecutionRequest = { action: typeof EXECUTE_ACTION; jobId: string };
 type ErrorCode =
   | "INVALID_COMPILED_CONFIGURATION" | "INVALID_BOUNDED_SWAP_EXECUTION_REQUEST"
   | "ALTANA_SESSION_REQUIRED" | "ALTANA_SESSION_INVALID" | "ALTANA_SESSION_EXPIRED"
-  | "ALTANA_SESSION_UNAUTHORIZED" | "SDK_PIN_MISMATCH" | "CHAIN_READ_FAILED"
+  | "ALTANA_SESSION_UNAUTHORIZED" | "SDK_PIN_MISMATCH"
   | "WRONG_CHAIN" | "JOB_READ_FAILED" | "JOB_NOT_FUNDED" | "JOB_PROVIDER_MISMATCH"
   | "JOB_BUDGET_MISMATCH" | "JOB_CONTRACT_MISMATCH" | "JOB_DESCRIPTION_MISMATCH" | "JOB_EXPIRED"
   | "PAYMENT_ASSET_MISMATCH" | "PAIR_MISMATCH" | "QUOTE_READ_FAILED" | "QUOTE_INVALID";
 export class BoundedRuntimeError extends Error {
   public constructor(public readonly code: ErrorCode) { super(code); this.name = "BoundedRuntimeError"; }
 }
-
 const commerceAbi = [{ type: "function", name: "paymentToken", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] }] as const;
 const factoryAbi = [{ type: "function", name: "getPair", stateMutability: "view", inputs: [{ type: "address" }, { type: "address" }], outputs: [{ type: "address" }] }] as const;
 const quoteAbi = [{ type: "function", name: "getAmountsOut", stateMutability: "view", inputs: [{ type: "uint256" }, { type: "address[]" }], outputs: [{ type: "uint256[]" }] }] as const;
 const swapAbi = [{ type: "function", name: "swapExactETHForTokens", stateMutability: "payable", inputs: [{ type: "uint256" }, { type: "address[]" }, { type: "address" }, { type: "uint256" }], outputs: [{ type: "uint256[]" }] }] as const;
-// The workspace has two independently pinned viem type trees (Studio and the
-// root packages); the runtime value is the SDK's chain object in either case.
+const submitAbi = [{ type: "function", name: "submit", stateMutability: "nonpayable", inputs: [{ type: "uint256" }, { type: "bytes32" }, { type: "bytes" }], outputs: [] }] as const;
 const publicClient = createPublicClient({ chain: BNB_TESTNET.chain as unknown as Chain, transport: http(BNB_TESTNET.publicRpcUrl) });
 const altanaClient = createClient({ chains: [BNB_TESTNET], defaultChainId: CHAIN_ID });
 const address = (value: unknown): value is Address => typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
 const hex = (value: unknown): value is Hex => typeof value === "string" && /^0x[0-9a-fA-F]+$/.test(value);
 const same = (left: unknown, right: Address): boolean => address(left) && left.toLowerCase() === right.toLowerCase();
 const fail = (code: ErrorCode): never => { throw new BoundedRuntimeError(code); };
+function buildSubmitCallLocal(job: bigint, deliverable: Hex, optParams: Hex): Call {
+  return { to: PINNED_ERC8183.commerce, data: encodeFunctionData({ abi: submitAbi, functionName: "submit", args: [job, deliverable, optParams] }) };
+}
 
 function jobId(value: unknown): string | null {
   if (typeof value !== "string" || !/^(?:0|[1-9]\d*)$/.test(value) || value.length > 78) return null;
   try { const n = BigInt(value); return n > 0n && n <= MAX_UINT256 ? value : null; } catch { return null; }
 }
-/** The HTTP body is deliberately the complete, exact two-field request. */
 export function parseExecutionRequest(value: unknown): BoundedExecutionRequest | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const body = value as Record<string, unknown>;
@@ -132,7 +127,7 @@ export function parseJobDescription(value: unknown, config: PublicConfig = readC
 
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value); }
 function decimal(value: unknown): value is string { return typeof value === "string" && /^\d+$/.test(value); }
-function restoreSessionJson(raw: string): { stored: SerializedSession; key: Hex } {
+function restoreSessionJson(raw: string): { stored: StoredSession; key: Hex } {
   const parsed = JSON.parse(raw, (_key, value: unknown) => record(value) && Object.keys(value).length === 1 && typeof value.$bigint === "string" && /^\d+$/.test(value.$bigint) ? value.$bigint : value) as unknown;
   if (!record(parsed)) throw new Error("session");
   if (parsed.version !== undefined && parsed.version !== 1) throw new Error("session");
@@ -147,11 +142,24 @@ function restoreSessionJson(raw: string): { stored: SerializedSession; key: Hex 
   const spend = root.permissions.spend;
   const periods = new Set(["minute", "hour", "day", "week", "month", "year"]);
   if (spend !== undefined && (!Array.isArray(spend) || spend.some((item) => !record(item) || !decimal(item.limit) || typeof item.period !== "string" || !periods.has(item.period) || (item.token !== undefined && !address(item.token))))) throw new Error("session");
-  return { key: key as Hex, stored: { walletAddress: root.walletAddress, publicKey: root.publicKey, expiry, permissions: { ...(calls === undefined ? {} : { calls: calls as SerializedSession["permissions"]["calls"] }), ...(spend === undefined ? {} : { spend: spend as SerializedSession["permissions"]["spend"] }) } } };
+  return { key: key as Hex, stored: { walletAddress: root.walletAddress, publicKey: root.publicKey, expiry, permissions: { ...(calls === undefined ? {} : { calls: calls as StoredSession["permissions"]["calls"] }), ...(spend === undefined ? {} : { spend: spend as StoredSession["permissions"]["spend"] }) } } };
 }
-/** Studio stores a v1 envelope, bigint wrappers, and its private-key signer. */
 export async function deserializeStudioSession(raw: string): Promise<Session> {
-  try { const { stored, key } = restoreSessionJson(raw); return deserializeSession(stored, signerFromPrivateKey(key)); }
+  try {
+    const { stored, key } = restoreSessionJson(raw);
+    const signer = signerFromPrivateKey(key);
+    if (signer.publicKey.toLowerCase() !== stored.publicKey.toLowerCase()) throw new Error("session signer mismatch");
+    return {
+      walletAddress: stored.walletAddress,
+      signer,
+      publicKey: signer.publicKey,
+      permissions: {
+        ...(stored.permissions.calls === undefined ? {} : { calls: stored.permissions.calls.map((call) => ({ ...call })) }),
+        ...(stored.permissions.spend === undefined ? {} : { spend: stored.permissions.spend.map((spend) => ({ limit: BigInt(spend.limit), period: spend.period, ...(spend.token === undefined ? {} : { token: spend.token }) })) }),
+      },
+      expiry: stored.expiry,
+    };
+  }
   catch { return fail("ALTANA_SESSION_INVALID"); }
 }
 async function loadSession(source: string): Promise<Session> {
@@ -184,14 +192,21 @@ function defaultDeps(): Required<Pick<RuntimeDeps, "loadSession" | "getChainId" 
   };
 }
 function assertPins(): void {
-  try { const sdk = erc8183Addresses(CHAIN_ID); if (BNB_TESTNET.chainId !== CHAIN_ID || BNB_TESTNET.chain.id !== CHAIN_ID || sdk.commerce.toLowerCase() !== PINNED_ERC8183.commerce.toLowerCase() || sdk.router.toLowerCase() !== PINNED_ERC8183.router.toLowerCase() || sdk.policy.toLowerCase() !== PINNED_ERC8183.policy.toLowerCase() || sdk.paymentToken.toLowerCase() !== PINNED_ERC8183.paymentToken.toLowerCase()) fail("SDK_PIN_MISMATCH"); }
+  try {
+    const sdk = erc8183Addresses(CHAIN_ID);
+    // SDK 0.7.1 (the Studio packager pin) carries the prior testnet policy
+    // address. It is not used for reads or calls here; the standards-lock
+    // policy remains authoritative in the manifest and job binding.
+    const legacy071Policy = "0x4f4678d4439fec812ac7674bb3efb4c8f5fb78a6";
+    const policyMatches = sdk.policy.toLowerCase() === PINNED_ERC8183.policy.toLowerCase() || sdk.policy.toLowerCase() === legacy071Policy;
+    if (BNB_TESTNET.chainId !== CHAIN_ID || BNB_TESTNET.chain.id !== CHAIN_ID || sdk.commerce.toLowerCase() !== PINNED_ERC8183.commerce.toLowerCase() || sdk.router.toLowerCase() !== PINNED_ERC8183.router.toLowerCase() || !policyMatches || sdk.paymentToken.toLowerCase() !== PINNED_ERC8183.paymentToken.toLowerCase()) fail("SDK_PIN_MISMATCH");
+  }
   catch (error) { if (error instanceof BoundedRuntimeError) throw error; fail("SDK_PIN_MISMATCH"); }
 }
 function assertPermissions(session: Session, input: bigint): void {
   const swap = session.permissions.calls?.some((call) => "signature" in call && call.signature === SWAP_SIGNATURE && "to" in call && same(call.to, PINNED_PANCAKESWAP.router));
   const native = session.permissions.spend?.some((spend) => spend.period === "hour" && spend.token === undefined && spend.limit >= input && spend.limit <= MAX_NATIVE_PER_HOUR);
-  const submitRule = erc8183SubmitPermissions(CHAIN_ID)[0];
-  const submit = submitRule !== undefined && session.permissions.calls?.some((call) => "signature" in call && call.signature === submitRule.signature && "to" in call && same(call.to, submitRule.to));
+  const submit = session.permissions.calls?.some((call) => "signature" in call && call.signature === SUBMIT_SIGNATURE && "to" in call && same(call.to, PINNED_ERC8183.commerce));
   if (!address(session.walletAddress) || !hex(session.publicKey) || !swap || !native || !submit) fail("ALTANA_SESSION_UNAUTHORIZED");
 }
 function safeHash(value: unknown): Hex | undefined { return typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value) ? value as Hex : undefined; }
@@ -202,17 +217,18 @@ function manifestDataUrl(text: string): string {
 function commonEvidence(job: string, session: Session, config: PublicConfig, pair: Address, block: bigint, quoted: bigint, minimum: bigint, deadline: number, execution: PublicExecutionEvidence["execution"], outcome: PublicExecutionEvidence["outcome"]): ExecutionEvidenceBase {
   return { outcome, retryable: false, chainId: CHAIN_ID, jobId: job, provider: session.walletAddress, budgetAtomic: BUDGET.toString(), paymentToken: PINNED_ERC8183.paymentToken, tradingPair: config.tradingPair, pairAddress: pair, inputAmountWei: config.inputAmountWei, quoteBlock: block.toString(), quotedOutAtomic: quoted.toString(), minimumOutAtomic: minimum.toString(), deadlineUnix: deadline, configDigest: configurationDigest, execution };
 }
-function manifestFor(evidence: ExecutionEvidenceBase): Erc8183DeliverableManifest {
-  const result = { jobId: evidence.jobId, chainId: evidence.chainId, provider: evidence.provider, tradingPair: evidence.tradingPair, pairAddress: evidence.pairAddress, inputAmountWei: evidence.inputAmountWei, quoteBlock: evidence.quoteBlock, quotedOutAtomic: evidence.quotedOutAtomic, minimumOutAtomic: evidence.minimumOutAtomic, deadlineUnix: evidence.deadlineUnix, configDigest: evidence.configDigest };
-  return { version: 1, job_id: Number(evidence.jobId), chain_id: CHAIN_ID, contracts: { commerce: PINNED_ERC8183.commerce, router: PINNED_ERC8183.router, policy: PINNED_ERC8183.policy }, response: { content: JSON.stringify(result), content_type: "application/json" }, metadata: { template: "pancakeswap-one-shot", config_digest: configurationDigest, quote_block: evidence.quoteBlock } };
+function manifestFor(evidence: ExecutionEvidenceBase): DeliverableManifest {
+  const result = { chainId: evidence.chainId, configDigest: evidence.configDigest, deadlineUnix: evidence.deadlineUnix, inputAmountWei: evidence.inputAmountWei, jobId: evidence.jobId, minimumOutAtomic: evidence.minimumOutAtomic, pairAddress: evidence.pairAddress, provider: evidence.provider, quoteBlock: evidence.quoteBlock, quotedOutAtomic: evidence.quotedOutAtomic, tradingPair: evidence.tradingPair };
+  return { chain_id: CHAIN_ID, contracts: { commerce: PINNED_ERC8183.commerce, policy: PINNED_ERC8183.policy, router: PINNED_ERC8183.router }, job_id: Number(evidence.jobId), metadata: { config_digest: configurationDigest, quote_block: evidence.quoteBlock, template: "pancakeswap-one-shot" }, response: { content: JSON.stringify(result), content_type: "application/json" }, version: 1 };
 }
+function encodeManifestLocal(manifest: DeliverableManifest): string { return JSON.stringify(manifest); }
+function manifestHashLocal(text: string): Hex { return keccak256(toHex(text)); }
 function callsEvidence(result: ExecuteResult | undefined): PublicExecutionEvidence["execution"] {
   if (result === undefined || (result.status !== "PENDING" && result.status !== "CONFIRMED" && result.status !== "FAILED")) return { status: "UNKNOWN" };
   const callsId = safeHash(result.callsId), transactionHash = safeHash(result.transactionHash);
   return { status: result.status, ...(callsId === undefined ? {} : { callsId }), ...(transactionHash === undefined ? {} : { transactionHash }) };
 }
 
-/** One quote and one Altana batch. Unknown relay results are returned once and never retried here. */
 export async function executeBoundedSwap(requestJobId: string, injected: RuntimeDeps = {}): Promise<PublicExecutionEvidence> {
   const textId = jobId(requestJobId); if (textId === null) return fail("INVALID_BOUNDED_SWAP_EXECUTION_REQUEST");
   const config = readCompiledConfiguration();
@@ -239,9 +255,11 @@ export async function executeBoundedSwap(requestJobId: string, injected: Runtime
   const pair = PINNED_PANCAKESWAP.pairs[config.tradingPair];
   let paymentToken: Address | undefined, actualPair: Address | undefined, amounts: readonly bigint[] | undefined;
   const quoteStarted = injected.nowUnix?.() ?? Math.floor(Date.now() / 1000);
-  try { [paymentToken, actualPair] = await Promise.all([deps.readPaymentToken(block), deps.readFactoryPair(pair.token, block)]); amounts = await deps.readAmountsOut(input, [PINNED_PANCAKESWAP.wbnb, pair.token], block); } catch { return fail("QUOTE_READ_FAILED"); }
-  if (!same(paymentToken, PINNED_ERC8183.paymentToken)) fail("PAYMENT_ASSET_MISMATCH");
-  if (!same(actualPair, pair.pair)) fail("PAIR_MISMATCH");
+  try {
+    paymentToken = await deps.readPaymentToken(block); if (!same(paymentToken, PINNED_ERC8183.paymentToken)) fail("PAYMENT_ASSET_MISMATCH");
+    actualPair = await deps.readFactoryPair(pair.token, block); if (!same(actualPair, pair.pair)) fail("PAIR_MISMATCH");
+    amounts = await deps.readAmountsOut(input, [PINNED_PANCAKESWAP.wbnb, pair.token], block);
+  } catch (error) { if (error instanceof BoundedRuntimeError) throw error; return fail("QUOTE_READ_FAILED"); }
   const quoted = Array.isArray(amounts) && amounts.length === 2 ? amounts[1] : undefined;
   const finished = injected.nowUnix?.() ?? Math.floor(Date.now() / 1000);
   if (typeof quoted !== "bigint" || quoted <= 0n || !Number.isSafeInteger(quoteStarted) || !Number.isSafeInteger(finished) || finished < quoteStarted || finished - quoteStarted > config.quoteMaxAgeSeconds) fail("QUOTE_INVALID");
@@ -254,8 +272,8 @@ export async function executeBoundedSwap(requestJobId: string, injected: Runtime
   const base = commonEvidence(textId, session, config, pair.pair, block, quoted, minimum, deadline, { status: "UNKNOWN" }, "unknown");
   if (BigInt(textId) > BigInt(Number.MAX_SAFE_INTEGER)) fail("JOB_READ_FAILED");
   const manifest = manifestFor(base);
-  const manifestText = encodeErc8183Manifest(manifest);
-  const deliverable = erc8183ManifestHash(manifest);
+  const manifestText = encodeManifestLocal(manifest);
+  const deliverable = manifestHashLocal(manifestText);
   const deliverableUrl = manifestDataUrl(manifestText);
   if (job.statusName === "SUBMITTED" && job.status === 2) {
     const existing = safeHash(job.deliverable);
@@ -267,7 +285,7 @@ export async function executeBoundedSwap(requestJobId: string, injected: Runtime
   if (job.statusName !== "FUNDED" || job.status !== 1) fail("JOB_NOT_FUNDED");
   const calls: Call[] = [
     { to: PINNED_PANCAKESWAP.router, value: input, data: swapData },
-    buildSubmitCall({ addresses: erc8183Addresses(CHAIN_ID), jobId: BigInt(textId), deliverable, optParams: stringToHex(JSON.stringify({ deliverable_url: deliverableUrl })) }),
+    buildSubmitCallLocal(BigInt(textId), deliverable, stringToHex(JSON.stringify({ deliverable_url: deliverableUrl }))),
   ];
   let result: ExecuteResult | undefined;
   try { result = await deps.execute(session, calls); } catch { result = undefined; }

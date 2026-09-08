@@ -18,6 +18,13 @@ export const creatorTradingPairs = {
   },
 } as const;
 
+const CREATOR_ERC8004_REGISTRY = "0x8004a818bfb912233c491871b3d84c89a494bd9e" as const;
+const CREATOR_ERC8004_SET_AGENT_URI_SELECTOR = "0x0af28bd3" as const;
+const CREATOR_PANCAKESWAP_ROUTER = "0xd99d1c33f9fc3444f8101754abc46c52416550d1" as const;
+const CREATOR_PANCAKESWAP_SWAP_SELECTOR = "0x7ff36ab5" as const;
+const CREATOR_ERC8183_COMMERCE = "0xa206c0517b6371c6638cd9e4a42cc9f02a33b0de" as const;
+const CREATOR_ERC8183_SUBMIT_SELECTOR = "0x9e63798d" as const;
+
 const creatorTemplateSource = {
   slug: "pancakeswap-one-shot-swap",
   semanticVersion: "1.1.0",
@@ -44,10 +51,15 @@ const creatorTemplateSource = {
   },
   capabilityManifest: { capabilities: ["pancakeswap_v2_exact_native_swap"], writeCapabilities: ["pancakeswap_v2_exact_native_swap"] },
   protocolManifest: { network: "bsc-testnet", protocols: ["A2A"], delegatedLifecycle: "erc8004_uri_and_fixed_swap" },
-  // Exact BSC-testnet ERC-8004 IdentityRegistry `setAgentURI(uint256,string)`
-  // lifecycle permission. Target is standards-lock chain 97; selector is from
-  // the pinned IdentityRegistry ABI. The health computation remains HTTP-only.
-  contractSelectorAllowlist: { chainId: 97, calls: [{ target: "0x8004a818bfb912233c491871b3d84c89a494bd9e", selectors: ["0x0af28bd3"], maxNativeValueWei: "0" }, { target: "0xd99d1c33f9fc3444f8101754abc46c52416550d1", selectors: ["0x7ff36ab5"], maxNativeValueWei: "1000000000000000" }], spend: [{ token: "native", limitAtomic: "2000000000000000", period: "hour" }], expirySeconds: 3600, intent: "own-agent-uri-or-bounded-native-swap" }
+  // Exact BSC-testnet lifecycle and execution permissions. The URI update,
+  // PancakeSwap call, and ERC-8183 result submission are separate target /
+  // selector entries; there is no contract-wide or selector-wide wildcard.
+  // The health computation remains HTTP-only.
+  contractSelectorAllowlist: { chainId: 97, calls: [
+    { target: CREATOR_ERC8004_REGISTRY, selectors: [CREATOR_ERC8004_SET_AGENT_URI_SELECTOR], maxNativeValueWei: "0" },
+    { target: CREATOR_PANCAKESWAP_ROUTER, selectors: [CREATOR_PANCAKESWAP_SWAP_SELECTOR], maxNativeValueWei: "1000000000000000" },
+    { target: CREATOR_ERC8183_COMMERCE, selectors: [CREATOR_ERC8183_SUBMIT_SELECTOR], maxNativeValueWei: "0" },
+  ], spend: [{ token: "native", limitAtomic: "2000000000000000", period: "hour" }], expirySeconds: 3600, intent: "own-agent-uri-bounded-native-swap-and-erc8183-submit" }
 } as const;
 
 const templateArtifactFiles = ["package.json", "app/agent/package.json", "app/agent/studio.toml", "app/agent/src/unifiedMain.ts"] as const;
@@ -71,17 +83,31 @@ export const creatorTemplate = {
 } as const;
 
 export const creatorLifecycleAction = {
-  target: "0x8004a818bfb912233c491871b3d84c89a494bd9e",
-  selector: "0x0af28bd3",
+  target: CREATOR_ERC8004_REGISTRY,
+  selector: CREATOR_ERC8004_SET_AGENT_URI_SELECTOR,
+  valueWei: 0n,
+  spends: []
+} as const;
+
+export const creatorSwapAction = {
+  target: CREATOR_PANCAKESWAP_ROUTER,
+  selector: CREATOR_PANCAKESWAP_SWAP_SELECTOR,
+  valueWei: 1_000_000_000_000_000n,
+  spends: [{ token: "native", amountAtomic: 1_000_000_000_000_000n, period: "hour" }]
+} as const;
+
+export const creatorCommerceAction = {
+  target: CREATOR_ERC8183_COMMERCE,
+  selector: CREATOR_ERC8183_SUBMIT_SELECTOR,
   valueWei: 0n,
   spends: []
 } as const;
 
 export const creatorSwapPolicy = {
-  router: "0xd99d1c33f9fc3444f8101754abc46c52416550d1",
+  router: CREATOR_PANCAKESWAP_ROUTER,
   wbnb: "0xae13d989dac2f0debff460ac112a837c89baa7cd",
   pairs: creatorTradingPairs,
-  selector: "0x7ff36ab5",
+  selector: CREATOR_PANCAKESWAP_SWAP_SELECTOR,
   maxInputAmountWei: "1000000000000000",
   maxSlippageBps: 50,
   maxQuoteAgeSeconds: 60,

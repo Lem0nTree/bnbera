@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { assertCreatorNetworkExecution, assertCreatorSwapIntent, assertCreatorUriIntent, canonicalRuntimeConfigurationDigest, creatorDraftRequestSchema, creatorLifecycleAction, creatorProductionProfile, creatorSwapPolicy, creatorTemplate, creatorUriIntentDigest } from "./creator-contract";
+import { assertCreatorNetworkExecution, assertCreatorSwapIntent, assertCreatorUriIntent, canonicalRuntimeConfigurationDigest, creatorCommerceAction, creatorDraftRequestSchema, creatorLifecycleAction, creatorProductionProfile, creatorSwapPolicy, creatorSwapAction, creatorTemplate, creatorUriIntentDigest } from "./creator-contract";
 import { unavailableCreatorRuntimeAuthority } from "./creator-authority-runtime";
 import { nativeStudioDeployCommand, nativeStudioPingUrl, nativeStudioProcessAdapter, nativeStudioStatusCommand, parseNativeStudioStatus, studioReadiness } from "./creator-studio";
 import { externalOutcomePolicy, nextCreatorStage, runCreatorStudioStep, type CreatorStage } from "./creator-worker";
@@ -22,9 +22,17 @@ describe("Creator fixed-template boundary", () => {
     expect(nativeStudioDeployCommand("/srv/creator/studio")).toEqual(["bag", "deploy", "--provider", "bnb", "--project-root", "/srv/creator/studio", "--yes"]);
     expect(nativeStudioStatusCommand("/srv/creator/studio")).toContain("--json");
   });
-  it("allows only the pinned ERC-8004 URI lifecycle write", () => {
+  it("allows exactly the pinned lifecycle, swap, and ERC-8183 submit writes", () => {
+    expect(creatorTemplate.contractSelectorAllowlist.chainId).toBe(97);
+    expect(creatorTemplate.contractSelectorAllowlist.calls).toHaveLength(3);
+    expect(creatorTemplate.contractSelectorAllowlist.calls).toEqual([
+      { target: creatorLifecycleAction.target, selectors: [creatorLifecycleAction.selector], maxNativeValueWei: "0" },
+      { target: creatorSwapAction.target, selectors: [creatorSwapAction.selector], maxNativeValueWei: "1000000000000000" },
+      { target: creatorCommerceAction.target, selectors: [creatorCommerceAction.selector], maxNativeValueWei: "0" },
+    ]);
     expect(creatorTemplate.contractSelectorAllowlist.calls).toContainEqual({ target: creatorLifecycleAction.target, selectors: [creatorLifecycleAction.selector], maxNativeValueWei: "0" });
     expect(creatorLifecycleAction.spends).toEqual([]);
+    expect(creatorCommerceAction.spends).toEqual([]);
     expect(creatorTemplate.contractSelectorAllowlist.spend).toEqual([{ token: "native", limitAtomic: "2000000000000000", period: "hour" }]);
   });
   it("binds the URI update to its identity and revocation denies the identical action", () => {

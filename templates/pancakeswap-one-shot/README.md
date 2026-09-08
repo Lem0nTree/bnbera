@@ -19,7 +19,7 @@ pinned provider/budget/payment asset, and requires the job description to be
 the exact compact binding
 `{"action":"execute_paid_swap","template":"pancakeswap-one-shot@1.1.0","configurationDigest":"<digest>","tradingPair":"<pair>","inputAmountWei":"<wei>"}`.
 It reads `getAmountsOut` at a fresh block, derives the fixed swap calldata, and
-sends one Altana SDK 0.9.0 batch containing both the swap and the canonical
+sends one Altana SDK 0.7.1 batch containing both the swap and the canonical
 ERC-8183 result transition atomically. The result manifest is served as the
 same `data:application/json;base64,...` URL whose bytes produce the on-chain
 deliverable hash. Accepted-but-unconfirmed relay outcomes are returned as
