@@ -7,7 +7,6 @@
  */
 import { AppError, loadRuntimeConfig, validateSemanticEmbeddingLock } from "@bnbera/config";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import pg from "pg";
 import {
   IngestionMarketplaceSource,
@@ -60,6 +59,7 @@ import {
   type MarketplaceAgentReadResponse,
   type MarketplaceSearchInput
 } from "./marketplace-contract";
+import { readStandardsLock } from "./standards-lock";
 import { z } from "zod";
 
 type DatabasePool = pg.Pool;
@@ -734,11 +734,6 @@ function getPool(connectionString: string, ssl: boolean): DatabasePool {
   return pool;
 }
 
-async function readSemanticEmbeddingStandardsLock(): Promise<unknown> {
-  const content = await readFile(new URL("../../../../config/standards.lock.json", import.meta.url), "utf8");
-  return JSON.parse(content) as unknown;
-}
-
 /** Test/process shutdown hook; production route handlers keep the pool cached. */
 export async function closeMarketplaceDatabaseForTests(): Promise<void> {
   const current = marketplaceGlobal.__bnberaMarketplacePool;
@@ -835,7 +830,7 @@ async function createLiveReadService(): Promise<MarketplaceReadService> {
   let semanticRetriever: VectorMarketplaceSemanticRetriever | undefined;
   if (runtime.marketplaceSemanticRetrievalEnabled && runtime.embedding !== null) {
     try {
-      validateSemanticEmbeddingLock(await readSemanticEmbeddingStandardsLock(), runtime);
+      validateSemanticEmbeddingLock(await readStandardsLock(), runtime);
     } catch (error) {
       throw configurationError(error);
     }
