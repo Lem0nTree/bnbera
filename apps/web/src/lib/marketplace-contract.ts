@@ -117,6 +117,7 @@ const evidenceSummarySchema = z.object({
   greenfieldUri: z.string().url().nullable(),
   greenfieldLocator: z.string().nullable().default(null),
   lastVerifiedAt: z.string().datetime({ offset: true }).nullable(),
+  currentVersion: z.number().int().positive().nullable().default(null),
   profile: marketplaceEvidenceReadArtifactSchema.default(emptyPublicEvidenceArtifact("agent_profile", "AGENT_PROFILE_UNAVAILABLE")),
   runBundle: marketplaceEvidenceReadArtifactSchema.default(emptyPublicEvidenceArtifact("run_bundle", "RUN_BUNDLE_UNAVAILABLE"))
 });
@@ -621,6 +622,7 @@ function mapEvidence(card: CoreMarketplaceAgentCard): MarketplaceAgentReadModel[
       greenfieldUri: null,
       greenfieldLocator: null,
       lastVerifiedAt: null,
+      currentVersion: null,
       profile: emptyPublicEvidenceArtifact("agent_profile", "FIXTURE_EVIDENCE_UNAVAILABLE"),
       runBundle: emptyPublicEvidenceArtifact("run_bundle", "FIXTURE_EVIDENCE_UNAVAILABLE")
     };
@@ -646,6 +648,7 @@ function mapEvidence(card: CoreMarketplaceAgentCard): MarketplaceAgentReadModel[
     greenfieldUri: profile.readUrl,
     greenfieldLocator: profile.locator,
     lastVerifiedAt: profile.verifiedAt,
+    currentVersion: source?.currentVersion ?? null,
     profile,
     runBundle
   });

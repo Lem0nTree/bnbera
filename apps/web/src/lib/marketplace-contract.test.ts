@@ -40,6 +40,7 @@ describe("marketplace web adapter", () => {
       sha256Digest: "a".repeat(64),
       keccak256Digest: "b".repeat(64),
       sizeBytes: 128,
+      sealConfirmed: true,
       sealTransactionHash: `0x${"c".repeat(64)}`,
       verifiedAt: "2026-09-08T00:00:00.000Z",
       reason: null

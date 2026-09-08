@@ -176,6 +176,7 @@ export const marketplaceEvidenceArtifactSchema = z.object({
 export type MarketplaceEvidenceArtifact = z.infer<typeof marketplaceEvidenceArtifactSchema>;
 
 export const marketplaceEvidenceProjectionSchema = z.object({
+  currentVersion: z.number().int().positive().nullable().default(null),
   profile: marketplaceEvidenceArtifactSchema,
   runBundle: marketplaceEvidenceArtifactSchema
 }).strict();
@@ -241,6 +242,8 @@ export type MarketplaceEvidenceGraphInput = {
 };
 
 export type MarketplaceEvidenceProjectionOptions = {
+  /** Current marketplace version, used only to label older exact evidence. */
+  readonly currentVersion?: number | null;
   /** Explicitly allowlisted HTTPS origins for provider read URLs. */
   readonly allowedReadUrlOrigins?: readonly string[];
   /** Optional configured base used only when the adapter has no URL field. */
@@ -458,7 +461,8 @@ export function projectEvidenceProjection(
   inputs: readonly MarketplaceEvidenceGraphInput[],
   options: MarketplaceEvidenceProjectionOptions = {}
 ): MarketplaceEvidenceProjection {
-  const output: { profile: MarketplaceEvidenceArtifact; runBundle: MarketplaceEvidenceArtifact } = {
+  const output: { currentVersion: number | null; profile: MarketplaceEvidenceArtifact; runBundle: MarketplaceEvidenceArtifact } = {
+    currentVersion: options.currentVersion ?? null,
     profile: defaultArtifact("agent_profile", "AGENT_PROFILE_UNAVAILABLE"),
     runBundle: defaultArtifact("run_bundle", "RUN_BUNDLE_UNAVAILABLE")
   };
@@ -482,6 +486,7 @@ export function projectEvidenceProjection(
 
 export function unavailableMarketplaceEvidence(): MarketplaceEvidenceProjection {
   return marketplaceEvidenceProjectionSchema.parse({
+    currentVersion: null,
     profile: defaultArtifact("agent_profile", "AGENT_PROFILE_UNAVAILABLE"),
     runBundle: defaultArtifact("run_bundle", "RUN_BUNDLE_UNAVAILABLE")
   });

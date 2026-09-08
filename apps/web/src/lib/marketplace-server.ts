@@ -188,7 +188,7 @@ export class PostgresMarketplaceMetadataSource {
       .filter((value) => value.length > 0);
   }
 
-  private async evidenceForVersion(agentId: string, versionId: string): Promise<MarketplaceEvidenceProjection> {
+  private async evidenceForVersion(agentId: string, currentVersion: number | null): Promise<MarketplaceEvidenceProjection> {
     const result = await boundedEvidenceQuery<MarketplaceEvidenceRow>(this.pool, `
       SELECT
         eo.object_type AS artifact_type,
@@ -248,23 +248,44 @@ export class PostgresMarketplaceMetadataSource {
         ORDER BY v.checked_at DESC, v."createdAt" DESC, v.id DESC
         LIMIT 1
       ) verification ON TRUE
-      LEFT JOIN agent_runs run ON run.id = eo.run_id
+      LEFT JOIN agent_runs run
+        ON run.id = eo.run_id
+       AND run.agent_id = eo.agent_id
       LEFT JOIN commerce_job_results result
         ON result.commerce_job_id = run.job_id
        AND result.state = 'settled'
-       AND result.agent_version_id = $2
+      LEFT JOIN agent_versions result_version
+        ON result_version.id = result.agent_version_id
+       AND result_version.agent_id = run.agent_id
+       AND result_version.version = result.agent_version
       WHERE eo.agent_id = $1
         AND (
-          (eo.object_type = 'agent_profile' AND eo.resource_id = $2)
+          (
+            eo.object_type = 'agent_profile'
+            AND eo.run_id IS NULL
+            AND EXISTS (
+              SELECT 1
+              FROM agent_versions profile_version
+              WHERE profile_version.id::text = eo.resource_id
+                AND profile_version.agent_id = eo.agent_id
+                AND profile_version.version = eo.version
+            )
+          )
           OR (
             eo.object_type = 'run_bundle'
             AND run.agent_id = $1
             AND run.job_id IS NOT NULL
+            AND eo.resource_id = run.job_id::text
             AND result.id IS NOT NULL
+            AND result.commerce_job_id = run.job_id
+            AND result.agent_version_id = result_version.id
+            AND result_version.agent_id = eo.agent_id
+            AND result_version.version = eo.version
+            AND result.agent_version = eo.version
           )
         )
       ORDER BY eo.object_type, eo.version DESC, eo."updatedAt" DESC, eo.id DESC
-    `, [agentId, versionId]);
+    `, [agentId]);
     const graphInputs: MarketplaceEvidenceGraphInput[] = result.rows.map((row) => ({
       artifactType: row.artifact_type,
       artifactId: row.artifact_id,
@@ -314,7 +335,8 @@ export class PostgresMarketplaceMetadataSource {
     const readUrlBase = process.env.GREENFIELD_READ_URL_BASE ?? process.env.GREENFIELD_PUBLIC_READ_URL_BASE;
     return projectEvidenceProjection(graphInputs, {
       allowedReadUrlOrigins: this.greenfieldReadUrlOrigins(),
-      ...(readUrlBase === undefined ? {} : { readUrlBase })
+      ...(readUrlBase === undefined ? {} : { readUrlBase }),
+      currentVersion
     });
   }
 
@@ -327,10 +349,12 @@ export class PostgresMarketplaceMetadataSource {
     const current = await boundedEvidenceQuery<{
       readonly internal_agent_id: string;
       readonly version_id: string | null;
+      readonly version_number: number | null;
     }>(this.pool, `
       SELECT
         a.id AS internal_agent_id,
-        current_version.id AS version_id
+        current_version.id AS version_id,
+        current_version.version AS version_number
       FROM agents a
       JOIN erc8004_identities i ON i.id = a.identity_id
       LEFT JOIN LATERAL (
@@ -349,7 +373,7 @@ export class PostgresMarketplaceMetadataSource {
     `, [identity.namespace, identity.chainId, identity.identityRegistry, identity.agentId]);
     const row = current.rows[0];
     if (row === undefined || row.version_id === null) return unavailableMarketplaceEvidence();
-    return this.evidenceForVersion(row.internal_agent_id, row.version_id);
+    return this.evidenceForVersion(row.internal_agent_id, row.version_number);
   }
 
   public async listMetadata(): Promise<readonly MarketplaceListingMetadata[]> {
