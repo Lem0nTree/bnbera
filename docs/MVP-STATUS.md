@@ -1,12 +1,13 @@
 # BNBEra MVP status
 
-Updated: `2026-09-08` (current audited state at merged `main` `40a209300317d2a81adf0f96b00f2b679e9ddb94`)
+Updated: `2026-09-08` (current documentation baseline at merged `main` `8ab4692620278c73904c1c012204e8ba4707e719`)
 
 ## Current audited state — merged main
 
 This section is the current source of truth for the reconciled checkout. GitHub
-`main` is `40a209300317d2a81adf0f96b00f2b679e9ddb94`, and PRs #20–#28 are
-merged. Those merges include the T5 WalletConnect-only EOA/SIWE buyer boundary,
+`main` is `8ab4692620278c73904c1c012204e8ba4707e719`, and PRs #20–#29 are
+merged. PR #29 reconciled the active documents; it did not rerun or relabel the
+earlier canary evidence. Those merges include the T5 WalletConnect-only EOA/SIWE buyer boundary,
 sequential ERC-8183 commerce implementation, refund-projection repair, and the
 completed active T6/T7 Creator path. Both PR #28 validation runs succeeded.
 
