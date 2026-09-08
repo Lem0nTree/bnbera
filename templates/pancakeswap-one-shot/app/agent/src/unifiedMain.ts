@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 type PublicConfig = { tradingPair: "tbnb-cake" | "tbnb-busd"; inputAmountWei: "100000000000000" | "500000000000000" | "1000000000000000"; slippageBps: 10 | 25 | 50; quoteMaxAgeSeconds: 30 | 60; deadlineSeconds: 60 | 120 };
 function publicConfig(): PublicConfig {
   try {
-    const artifact = JSON.parse(readFileSync(join(process.cwd(), ".bnbera-public-config.json"), "utf8")) as { configuration?: unknown; configurationDigest?: unknown };
+    const artifact = JSON.parse(readFileSync(join(process.cwd(), "bnbera-public-config.json"), "utf8")) as { configuration?: unknown; configurationDigest?: unknown };
     const value = artifact.configuration as Record<string, unknown>;
     if (typeof artifact.configurationDigest !== "string" || !/^[0-9a-f]{64}$/.test(artifact.configurationDigest)) throw new Error("invalid digest");
     if (Object.keys(value).length !== 6 || value.protocol !== "pancakeswap-v2" || !["tbnb-cake", "tbnb-busd"].includes(String(value.tradingPair)) || !["100000000000000", "500000000000000", "1000000000000000"].includes(String(value.inputAmountWei)) || ![10, 25, 50].includes(Number(value.slippageBps)) || ![30, 60].includes(Number(value.quoteMaxAgeSeconds)) || ![60, 120].includes(Number(value.deadlineSeconds))) throw new Error("invalid");

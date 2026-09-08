@@ -56,7 +56,7 @@ export function parseNativeStudioStatus(output: string): StudioDeploymentRecord 
 const templateArtifactPaths = ["README.md", "package.json", "app/agent/package.json", "app/agent/studio.toml", "app/agent/tsconfig.json", "app/agent/src/unifiedMain.ts"] as const;
 const generatedWorkspaceDirectories = new Set(["node_modules", "dist", "build", ".studio", ".next"]);
 export type CreatorPublicRuntimeConfig = { readonly protocol: "pancakeswap-v2"; readonly tradingPair: "tbnb-cake" | "tbnb-busd"; readonly inputAmountWei: "100000000000000" | "500000000000000" | "1000000000000000"; readonly slippageBps: 10 | 25 | 50; readonly quoteMaxAgeSeconds: 30 | 60; readonly deadlineSeconds: 60 | 120 };
-const publicConfigPath = "app/agent/.bnbera-public-config.json";
+const publicConfigPath = "app/agent/bnbera-public-config.json";
 function templateArtifactRoot(): string {
   const candidates = [
     process.env.BNBERA_CREATOR_TEMPLATE_ROOT,

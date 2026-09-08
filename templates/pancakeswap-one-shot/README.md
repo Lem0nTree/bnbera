@@ -10,7 +10,7 @@ persists a deploy intent before invoking `bag deploy --provider bnb`. The checke
 source for the safe enum choices: tBNB→CAKE or tBNB→BUSD, 0.0001/0.0005/0.001
 tBNB input, 10/25/50 bps slippage, 30/60 second quote freshness, and 60/120
 second deadline. Runtime receives only the persisted public configuration
-through the generated, digest-bound `app/agent/.bnbera-public-config.json`; it rejects arbitrary token,
+through the generated, digest-bound `app/agent/bnbera-public-config.json`; it rejects arbitrary token,
 router, recipient, and calldata values. The plan endpoint remains plan-only
 until the T6 Studio session mismatch is resolved and does not claim a quote,
 funding, or execution.
