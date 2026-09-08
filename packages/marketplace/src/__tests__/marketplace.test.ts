@@ -717,6 +717,41 @@ describe("MarketplaceReadService", () => {
     const commerceDegradedSnapshot = await commerceDegradedSource.read();
     expect(commerceDegradedSnapshot.status).toBe("degraded");
     expect(commerceDegradedSnapshot.warning).toContain("BNBEra completed-job/review projection was unavailable");
+
+    const settlementTransactionHash = `0x${"1".repeat(64)}`;
+    const longDeliverableUrl = `data:text/plain;base64,${"a".repeat(700)}`;
+    const commerceSource = new IngestionMarketplaceSource(
+      repository,
+      new InMemoryMarketplaceMetadataSource([metadata]),
+      {
+        now: () => sourceNow,
+        commerceProjection: {
+          readForIdentity: async () => ({
+            completedJobs: [{
+              settledAtUnix: Math.floor(observedAt.getTime() / 1_000),
+              result: {
+                localSha256: "a".repeat(64),
+                chainKeccak: `0x${"2".repeat(64)}`,
+                deliverableUrl: longDeliverableUrl,
+                settlementReceipt: { transactionHash: settlementTransactionHash }
+              }
+            }],
+            verifiedReviews: [],
+            observedAtUnix: Math.floor(observedAt.getTime() / 1_000)
+          })
+        }
+      }
+    );
+    const commerceSnapshot = await commerceSource.read();
+    expect(commerceSnapshot.records).toHaveLength(1);
+    expect(commerceSnapshot.records[0]?.metrics?.completedJobs).toMatchObject({
+      status: "available",
+      completedCount: 1
+    });
+    expect(commerceSnapshot.records[0]?.metrics?.lastResult).toMatchObject({
+      status: "available",
+      reference: settlementTransactionHash
+    });
   });
 
   it("fills an explicit reputation absence for legacy listings", async () => {
