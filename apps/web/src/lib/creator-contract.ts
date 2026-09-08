@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { keccak256, stringToHex } from "viem";
 import { z } from "zod";
 
@@ -50,9 +51,18 @@ const creatorTemplateSource = {
 } as const;
 
 const templateArtifactFiles = ["package.json", "app/agent/package.json", "app/agent/studio.toml", "app/agent/src/unifiedMain.ts"] as const;
-const templateArtifactRoot = new URL("../../../../templates/pancakeswap-one-shot/", import.meta.url);
+function templateArtifactRoot(): string {
+  const candidates = [
+    process.env.BNBERA_CREATOR_TEMPLATE_ROOT,
+    resolve(process.cwd(), "templates/pancakeswap-one-shot"),
+    resolve(process.cwd(), "../../templates/pancakeswap-one-shot"),
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  const root = candidates.find((value) => existsSync(resolve(value, "app/agent/studio.toml")));
+  if (root === undefined) throw new Error("CREATOR_TEMPLATE_ARTIFACT_UNAVAILABLE");
+  return root;
+}
 /** Hash the actual deployable artifact bytes, in a stable path-delimited form. */
-export const creatorTemplateArtifactDigest = createHash("sha256").update(templateArtifactFiles.map((path) => `${path}\0${readFileSync(new URL(path, templateArtifactRoot))}`).join("\0")).digest("hex");
+export const creatorTemplateArtifactDigest = createHash("sha256").update(templateArtifactFiles.map((path) => `${path}\0${readFileSync(resolve(templateArtifactRoot(), path))}`).join("\0")).digest("hex");
 
 /** Immutable digest of the checked-in fixed template; no claimed placeholder. */
 export const creatorTemplate = {
