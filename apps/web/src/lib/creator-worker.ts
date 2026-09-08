@@ -21,6 +21,8 @@ export function nextCreatorStage(current: CreatorStage, readiness: StudioReadine
 export function externalOutcomePolicy(): "reconcile_before_retry" { return "reconcile_before_retry"; }
 
 export interface CreatorStudioAdapter {
+  /** Read-only exact-artifact check used after a worker crash. */
+  inspect(workspaceParent: string, runtimeName: string): Promise<"STUDIO_TEMPLATE_READY" | "STUDIO_TEMPLATE_MISMATCH">;
   /** Copies only the checked-in immutable artifact into its deterministic workspace. */
   materialize(workspaceParent: string, runtimeName: string): Promise<"STUDIO_TEMPLATE_READY" | "STUDIO_TEMPLATE_MISMATCH">;
   /** Runs only after runtime integrity/config gates pass. Output is sanitized. */
@@ -83,11 +85,10 @@ export async function runCreatorStudioStep(input: { readonly deploymentId: strin
   if (!input.readiness.ready) return null;
   if (current.stage === "studio_scaffold_package") {
     const claim = await input.store.recordScaffoldIntent(input.deploymentId);
-    // A prior process may have died after its durable intent. `materialize`
-    // only inspects an existing workspace, so this reconciles an exact copy
-    // and fails a partial/tampered one without creating another workspace.
+    // A prior process may have died after its durable intent. Inspection is
+    // deliberately read-only: a reconciler must never create a workspace.
     if (claim === "reconcile") {
-      const inspected = await input.studio.materialize(current.projectRoot, current.runtimeName);
+      const inspected = await input.studio.inspect(current.projectRoot, current.runtimeName);
       await input.store.record(input.deploymentId, { stage: "studio_scaffold_package", publicId: null, reasonCode: inspected });
       if (inspected !== "STUDIO_TEMPLATE_READY") return null;
       await input.store.record(input.deploymentId, { stage: "deploy_reconcile", publicId: null, reasonCode: "STUDIO_TEMPLATE_RECONCILED" });

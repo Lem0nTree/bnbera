@@ -24,6 +24,8 @@ export function creatorAuthorityResolver(): CreatorRuntimeAuthorityResolver {
   const composition = authorityComposition(); if (composition === null) return unavailableCreatorRuntimeAuthority;
   const store = createPostgresCreatorAuthorityStore(getCommerceAuthDatabasePool());
   return { async requireRuntimeAuthority(binding) {
+    const authorityRecord = await store.get(binding.authorityId);
+    if (authorityRecord === null || authorityRecord.draftId !== binding.draftId) authorityUnavailable();
     const owner = await store.ownerAddressForDraft(binding.draftId);
     if (owner === null) authorityUnavailable();
     const scoped = await getCommerceAuthDatabasePool().query<{ creator_user_id: string }>("SELECT creator_user_id FROM agent_drafts WHERE id=$1", [binding.draftId]);

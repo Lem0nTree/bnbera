@@ -101,6 +101,9 @@ export function nativeStudioProcessAdapter(): import("./creator-worker").Creator
     return String(result.stdout);
   };
   return {
+    async inspect(workspaceParent, runtimeName) {
+      return hasExactTemplateArtifact(join(workspaceParent, runtimeName)) ? "STUDIO_TEMPLATE_READY" : "STUDIO_TEMPLATE_MISMATCH";
+    },
     async materialize(workspaceParent, runtimeName) {
       const destination = join(workspaceParent, runtimeName);
       const source = new URL("../../../../templates/pancakeswap-one-shot/", import.meta.url);
