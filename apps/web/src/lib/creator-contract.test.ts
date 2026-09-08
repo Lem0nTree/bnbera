@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -130,7 +130,9 @@ describe("Creator fixed-template boundary", () => {
     try {
       const studio = nativeStudioProcessAdapter();
       await expect(studio.materialize(parent, "bnberahf123", runtimeConfig, runtimeConfigDigest)).resolves.toBe("STUDIO_TEMPLATE_READY");
-      expect(existsSync(join(parent, "bnberahf123", "app/agent/bnbera-public-config.json"))).toBe(true);
+      const generatedConfigSource = join(parent, "bnberahf123", "app/agent/src/bnbera-public-config.ts");
+      expect(existsSync(generatedConfigSource)).toBe(true);
+      expect(readFileSync(generatedConfigSource, "utf8")).toContain(`export const configurationDigest = "${runtimeConfigDigest}";`);
       // Package installation and Studio state must not become part of the
       // immutable source artifact or make a restart look tampered.
       mkdirSync(join(parent, "bnberahf123", "app/agent/node_modules/example"), { recursive: true });
@@ -143,12 +145,12 @@ describe("Creator fixed-template boundary", () => {
       await expect(studio.materialize(parent, "bnberahf456", runtimeConfig, runtimeConfigDigest)).resolves.toBe("STUDIO_TEMPLATE_MISMATCH");
     } finally { rmSync(parent, { recursive: true, force: true }); }
   });
-  it("denies reload when generated public config or digest is tampered", async () => {
+  it("denies reload when generated public config source or digest is tampered", async () => {
     const parent = mkdtempSync(join(tmpdir(), "bnbera-creator-config-"));
     try {
       const studio = nativeStudioProcessAdapter();
       await expect(studio.materialize(parent, "bnberahf999", runtimeConfig, runtimeConfigDigest)).resolves.toBe("STUDIO_TEMPLATE_READY");
-      writeFileSync(join(parent, "bnberahf999", "app/agent/bnbera-public-config.json"), JSON.stringify({ configuration: runtimeConfig, configurationDigest: "0".repeat(64) }));
+      writeFileSync(join(parent, "bnberahf999", "app/agent/src/bnbera-public-config.ts"), "export const configurationDigest = \"tampered\";\n");
       await expect(studio.inspect(parent, "bnberahf999", runtimeConfig, runtimeConfigDigest)).resolves.toBe("STUDIO_TEMPLATE_MISMATCH");
     } finally { rmSync(parent, { recursive: true, force: true }); }
   });

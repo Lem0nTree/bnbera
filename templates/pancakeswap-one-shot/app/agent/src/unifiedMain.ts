@@ -1,20 +1,18 @@
 import express from "express";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { configuration as generatedConfiguration, configurationDigest } from "./bnbera-public-config.js";
 
 /* Bounded A2A surface. No free-form code, pricing, or request-supplied trade
  * parameters are accepted. The public configuration is server-derived from a
  * persisted audited draft; this handler never signs or executes a swap. */
-type PublicConfig = { tradingPair: "tbnb-cake" | "tbnb-busd"; inputAmountWei: "100000000000000" | "500000000000000" | "1000000000000000"; slippageBps: 10 | 25 | 50; quoteMaxAgeSeconds: 30 | 60; deadlineSeconds: 60 | 120 };
+type PublicConfig = { protocol: "pancakeswap-v2"; tradingPair: "tbnb-cake" | "tbnb-busd"; inputAmountWei: "100000000000000" | "500000000000000" | "1000000000000000"; slippageBps: 10 | 25 | 50; quoteMaxAgeSeconds: 30 | 60; deadlineSeconds: 60 | 120 };
 function publicConfig(): PublicConfig {
   try {
-    const artifact = JSON.parse(readFileSync(join(process.cwd(), "bnbera-public-config.json"), "utf8")) as { configuration?: unknown; configurationDigest?: unknown };
-    const value = artifact.configuration as Record<string, unknown>;
-    if (typeof artifact.configurationDigest !== "string" || !/^[0-9a-f]{64}$/.test(artifact.configurationDigest)) throw new Error("invalid digest");
+    const value = generatedConfiguration as unknown as Record<string, unknown>;
+    if (typeof configurationDigest !== "string" || !/^[0-9a-f]{64}$/.test(configurationDigest)) throw new Error("invalid digest");
     if (Object.keys(value).length !== 6 || value.protocol !== "pancakeswap-v2" || !["tbnb-cake", "tbnb-busd"].includes(String(value.tradingPair)) || !["100000000000000", "500000000000000", "1000000000000000"].includes(String(value.inputAmountWei)) || ![10, 25, 50].includes(Number(value.slippageBps)) || ![30, 60].includes(Number(value.quoteMaxAgeSeconds)) || ![60, 120].includes(Number(value.deadlineSeconds))) throw new Error("invalid");
     const canonical = { protocol: value.protocol, tradingPair: value.tradingPair, inputAmountWei: value.inputAmountWei, slippageBps: value.slippageBps, quoteMaxAgeSeconds: value.quoteMaxAgeSeconds, deadlineSeconds: value.deadlineSeconds };
-    if (createHash("sha256").update(JSON.stringify(canonical)).digest("hex") !== artifact.configurationDigest) throw new Error("digest mismatch");
+    if (createHash("sha256").update(JSON.stringify(canonical)).digest("hex") !== configurationDigest) throw new Error("digest mismatch");
     return value as PublicConfig;
   } catch { throw new Error("Invalid Creator public configuration; refusing runtime start."); }
 }
