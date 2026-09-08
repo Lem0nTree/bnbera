@@ -103,9 +103,10 @@ describe("W0/W1 optional rails fail closed", () => {
     expect(lock.networks["56"]?.b402.verificationStatus).toMatch(/blocked|pending/i);
     expect(lock.networks["97"]?.b402.verificationStatus).toMatch(/blocked|pending/i);
     expect(lock.networks["97"]?.erc8183.verificationStatus).toMatch(/blocked|pending/i);
-    expect(lock.greenfield.sdkVersion).toBeNull();
-    expect(lock.greenfield.storageProviders).toHaveLength(0);
-    expect(lock.greenfield.verificationStatus).toMatch(/pending|blocked/i);
+    expect(lock.greenfield.sdkVersion).toBe("2.2.0");
+    expect(lock.greenfield.storageProviders.length).toBeGreaterThan(0);
+    expect(lock.greenfield.verificationStatus).toMatch(/verified.*canary|final-app-smoke-pending/iu);
+    expect(lock.releaseGates.greenfieldProvider).toMatch(/canary|pending/iu);
     expect(lock.altana.mainnet.verificationStatus).toMatch(/pending|blocked/i);
     // The testnet Altana contracts have read-only runtime evidence, but no
     // Creator authority or write rail is enabled by this lock.

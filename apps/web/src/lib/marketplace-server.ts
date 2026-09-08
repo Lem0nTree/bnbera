@@ -358,7 +358,7 @@ export class PostgresMarketplaceMetadataSource {
       FROM agents a
       JOIN erc8004_identities i ON i.id = a.identity_id
       LEFT JOIN LATERAL (
-        SELECT av.id
+        SELECT av.id, av.version
         FROM agent_versions av
         WHERE av.agent_id = a.id
           AND (a.current_version_id IS NULL OR av.id = a.current_version_id)

@@ -34,6 +34,9 @@ describe("Postgres marketplace historical evidence binding", () => {
   it("requires exact profile version and settled run/job/version bindings", async () => {
     const pool = new RecordingPool();
     await new PostgresMarketplaceMetadataSource(pool as never).readEvidenceForIdentity(IDENTITY);
+    const currentQuery = pool.calls.find((call) => call.text.includes("current_version"));
+    expect(currentQuery).toBeDefined();
+    expect(currentQuery?.text).toMatch(/SELECT\s+av\.id,\s*av\.version\s+FROM agent_versions av/iu);
     const evidenceQuery = pool.calls.find((call) => call.text.includes("FROM evidence_objects eo"));
     expect(evidenceQuery).toBeDefined();
     expect(evidenceQuery?.values).toEqual([INTERNAL_AGENT_ID]);
