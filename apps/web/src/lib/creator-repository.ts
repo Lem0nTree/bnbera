@@ -53,7 +53,8 @@ export class CreatorRepository {
     );
     const row = result.rows[0]!;
     const persisted = row.configuration as Record<string, unknown>;
-    const persistedDigest = draftConfigurationDigest({ ...normalized, name: row.name, slug: row.slug, description: row.description, ...persisted, publicationConsent: row.publicationConsent });
+    if (row.publicationConsent !== true) throw new CreatorRepositoryError("IDEMPOTENCY_CONFLICT", "That idempotency key was already used for a different draft.");
+    const persistedDigest = draftConfigurationDigest({ ...normalized, name: row.name, slug: row.slug, description: row.description, ...persisted, publicationConsent: true });
     if (persistedDigest !== digest) throw new CreatorRepositoryError("IDEMPOTENCY_CONFLICT", "That idempotency key was already used for a different draft.");
     return { ...row, configuration: persisted, deploymentId: null, deploymentState: null, currentStep: null, authorityId: null };
   }

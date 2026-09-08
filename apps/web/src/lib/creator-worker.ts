@@ -141,6 +141,24 @@ export async function runCreatorStudioStep(input: { readonly deploymentId: strin
     return "erc8004_register_reconcile";
   }
   const projectRoot = join(current.projectRoot, current.runtimeName);
+  // Close the scaffold-to-deploy gap: the exact public configuration and
+  // immutable artifact must still match immediately before the external
+  // deployment intent is recorded.
+  const inspected = await input.studio.inspect(
+    current.projectRoot,
+    current.runtimeName,
+    current.publicConfig,
+    current.configurationDigest,
+  );
+  if (inspected !== "STUDIO_TEMPLATE_READY") {
+    await input.store.record(input.deploymentId, {
+      stage: "deploy_reconcile",
+      publicId: null,
+      endpoint: null,
+      reasonCode: inspected,
+    });
+    return null;
+  }
   const command = nativeStudioDeployCommand(projectRoot);
   const claim = await input.store.recordIntent(input.deploymentId, { command });
   // A previous process persisted an intent but died before recording an ID.

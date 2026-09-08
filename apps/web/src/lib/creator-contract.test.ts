@@ -97,6 +97,14 @@ describe("Creator fixed-template boundary", () => {
     await runCreatorStudioStep({ deploymentId: "d", readiness: { ready: true, reason: "test" }, store, studio, recheckAuthority: async () => { checks += 1; } });
     expect(runs).toBe(0); expect(checks).toBe(0);
   });
+  it("rechecks the exact configured artifact immediately before deployment", async () => {
+    const state = { stage: "deploy_reconcile" as CreatorStage, runtimeName: "bnberahf123", projectRoot: "/srv/creator", publicId: null, endpoint: null, publicConfig: runtimeConfig, configurationDigest: runtimeConfigDigest };
+    const reasons: string[] = []; let intents = 0; let runs = 0;
+    const store = { load: async () => state, record: async (_: string, item: { reasonCode: string }) => { reasons.push(item.reasonCode); }, recordIntent: async () => { intents += 1; return "claimed" as const; }, recordScaffoldIntent: async () => "claimed" as const };
+    const studio = { inspect: async () => "STUDIO_TEMPLATE_MISMATCH" as const, materialize: async () => "STUDIO_TEMPLATE_READY" as const, run: async () => { runs += 1; return { exitCode: 0, reasonCode: "STUDIO_COMMAND_OK" as const }; }, status: async () => null, verifyEndpoint: async () => true };
+    await expect(runCreatorStudioStep({ deploymentId: "d", readiness: { ready: true, reason: "test" }, store, studio, recheckAuthority: async () => undefined })).resolves.toBeNull();
+    expect(reasons).toEqual(["STUDIO_TEMPLATE_MISMATCH"]); expect(intents).toBe(0); expect(runs).toBe(0);
+  });
   it("serializes concurrent scaffold attempts and leaves no partial artifact marked ready", async () => {
     const state = { stage: "studio_scaffold_package" as CreatorStage, runtimeName: "bnberahf123", projectRoot: "/srv/creator", publicId: null, endpoint: null };
     let claims = 0; let materializations = 0;
