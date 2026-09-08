@@ -22,4 +22,18 @@ describe("Creator G1/G2 reconciliation handoffs", () => {
     await expect(handoffs.registerAndVerify({ deploymentId: "deployment-3", endpoint: "https://agent.example" })).resolves.toMatchObject({ status: "pending" });
     expect(queried).toBe(false);
   });
+
+  it("denies a provisional identity even when every requested tuple field matches", async () => {
+    let statement = "";
+    const handoffs = createCreatorLifecycleHandoffs({ async query(sql) { statement = sql; return { rows: [] }; } }, async () => binding);
+    await expect(handoffs.registerAndVerify({ deploymentId: "deployment-provisional", endpoint: binding.endpoint })).resolves.toMatchObject({ status: "pending" });
+    expect(statement).toContain("i.read_consistency='finalized'");
+  });
+
+  it("denies an identity whose finalized agent wallet differs from the authority execution wallet", async () => {
+    let statement = "";
+    const handoffs = createCreatorLifecycleHandoffs({ async query(sql) { statement = sql; return { rows: [] }; } }, async () => binding);
+    await expect(handoffs.registerAndVerify({ deploymentId: "deployment-wallet-mismatch", endpoint: binding.endpoint })).resolves.toMatchObject({ status: "pending" });
+    expect(statement).toContain("lower(i.agent_wallet)=lower(au.execution_wallet)");
+  });
 });
