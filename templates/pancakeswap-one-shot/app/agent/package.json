@@ -1,0 +1,8 @@
+{
+  "name": "bnbera-pancakeswap-one-shot-agent",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "tsc -p tsconfig.json", "start": "node dist/unifiedMain.js" },
+  "dependencies": { "@bnbagent/studio-runtime": "0.0.13", "express": "5.1.0" },
+  "devDependencies": { "@types/express": "5.0.6", "@types/node": "22.10.2", "typescript": "5.7.2" }
+}

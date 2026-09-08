@@ -1,22 +1,25 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { keccak256, stringToHex } from "viem";
 import { z } from "zod";
 
 /** The only Creator artifact in the MVP. This is deliberately not a builder. */
 const creatorTemplateSource = {
-  slug: "pancakeswap-cake-swap",
+  slug: "pancakeswap-one-shot-swap",
   semanticVersion: "1.0.0",
-  category: "grid-trading",
+  // This template performs one bounded swap; it has no price bands or repeat
+  // loop, so calling it a grid strategy would be misleading.
+  category: "uncategorized",
   sourceCommit: "creator-fixed-template-v1",
   displayMetadata: {
-    title: "Bounded tBNB → CAKE swap agent",
-    description: "A reviewed fixed BSC-testnet PancakeSwap V2 swap template."
+    title: "Bounded one-shot tBNB → CAKE swap agent",
+    description: "A reviewed BSC-testnet PancakeSwap V2 template that performs one bounded swap; it is not a grid or rebalancing strategy."
   },
   configurationSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["protocol", "refreshMinutes"],
-    properties: { protocol: { const: "pancakeswap-v2" }, refreshMinutes: { enum: [5, 15, 30] } }
+    required: ["protocol"],
+    properties: { protocol: { const: "pancakeswap-v2" } }
   },
   capabilityManifest: { capabilities: ["pancakeswap_v2_exact_native_swap"], writeCapabilities: ["pancakeswap_v2_exact_native_swap"] },
   protocolManifest: { network: "bsc-testnet", protocols: ["A2A"], delegatedLifecycle: "erc8004_uri_and_fixed_swap" },
@@ -26,10 +29,15 @@ const creatorTemplateSource = {
   contractSelectorAllowlist: { chainId: 97, calls: [{ target: "0x8004a818bfb912233c491871b3d84c89a494bd9e", selectors: ["0x0af28bd3"], maxNativeValueWei: "0" }, { target: "0xd99d1c33f9fc3444f8101754abc46c52416550d1", selectors: ["0x7ff36ab5"], maxNativeValueWei: "1000000000000000" }], spend: [{ token: "native", limitAtomic: "2000000000000000", period: "hour" }], expirySeconds: 3600, intent: "own-agent-uri-or-fixed-swap" }
 } as const;
 
+const templateArtifactFiles = ["package.json", "app/agent/package.json", "app/agent/studio.toml", "app/agent/src/unifiedMain.ts"] as const;
+const templateArtifactRoot = new URL("../../../../templates/pancakeswap-one-shot/", import.meta.url);
+/** Hash the actual deployable artifact bytes, in a stable path-delimited form. */
+export const creatorTemplateArtifactDigest = createHash("sha256").update(templateArtifactFiles.map((path) => `${path}\0${readFileSync(new URL(path, templateArtifactRoot))}`).join("\0")).digest("hex");
+
 /** Immutable digest of the checked-in fixed template; no claimed placeholder. */
 export const creatorTemplate = {
   ...creatorTemplateSource,
-  artifactDigest: createHash("sha256").update(JSON.stringify(creatorTemplateSource)).digest("hex")
+  artifactDigest: creatorTemplateArtifactDigest
 } as const;
 
 export const creatorLifecycleAction = {
@@ -103,14 +111,13 @@ export const creatorDraftRequestSchema = z.object({
   slug: z.string().trim().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).min(3).max(80),
   description: z.string().trim().min(20).max(500),
   protocol: z.literal("pancakeswap-v2"),
-  refreshMinutes: z.union([z.literal(5), z.literal(15), z.literal(30)]),
   publicationConsent: z.literal(true)
 }).strict();
 
 export type CreatorDraftRequest = z.infer<typeof creatorDraftRequestSchema>;
 
 export function canonicalDraftConfiguration(input: CreatorDraftRequest): Record<string, unknown> {
-  return { protocol: input.protocol, refreshMinutes: input.refreshMinutes };
+  return { protocol: input.protocol };
 }
 
 /** Matches T6 `authorityPolicyDigest(serializePolicy(policy))`: Keccak, not SHA-256. */
