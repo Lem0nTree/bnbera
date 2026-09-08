@@ -122,6 +122,7 @@ function bucketSdkFixture(options: {
   readonly malformedHead?: boolean;
   readonly malformedSp?: boolean;
   readonly spNotFound?: boolean;
+  readonly headError?: "no-such-bucket" | "timeout";
 } = {}) {
   const creator = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const operator = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -141,6 +142,12 @@ function bucketSdkFixture(options: {
       expect(this).toBe(bucketApi);
       headCalls += 1;
       expect(bucketName).toBe("greenfield-test");
+      if (options.headError === "no-such-bucket") {
+        throw new Error("Query failed with (6): No such bucket: unknown request");
+      }
+      if (options.headError === "timeout") {
+        throw new Error("Query failed with (7): RPC timeout");
+      }
       if (!bucketExists) {
         const error = Object.assign(new Error("bucket not found"), { statusCode: 404 });
         throw error;
@@ -317,6 +324,21 @@ describe("official Greenfield SDK adapter boundary", () => {
       creationTransactionHash: createHash
     });
     expect(fixture.counts()).toMatchObject({ headCalls: 1, metaCalls: 1, createCalls: 0 });
+  });
+
+  it("treats the official no-such-bucket query as missing and creates once", async () => {
+    const fixture = bucketSdkFixture({ headError: "no-such-bucket" });
+    await expect(fixture.publisher.ensureCanaryBucket()).resolves.toMatchObject({
+      status: "created",
+      creationTransactionHash: createHash
+    });
+    expect(fixture.counts()).toMatchObject({ createCalls: 1, broadcastCalls: 1 });
+  });
+
+  it("keeps unrelated bucket query errors unknown and does not create", async () => {
+    const fixture = bucketSdkFixture({ headError: "timeout" });
+    await expect(fixture.publisher.ensureCanaryBucket()).resolves.toMatchObject({ status: "unknown" });
+    expect(fixture.counts()).toMatchObject({ createCalls: 0, broadcastCalls: 0 });
   });
 
   it("creates a missing canary bucket with the official bounded message and simulated gas", async () => {

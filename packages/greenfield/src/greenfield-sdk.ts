@@ -454,7 +454,7 @@ function notFoundError(error: unknown): boolean {
   );
   if (status === 404) return true;
   const message = error instanceof Error ? error.message : typeof source?.message === "string" ? source.message : "";
-  return /(?:\b404\b|not[ -]?found|does not exist)/i.test(message);
+  return /(?:\b404\b|not[ -]?found|does not exist|\bno such bucket\b)/i.test(message);
 }
 
 function publicReadVisibility(value: unknown): boolean {
