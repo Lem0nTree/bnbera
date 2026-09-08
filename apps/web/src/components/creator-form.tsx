@@ -6,7 +6,7 @@ export function CreatorForm() {
   async function submit(formData: FormData) {
     setMessage(null);
     const response = await fetch("/api/creator/drafts", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
-      idempotencyKey: crypto.randomUUID(), name: formData.get("name"), slug: formData.get("slug"), description: formData.get("description"), protocol: "venus", refreshMinutes: Number(formData.get("refreshMinutes")), publicationConsent: formData.get("publicationConsent") === "on"
+      idempotencyKey: crypto.randomUUID(), name: formData.get("name"), slug: formData.get("slug"), description: formData.get("description"), protocol: "pancakeswap-v2", refreshMinutes: Number(formData.get("refreshMinutes")), publicationConsent: formData.get("publicationConsent") === "on"
     }) });
     const data = await response.json() as { error?: { safeMessage?: string } };
     setMessage(response.ok ? "Draft saved. Deployment remains blocked until the reviewed T6 authority and Studio runtime gates are available." : (data.error?.safeMessage ?? "Creator request failed."));

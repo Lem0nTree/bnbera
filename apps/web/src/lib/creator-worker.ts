@@ -31,6 +31,24 @@ export interface CreatorWorkerStore {
   record(deploymentId: string, input: { readonly stage: CreatorStage; readonly publicId: string | null; readonly output: string }): Promise<void>;
 }
 
+export interface CreatorUriUpdateAdapter {
+  submit(input: { readonly agentId: string; readonly uri: string; readonly uriIntentDigest: string }): Promise<{ readonly transactionHash: string | null; readonly status: "confirmed" | "unknown" | "rejected" }>;
+  reconcile(transactionHash: string): Promise<"confirmed" | "unknown" | "rejected">;
+}
+
+export interface CreatorSwapAdapter {
+  execute(): Promise<{ readonly executionId: string; readonly transactionHash: string | null; readonly status: "confirmed" | "unknown" | "rejected"; readonly quoteBlock: number; readonly calldataDigest: string; readonly balanceDeltaAtomic: string | null }>;
+  reconcile(executionId: string): Promise<"confirmed" | "unknown" | "rejected">;
+}
+
+/** Persist quote/execution receipt facts before a swap is treated as complete. */
+export async function runCreatorSwap(input: { readonly adapter: CreatorSwapAdapter; readonly priorExecutionId: string | null; readonly persist: (value: { executionId: string; transactionHash: string | null; quoteBlock: number; calldataDigest: string; balanceDeltaAtomic: string | null; status: string }) => Promise<void> }): Promise<"confirmed" | "unknown" | "rejected"> {
+  if (input.priorExecutionId !== null) return input.adapter.reconcile(input.priorExecutionId);
+  const result = await input.adapter.execute();
+  await input.persist({ ...result });
+  return result.status;
+}
+
 /** One bounded Studio step. Unknown outcomes reconcile rather than rerun. */
 export async function runCreatorStudioStep(input: { readonly deploymentId: string; readonly readiness: StudioReadiness; readonly store: CreatorWorkerStore; readonly studio: CreatorStudioAdapter }): Promise<CreatorStage | null> {
   const current = await input.store.load(input.deploymentId);
