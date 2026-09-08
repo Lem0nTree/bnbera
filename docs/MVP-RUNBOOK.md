@@ -199,6 +199,16 @@ run `bag deploy prepare --provider bnb --project-root <generated-runtime-root>
 --json --no-info --force`; proceed only with `ready_to_deploy: true` and zero
 BLOCKED/CRITICAL checks.
 
+## T8 Greenfield canary
+
+The bounded testnet integration uses public-read bucket `bnbera-t8-230072625f8090d5271c5f882748ce11134ac2ba` (bucket ID `25041`) and the Greenfield runtime pinned in `standards.lock.json`. Keep `GREENFIELD_PUBLISHER_PRIVATE_KEY_REF` as an environment-variable name; never place the key value in arguments, logs or application data. Live operations additionally require the three explicit T8 enable/approval flags. `reconcile-bucket` is read-only and never broadcasts.
+
+Prepare persisted inputs with `ops:t8-greenfield-inputs`: preview first, use exact `--write` only for the deterministic settled-job projection, then export profile/run rows into `.runtime/t8-greenfield-inputs` or `/tmp`. Publish with `scripts/t8-greenfield-publish.ts`; reuse the same deterministic idempotency keys and reconcile unknown outcomes before retrying. Current canary evidence is agent 2206/version 11 and settled commerce job `695c1be6-a6bb-4deb-b9b8-9eabd60b0ae7` (protocol job 1103).
+
+Successful public readback SHA-256 values are `69e0294f83908f355a1a883c98768b52786a3f88439cf6f02fcd5b63e70279d8` for the profile and `12cba7d6a989d2603a525bb4965d84fe5bff4569f106a0ce3decb84d56e24446` for the run bundle. Greenfield returned an all-zero seal transaction field; the adapter normalizes it to unavailable and accepts sealing only from sealed object status plus matched readback/hash/size evidence. Historical evidence is shown only through exact agent/version/job joins and labeled as a historical snapshot.
+
+Disable new publication with `T8_GREENFIELD_ENABLED=false` or `T8_GREENFIELD_LIVE_WRITE_ENABLED=false`. This does not delete the public bucket or objects and must not disable marketplace browsing or hiring.
+
 ## Target cron behavior — implemented by T1
 
 | Job | Cadence | Behavior |

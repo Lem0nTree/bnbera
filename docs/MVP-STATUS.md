@@ -18,7 +18,7 @@ completed active T6/T7 Creator path. Both PR #28 validation runs succeeded.
 | G1 persistent marketplace | Retained/local scope only | T1–T3 discovery, enrichment, category, vector, publication, API/SSR, restart and freshness evidence remains accepted for the retained/local scope. No stable public HTTPS/deployed-browser claim is made. |
 | G2 paid hiring | Pending interactive WalletConnect browser acceptance | The merged T5 implementation and authorized operator EOA canary provide live chain evidence for agent 2206, including useful health-factor work, paid cycle `job1103`, settlement and a verified-purchase review. The operator harness is not interactive WalletConnect pairing, browser SIWE/session binding or browser recovery acceptance. |
 | G3 Creator | Completed (active documented scope; temporary Studio trial) | Browser grant/revoke, tBNB→BUSD Creator deployment/registration, exact identity reconciliation, pre-Studio denial and publication/category/vector follow-through are evidenced below. This does not claim G2 WalletConnect browser acceptance. |
-| G4 Greenfield | Planned | Greenfield pins, upload/seal/readback and final walkthrough remain unaccepted. |
+| G4 Greenfield | Pending final app walkthrough | T8 bucket/object/readback canary passed; final API/detail and public walkthrough remain. |
 | ERC-8183 release | Disabled | The standards-lock `releaseEnabled` value remains `false`; the quick tunnel and operator canary are development evidence only. |
 
 ### T5 implementation and operator EOA evidence
@@ -108,7 +108,7 @@ Studio trial temporary and keep G2's separate WalletConnect browser gate and
 | Public runtime | Local retained cron/API/SSR evidence and temporary tunnels exist. | Stable public HTTPS deployment, immutable SHA/cron alignment and deployed-browser walkthrough. |
 | Network decision | Chain-97 canaries are evidenced; chain-56 ERC-8004 reads are pinned. | Organizer-acceptable chain-56/97 submission decision; no unapproved mainnet writes. |
 | Agent Advantage | Requirement and measurement shape are documented. | Three paired comparisons, including one trading, stock/equities or security task. |
-| Greenfield | Publisher abstractions and integrity tests exist. | Pin SDK/provider, publish profile and completed-job objects, then verify seal/readback/hash and retry idempotency. |
+| Greenfield | Testnet bucket 25041 plus historical version-11 profile and settled job-1103 bundle are public, persisted and independently hash-matched; replay is idempotent. | Capture both exact-version links through the final API/detail runtime. Zero seal hashes remain hidden as unavailable. |
 
 Next delivery order: implement T8's bounded Greenfield publication, then use T9
 to complete stable deployment, the deferred G2 browser acceptance, current

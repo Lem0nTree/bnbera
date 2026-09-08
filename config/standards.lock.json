@@ -297,7 +297,7 @@
       }
     ],
     "selectionPolicy": "official-allowlist-with-runtime-health-check",
-    "verificationStatus": "pinned-testnet-sdk-rpc-and-provider; live-bucket-and-two-object-canary-pending"
+    "verificationStatus": "verified-testnet-sdk-rpc-sp1-bucket-25041-and-two-object-public-readback-2026-09-08; final-app-smoke-pending"
   },
   "altana": {
     "mainnet": {
@@ -385,7 +385,7 @@
       "verificationStatus": "verified-read-only-linkage-and-router-whitelist"
     },
     "b402HostedSettlement": "disabled-until-real-facilitator-canary",
-    "greenfieldProvider": "must-select-from-official-allowlist-at-runtime"
+    "greenfieldProvider": "verified-testnet-sp1-canary; final-app-smoke-pending"
   },
   "requiredVerification": [
     "eth_chainId",
