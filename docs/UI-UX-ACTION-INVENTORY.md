@@ -63,7 +63,7 @@ These are the source-of-truth surfaces Astra should reuse or reshape.
 | Hire | Inline on eligible detail/card | `ActivationPanel` -> `CommerceJourney` -> `EoaWalletProvider` | Commerce APIs listed in [Hire lifecycle](#hire-quote-and-erc-8183-lifecycle) | Partial / gated. The browser flow is implemented for a local canary but `activation.enabled` and release gates control exposure. |
 | Creator create | `/create` | `apps/web/app/create/page.tsx`, `CreatorForm` | Creator authority, draft, handoff, deployment, and auth APIs listed in [Creator](#creator-guided-flow-altana-authority-and-revoke) | Partial / gated. The bounded passkey/Altana flow is implemented, but Studio readiness and runtime handoff can block deployment. |
 | Creator management | `/creator` | `apps/web/app/creator/page.tsx`, `CreatorDashboard` | `GET /api/creator/drafts`, authority and deployment/registration APIs | Partial / gated. Draft and public authority status can be inspected; live Studio/registration completion is not implied. |
-| Hired-agent hub | None | No top-level page/component or list API | Existing operation/job reads require a known operation or protocol job ID | Missing. See [Hired agents management](#hired-agents-management-and-lifecycle-states). Do not invent a buyer job-list endpoint. |
+| Hired-agent hub | None | No top-level page/component; authenticated `GET /api/commerce/jobs?cursor=…&limit=…` now provides the buyer-owned history | The list derives ownership only from the validated server session and returns bounded newest-first public summaries | UI missing; API implemented. See [Hired agents management](#hired-agents-management-and-lifecycle-states). |
 | Public funding helper | Not mounted | `apps/web/src/components/public-wallet-funding.tsx` (covered by `public-wallet-funding.test.tsx`) | No current page imports it | Dormant component. If reintroduced, keep its copy-address/manual-copy behavior and public-address-only boundary; do not imply it funds a wallet automatically. |
 | Toast system | None | Current UI uses `Callout`, `role=status`, `role=alert`, and `LoadingState`; no shared toast component | No notification API | Missing. Add a small accessible notification layer only if it consumes the existing state transitions; keep durable details in the relevant panel. |
 
@@ -272,14 +272,14 @@ This is **Missing**, not a reason to fake a list. Astra should:
 - add a `Hired` navigation item only when a real list read seam is provided; and
 - if the 20-hour sprint needs a management surface, implement a small, explicitly labelled local “Recent hire” tray only from known browser operation IDs, with clear “this device only” copy, without presenting it as the account’s complete history.
 
-The preferred follow-up backend seam is a read-only, authenticated buyer-scoped list returning the same public operation/job contract. It is not present in this branch and must not be invented inside the redesign.
+The follow-up backend seam is now implemented as read-only authenticated `GET /api/commerce/jobs?cursor=…&limit=…`. It returns at most 50 buyer-owned public summaries in deterministic newest-first order, including immutable agent identity/version, safe name/slug when available, application and canonical lifecycle states, price/token/network, timestamps, result/settlement/review availability, latest operation state, a safe next action, and an opaque next cursor. It rejects unauthenticated requests and unsupported query parameters; buyer identity never comes from the URL or body. Existing authorized detail reads remain independent.
 
 ### Required management actions once a list read exists
 
 | ID | User action/state | Status | UX contract |
 | --- | --- | --- | --- |
-| MANAGE-01 | Open hired-agent management | Missing | Proposed route `/hired` or `/activity`; do not ship the link until the list API exists. |
-| MANAGE-02 | See all current jobs grouped by agent | Missing | Requires buyer-scoped list API. Group by full identity/version, display agent name/slug as presentation only, and show job ID/status/last observed time. |
+| MANAGE-01 | Open hired-agent management | UI missing / API implemented | Proposed route `/hired` or `/activity`; the authenticated list seam is ready, but do not ship the link until the route exists. |
+| MANAGE-02 | See all current jobs grouped by agent | UI missing / API implemented | Consume `GET /api/commerce/jobs` with cursor pagination. Group by full identity/version, display agent name/slug as presentation only, and show job ID/status/last observed time. |
 | MANAGE-03 | Filter jobs by active/completed/attention-needed | Missing | Filter only returned states; “attention needed” should include `unknown`, `manual_review`, `reverted`, expired pending recovery, and stale reload—not an invented quality score. |
 | MANAGE-04 | Resume a pending hire | Partial | Deep-link to `/agents/[slug]` and restore known operation; current localStorage path works only when the operation key is known. |
 | MANAGE-05 | Reload/reconcile operation | Partial | Reuse `GET /api/commerce/operation/[operationId]`, public hash attach, and reconciliation guard. Never display a “retry payment” shortcut for unknown. |
@@ -411,7 +411,7 @@ Every route and high-trust action needs an understandable state. Use the existin
 | Creator no drafts | `No Creator drafts yet.` | Offer `Create a bounded one-shot swap agent`; do not call this marketplace empty. |
 | Creator authority failed | `CreatorForm` message | Explain whether no authority was created, an authority exists and must be revoked, or handoff/deployment is unknown. |
 | Greenfield pending/failed | Artifact status and reason | Keep no-link state explicit; do not block unrelated browse/hire actions. |
-| Hired hub missing | No current route | Do not show a dead nav item. A local recent-operation tray must say device-only and incomplete if shipped. |
+| Hired hub missing | No current route; authenticated list API is implemented | Build the route against `GET /api/commerce/jobs` before showing its navigation item. |
 
 ## Toast and state-notification matrix
 
@@ -490,7 +490,7 @@ The visual redesign should not consume the remaining submission window with a br
 4. Make `/create` and `/creator` a clear bounded wizard/dashboard with authority/revoke states and no secret leakage.
 5. Add Greenfield evidence presentation refinements and safe external-link treatment.
 6. Add a shared accessible toast/status primitive and wire only the existing state transitions in the matrix above.
-7. Treat a complete hired-agent hub as blocked on a buyer-scoped list API. Do not spend the final hours pretending browser localStorage is an account history.
+7. Build the hired-agent hub against the implemented authenticated buyer-scoped `GET /api/commerce/jobs`; do not substitute browser localStorage for account history.
 
 ### Definition of done for the redesign handoff
 
