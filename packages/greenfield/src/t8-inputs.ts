@@ -435,8 +435,10 @@ function safeMetadata(row: T8CommerceFactRow): Record<string, unknown> {
   const name = publicString(source, "name");
   const description = publicString(source, "description");
   if (name === undefined || description === undefined) fail("PUBLIC_FACT_INCOMPLETE", "persisted public metadata needs name and description");
-  const category = publicString(source, "category");
-  if (category === undefined) fail("PUBLIC_FACT_INCOMPLETE", "historical version metadata needs its own category");
+  // Category is an agent/listing axis in the current schema rather than an
+  // agent-version column. Prefer a version-local value when present, then use
+  // the persisted category axis without changing the exact version binding.
+  const category = publicString(source, "category") ?? boundedString(row.agent_category, "agent category", 128);
   const output: Record<string, unknown> = { name, description, category };
   const protocols = field(source, "supportedProtocols", "supported_protocols");
   if (Array.isArray(protocols)) {

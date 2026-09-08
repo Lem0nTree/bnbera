@@ -135,10 +135,12 @@ describe("T8 persisted canary input/projection", () => {
     expect(() => buildT8FrozenInputs(facts({ result_settled_at: "2026-09-08T10:01:00Z" }))).not.toThrow();
   });
 
-  it("requires the historical version to carry its own category", () => {
-    expect(() => buildT8FrozenInputs(facts({
-      public_metadata: { name: "Persisted agent", description: "A public result agent" }
-    }))).toThrow(T8GreenfieldInputError);
+  it("uses the persisted agent category axis when historical metadata predates category snapshots", () => {
+    const result = buildT8FrozenArtifacts(facts({
+      public_metadata: { name: "Persisted agent", description: "A public result agent" },
+      agent_category: "rebalancing"
+    }));
+    expect(result.profileArtifact.payload.category).toBe("rebalancing");
   });
 
   it.each([
