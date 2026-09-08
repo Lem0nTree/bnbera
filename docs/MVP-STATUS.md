@@ -1,14 +1,14 @@
 # BNBEra MVP status
 
-Updated: `2026-09-08` (current audited state at merged `main` `3cbd4135d809fe865e2a88285e9b79b8e357085a`)
+Updated: `2026-09-08` (current audited state at merged `main` `40a209300317d2a81adf0f96b00f2b679e9ddb94`)
 
 ## Current audited state — merged main
 
 This section is the current source of truth for the reconciled checkout. GitHub
-`main` is `3cbd4135d809fe865e2a88285e9b79b8e357085a`, and PRs #20–#24 are
+`main` is `40a209300317d2a81adf0f96b00f2b679e9ddb94`, and PRs #20–#28 are
 merged. Those merges include the T5 WalletConnect-only EOA/SIWE buyer boundary,
-sequential ERC-8183 commerce implementation, provider-readiness/card fixes,
-and the guarded 2206 marketplace provider path.
+sequential ERC-8183 commerce implementation, refund-projection repair, and the
+completed active T6/T7 Creator path. Both PR #28 validation runs succeeded.
 
 ### Current gate result
 
@@ -59,9 +59,10 @@ The verified-purchase review is score `5`, active revision `1`.
 
 The canonical job state reached expiry/refund with transaction
 `0xc1a051eeb933ec6f7711fce9448bdb1e7563685fd23503cdf00d9ca3a3093628`.
-The parent summary still reporting `funded` is a known P1 projection issue
-being fixed separately; it must not override the canonical expired/refund
-state or be used as current funded-job evidence.
+Transactional projection and restart repair merged in `b7356a7`, with replay
+and mismatch guards. The retained job1101 parent summary still requires a
+read-only verification before runtime repair is claimed; its canonical
+expired/refund state remains authoritative.
 
 #### Operator harness limitation and release gate
 
@@ -71,9 +72,8 @@ reload/account-change handling or unknown-wallet-response recovery in the UI.
 It proves useful live 2206 work and the pinned chain journey, including
 settlement/review, but G2 remains pending until the interactive WalletConnect
 browser flow is accepted. Keep `releaseEnabled=false`; the authorized quick
-HTTPS tunnel remains canary-only with no uptime guarantee. A redundant second
-web build in CI is tracked as a nonblocking P2 note; CI was not changed by this
-documentation reconciliation.
+HTTPS tunnel remains canary-only with no uptime guarantee. PR #26 (`0353f72`)
+removed the redundant second web build; CI now reuses the root build.
 
 ## G3 Creator browser/Studio trial (2026-09-08)
 
@@ -97,6 +97,21 @@ The active documented browser grant -> bounded session -> Studio/runtime -> exac
 registration -> publication/revoke path is complete for G3/T6/T7. Keep the
 Studio trial temporary and keep G2's separate WalletConnect browser gate and
 `releaseEnabled=false` unchanged.
+
+## Current remaining acceptance
+
+| Area | Current accepted evidence | Missing before the final claim |
+| --- | --- | --- |
+| G2 browser hire | Operator EOA job1103 produced a useful result, settlement and verified review. | Interactive WalletConnect pairing, chain-97 SIWE/account binding, reload/duplicate/account-change and unknown-step recovery. Reverify identity 2206 first: its health-factor T5 snapshot predates its later G3 rebalancing registration. |
+| Four-category utility | Historical retained snapshot had published supply in all four routes. | Fresh useful activation evidence per intended demo category; do not infer this from route existence or historical counts. |
+| Public runtime | Local retained cron/API/SSR evidence and temporary tunnels exist. | Stable public HTTPS deployment, immutable SHA/cron alignment and deployed-browser walkthrough. |
+| Network decision | Chain-97 canaries are evidenced; chain-56 ERC-8004 reads are pinned. | Organizer-acceptable chain-56/97 submission decision; no unapproved mainnet writes. |
+| Agent Advantage | Requirement and measurement shape are documented. | Three paired comparisons, including one trading, stock/equities or security task. |
+| Greenfield | Publisher abstractions and integrity tests exist. | Pin SDK/provider, publish profile and completed-job objects, then verify seal/readback/hash and retry idempotency. |
+
+Next delivery order: implement T8's bounded Greenfield publication, then use T9
+to complete stable deployment, the deferred G2 browser acceptance, current
+four-category checks, comparisons and submission evidence.
 
 ## Historical retained/local snapshots
 
