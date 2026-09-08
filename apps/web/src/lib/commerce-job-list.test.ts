@@ -80,7 +80,9 @@ describe("authenticated buyer jobs list", () => {
     const capture: { values: readonly unknown[] | undefined; sql?: string } = { values: undefined };
     const result = await listBuyerJobs(pool([row()], capture), BUYER_USER_ID, { limit: 20 }, new Date("2026-09-08T12:30:00.000Z"));
     expect(capture.sql).toContain("WHERE c.buyer_user_id = $1");
-    expect(capture.sql).toContain('ORDER BY c."updatedAt" DESC, c.id DESC');
+    expect(capture.sql).toContain("date_trunc('milliseconds', c.\"updatedAt\") AS updated_at");
+    expect(capture.sql).toContain("(date_trunc('milliseconds', c.\"updatedAt\"), c.id) <");
+    expect(capture.sql).toContain("ORDER BY date_trunc('milliseconds', c.\"updatedAt\") DESC, c.id DESC");
     expect(capture.values?.[0]).toBe(BUYER_USER_ID);
     expect(capture.values).not.toContain(OTHER_USER_ID);
     expect(result.jobs).toHaveLength(1);
@@ -105,6 +107,17 @@ describe("authenticated buyer jobs list", () => {
     const capture: { values: readonly unknown[] | undefined } = { values: undefined };
     await listBuyerJobs(pool([], capture), BUYER_USER_ID, { limit: 1, cursor: first.nextCursor! });
     expect(capture.values?.slice(1, 3)).toEqual(["2026-09-08T12:01:00.000Z", "00000000-0000-4000-8000-000000000011"]);
+  });
+
+  it("uses the ID tie-breaker after normalizing PostgreSQL microseconds", async () => {
+    const rows = [
+      row({ commerce_job_id: "00000000-0000-4000-8000-000000000012", updated_at: "2026-09-08T12:00:00.123Z" }),
+      row({ commerce_job_id: "00000000-0000-4000-8000-000000000011", updated_at: "2026-09-08T12:00:00.123Z" })
+    ];
+    const first = await listBuyerJobs(pool(rows), BUYER_USER_ID, { limit: 1 });
+    const capture: { values: readonly unknown[] | undefined } = { values: undefined };
+    await listBuyerJobs(pool([], capture), BUYER_USER_ID, { limit: 1, cursor: first.nextCursor! });
+    expect(capture.values?.slice(1, 3)).toEqual(["2026-09-08T12:00:00.123Z", "00000000-0000-4000-8000-000000000012"]);
   });
 
   it("preserves canonical and reconciliation states when selecting a safe next action", async () => {

@@ -253,7 +253,8 @@ export async function listBuyerJobs(
     result = await pool.query<JobRow>(`
       SELECT c.id AS commerce_job_id, c.erc8183_job_id AS parent_protocol_job_id,
         c.quote, c.price::text AS price_atomic, c.status AS parent_status,
-        c."createdAt" AS created_at, c."updatedAt" AS updated_at,
+        c."createdAt" AS created_at,
+        date_trunc('milliseconds', c."updatedAt") AS updated_at,
         j.erc8183_job_id AS canonical_protocol_job_id, j.state AS canonical_state,
         j.chain_id AS canonical_chain_id, j.payment_token, j.payment_decimals,
         j.expires_at, j.provider_binding, j.refund_transaction_hash,
@@ -279,8 +280,8 @@ export async function listBuyerJobs(
         ORDER BY o.updated_at_unix DESC, o.id DESC LIMIT 1
       ) operation ON TRUE
       WHERE c.buyer_user_id = $1
-        AND ($2::timestamptz IS NULL OR (c."updatedAt", c.id) < ($2::timestamptz, $3::uuid))
-      ORDER BY c."updatedAt" DESC, c.id DESC
+        AND ($2::timestamptz IS NULL OR (date_trunc('milliseconds', c."updatedAt"), c.id) < ($2::timestamptz, $3::uuid))
+      ORDER BY date_trunc('milliseconds', c."updatedAt") DESC, c.id DESC
       LIMIT $4
     `, [buyerUserId, cursor?.updatedAt ?? null, cursor?.id ?? null, query.limit + 1]);
   } catch (cause) {
