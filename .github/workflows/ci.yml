@@ -69,11 +69,10 @@ jobs:
         run: pnpm db:check
       - name: Validate offline release evidence
         run: pnpm evidence:release-check
-      - name: Build and verify production web runtime
+      - name: Verify production web runtime
         shell: bash
         run: |
           set -euo pipefail
-          pnpm --filter @bnbera/web build
           web_log="${RUNNER_TEMP}/bnbera-web.log"
           PORT=3000 pnpm --filter @bnbera/web start >"${web_log}" 2>&1 &
           web_pid=$!
