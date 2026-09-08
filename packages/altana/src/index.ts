@@ -4,3 +4,4 @@ export * from "./policy.ts";
 export * from "./ephemeral-session.ts";
 export * from "./evidence.ts";
 export * from "./lifecycle.ts";
+export * from "./authority.ts";
