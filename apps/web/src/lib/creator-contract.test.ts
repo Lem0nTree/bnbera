@@ -17,7 +17,7 @@ describe("Creator fixed-template boundary", () => {
   it("allows only the pinned ERC-8004 URI lifecycle write", () => {
     expect(creatorTemplate.contractSelectorAllowlist.calls).toContainEqual({ target: creatorLifecycleAction.target, selectors: [creatorLifecycleAction.selector], maxNativeValueWei: "0" });
     expect(creatorLifecycleAction.spends).toEqual([]);
-    expect(creatorTemplate.contractSelectorAllowlist.spend).toEqual([{ token: "native", limitAtomic: "1000000000000000", period: "hour" }]);
+    expect(creatorTemplate.contractSelectorAllowlist.spend).toEqual([{ token: "native", limitAtomic: "2000000000000000", period: "hour" }]);
   });
   it("binds the URI update to its identity and revocation denies the identical action", () => {
     const intent = { agentId: "77", uri: "https://agent.example/77.json" };

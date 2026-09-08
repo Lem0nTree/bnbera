@@ -6,12 +6,11 @@ import { z } from "zod";
 const creatorTemplateSource = {
   slug: "pancakeswap-cake-swap",
   semanticVersion: "1.0.0",
-  category: "health-factor",
+  category: "grid-trading",
   sourceCommit: "creator-fixed-template-v1",
   displayMetadata: {
     title: "Bounded tBNB → CAKE swap agent",
-    description: "A fixed BSC-testnet PancakeSwap V2 swap with optional health-factor monitoring.",
-    audited: true
+    description: "A reviewed fixed BSC-testnet PancakeSwap V2 swap template."
   },
   configurationSchema: {
     type: "object",
@@ -19,12 +18,12 @@ const creatorTemplateSource = {
     required: ["protocol", "refreshMinutes"],
     properties: { protocol: { const: "pancakeswap-v2" }, refreshMinutes: { enum: [5, 15, 30] } }
   },
-  capabilityManifest: { capabilities: ["pancakeswap_v2_exact_native_swap", "health_factor_read"], writeCapabilities: ["pancakeswap_v2_exact_native_swap"] },
+  capabilityManifest: { capabilities: ["pancakeswap_v2_exact_native_swap"], writeCapabilities: ["pancakeswap_v2_exact_native_swap"] },
   protocolManifest: { network: "bsc-testnet", protocols: ["A2A"], delegatedLifecycle: "erc8004_uri_and_fixed_swap" },
   // Exact BSC-testnet ERC-8004 IdentityRegistry `setAgentURI(uint256,string)`
   // lifecycle permission. Target is standards-lock chain 97; selector is from
   // the pinned IdentityRegistry ABI. The health computation remains HTTP-only.
-  contractSelectorAllowlist: { chainId: 97, calls: [{ target: "0x8004a818bfb912233c491871b3d84c89a494bd9e", selectors: ["0x0af28bd3"], maxNativeValueWei: "0" }, { target: "0xd99d1c33f9fc3444f8101754abc46c52416550d1", selectors: ["0x7ff36ab5"], maxNativeValueWei: "1000000000000000" }], spend: [{ token: "native", limitAtomic: "1000000000000000", period: "hour" }], expirySeconds: 3600, intent: "own-agent-uri-or-fixed-swap" }
+  contractSelectorAllowlist: { chainId: 97, calls: [{ target: "0x8004a818bfb912233c491871b3d84c89a494bd9e", selectors: ["0x0af28bd3"], maxNativeValueWei: "0" }, { target: "0xd99d1c33f9fc3444f8101754abc46c52416550d1", selectors: ["0x7ff36ab5"], maxNativeValueWei: "1000000000000000" }], spend: [{ token: "native", limitAtomic: "2000000000000000", period: "hour" }], expirySeconds: 3600, intent: "own-agent-uri-or-fixed-swap" }
 } as const;
 
 /** Immutable digest of the checked-in fixed template; no claimed placeholder. */
