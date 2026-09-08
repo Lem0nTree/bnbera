@@ -52,7 +52,6 @@ export const GREENFIELD_CANDIDATE_STANDARDS_PINS: GreenfieldStandardsPins = {
 };
 
 const transactionHashPattern = /^0x[0-9a-fA-F]{64}$/;
-const privateKeyPattern = /^0x[0-9a-fA-F]{64}$/;
 const bucketPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const objectNamePattern = /^[^\\\u0000-\u001f\u007f]+$/;
 
@@ -291,6 +290,19 @@ function safeMessage(error: unknown): string {
     .replace(/[\r\n\t]+/g, " ")
     .replace(/[^\x20-\x7e]/g, "")
     .slice(0, 500) || "Greenfield provider operation failed";
+}
+
+/** Normalize the secret only in memory to the 0x-prefixed form expected by
+ * the SDK. Neither the raw nor normalized value is persisted or logged. */
+function normalizePrivateKey(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield publisher secret is invalid", false);
+  }
+  const hex = value.startsWith("0x") || value.startsWith("0X") ? value.slice(2) : value;
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
+    throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield publisher secret is invalid", false);
+  }
+  return `0x${hex}`;
 }
 
 function providerFailure(error: unknown, code: "CREATE_FAILED" | "UPLOAD_FAILED" | "PROVIDER_FAILED"): PublicationProviderError {
@@ -1041,12 +1053,9 @@ export class GreenfieldSdkPublisher implements GreenfieldPublisher {
     const endpoint = await this.resolveEndpoint();
     let privateKey: string;
     try {
-      privateKey = await this.options.loadSecret(this.options.keyReference);
+      privateKey = normalizePrivateKey(await this.options.loadSecret(this.options.keyReference));
     } catch (error) {
       throw providerFailure(error, "PROVIDER_FAILED");
-    }
-    if (!privateKeyPattern.test(privateKey)) {
-      throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield publisher secret is not a private-key reference value", false);
     }
     try {
       const uploadParams: UnknownRecord = {
@@ -1100,12 +1109,9 @@ export class GreenfieldSdkPublisher implements GreenfieldPublisher {
     const endpoint = await this.resolveEndpoint();
     let privateKey: string;
     try {
-      privateKey = await this.options.loadSecret(this.options.keyReference);
+      privateKey = normalizePrivateKey(await this.options.loadSecret(this.options.keyReference));
     } catch (error) {
       throw providerFailure(error, "PROVIDER_FAILED");
-    }
-    if (!privateKeyPattern.test(privateKey)) {
-      throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield publisher secret is not a private-key reference value", false);
     }
     try {
       const response = await this.client.object.getObject(
@@ -1228,12 +1234,9 @@ export class GreenfieldSdkPublisher implements GreenfieldPublisher {
     }
     let privateKey: string;
     try {
-      privateKey = await this.options.loadSecret(this.options.keyReference);
+      privateKey = normalizePrivateKey(await this.options.loadSecret(this.options.keyReference));
     } catch (error) {
       throw providerFailure(error, "PROVIDER_FAILED");
-    }
-    if (!privateKeyPattern.test(privateKey)) {
-      throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield publisher secret is not a private-key reference value", false);
     }
     return {
       denom: configured?.denom ?? "BNB",

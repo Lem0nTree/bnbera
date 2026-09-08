@@ -11,8 +11,15 @@ const createHash = `0x${"1".repeat(64)}`;
 const sealHash = `0x${"2".repeat(64)}`;
 const privateKey = `0x${"3".repeat(64)}`;
 
-function sdkFixture(options: { readonly unknownCreate?: boolean; readonly providerFailure?: boolean; readonly malformedMetadata?: boolean; readonly metadataDelay?: number } = {}) {
+function sdkFixture(options: {
+  readonly unknownCreate?: boolean;
+  readonly providerFailure?: boolean;
+  readonly malformedMetadata?: boolean;
+  readonly metadataDelay?: number;
+  readonly privateKeyValue?: string;
+} = {}) {
   const bytes = new TextEncoder().encode("canonical bytes");
+  const configuredPrivateKey = options.privateKeyValue ?? privateKey;
   let objectExists = false;
   let sealed = false;
   let createCalls = 0;
@@ -30,7 +37,7 @@ function sdkFixture(options: { readonly unknownCreate?: boolean; readonly provid
           simulate: async () => ({ gasLimit: 100n, gasPrice: "1" }),
           broadcast: async (params: Record<string, unknown>) => {
             broadcastCalls += 1;
-            expect(params.privateKey).toBe(privateKey);
+            expect(params.privateKey).toBe(`0x${configuredPrivateKey.replace(/^0x/i, "")}`);
             objectExists = true;
             if (options.unknownCreate) throw new Error("connection closed after broadcast");
             return { code: 0, txhash: createHash };
@@ -69,7 +76,7 @@ function sdkFixture(options: { readonly unknownCreate?: boolean; readonly provid
         };
       },
       getObject: async (_params: Record<string, unknown>, auth: Record<string, unknown>) => {
-        expect(auth.privateKey).toBe(privateKey);
+        expect(auth.privateKey).toBe(`0x${configuredPrivateKey.replace(/^0x/i, "")}`);
         return { code: 0, statusCode: 200, body: new Blob([bytes]) };
         }
       },
@@ -85,7 +92,7 @@ function sdkFixture(options: { readonly unknownCreate?: boolean; readonly provid
     keyReference: "GREENFIELD_PUBLISHER_PRIVATE_KEY",
     loadSecret: (reference) => {
       expect(reference).toBe("GREENFIELD_PUBLISHER_PRIVATE_KEY");
-      return privateKey;
+      return configuredPrivateKey;
     },
     sdkModule: {
       Client: { create: () => client },
@@ -123,9 +130,11 @@ function bucketSdkFixture(options: {
   readonly malformedSp?: boolean;
   readonly spNotFound?: boolean;
   readonly headError?: "no-such-bucket" | "timeout";
+  readonly privateKeyValue?: string;
 } = {}) {
   const creator = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const operator = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const configuredPrivateKey = options.privateKeyValue ?? privateKey;
   const bytes = new TextEncoder().encode("unused");
   let bucketExists = options.bucketExists ?? false;
   let delayedIndexPolls = 0;
@@ -232,7 +241,7 @@ function bucketSdkFixture(options: {
     bucket: "greenfield-test",
     creator,
     keyReference: "GREENFIELD_PUBLISHER_PRIVATE_KEY",
-    loadSecret: () => privateKey,
+    loadSecret: () => configuredPrivateKey,
     sdkModule: {
       Client: { create: () => client },
       Long: { fromString: (value) => ({ toString: () => value }) },
@@ -279,6 +288,52 @@ describe("official Greenfield SDK adapter boundary", () => {
     expect(await fixture.publisher.waitForSeal({ objectReference: created.objectReference!, attempt: 1 })).toEqual({ status: "sealed", sealTransactionHash: sealHash });
     expect(await fixture.publisher.readObject({ objectReference: created.objectReference! })).toEqual(fixture.bytes);
     expect(fixture.counts()).toEqual({ createCalls: 1, uploadCalls: 1, broadcastCalls: 1 });
+  });
+
+  it("normalizes a bare private key for object create, upload, and readback", async () => {
+    const fixture = sdkFixture({ privateKeyValue: "4".repeat(64) });
+    const objectName = "evidence/hackathon/agent_profile/agent-1/versions/1/agent_profile.json";
+    const created = await fixture.publisher.createObject({
+      objectName,
+      sizeBytes: fixture.bytes.byteLength,
+      mimeType: "application/json",
+      canonicalBytes: fixture.bytes
+    });
+    await fixture.publisher.uploadObject({
+      bytes: fixture.bytes,
+      objectName,
+      sha256Digest: "a".repeat(64),
+      keccak256Digest: "b".repeat(64),
+      sizeBytes: fixture.bytes.byteLength,
+      mimeType: "application/json",
+      objectReference: created.objectReference!,
+      creationTransactionHash: created.creationTransactionHash
+    });
+    fixture.seal();
+    await fixture.publisher.waitForSeal({ objectReference: created.objectReference!, attempt: 1 });
+    await fixture.publisher.readObject({ objectReference: created.objectReference! });
+    expect(fixture.counts()).toEqual({ createCalls: 1, uploadCalls: 1, broadcastCalls: 1 });
+  });
+
+  it.each([
+    "",
+    "0x",
+    "0x" + "a".repeat(63),
+    "0x" + "a".repeat(65),
+    "g".repeat(64),
+    "0x" + "a".repeat(64) + "\n"
+  ])("rejects a private key that is not exactly 64 hex characters (%s)", async (invalidPrivateKey) => {
+    const fixture = sdkFixture({ privateKeyValue: invalidPrivateKey });
+    await expect(fixture.publisher.uploadObject({
+      bytes: fixture.bytes,
+      objectName: "evidence/x",
+      sha256Digest: "a".repeat(64),
+      keccak256Digest: "b".repeat(64),
+      sizeBytes: fixture.bytes.byteLength,
+      mimeType: "application/json",
+      objectReference: "greenfield-test/evidence/x"
+    })).rejects.toMatchObject({ code: "PROVIDER_FAILED" });
+    expect(fixture.counts().uploadCalls).toBe(0);
   });
 
   it("recovers an unknown create outcome and does not submit a duplicate", async () => {
@@ -359,6 +414,13 @@ describe("official Greenfield SDK adapter boundary", () => {
     expect(fixture.simulation()).toEqual({ denom: "BNB" });
     expect(fixture.broadcast()).toMatchObject({ privateKey });
     expect(fixture.counts()).toMatchObject({ headCalls: 1, createCalls: 1, simulateCalls: 1, broadcastCalls: 1 });
+  });
+
+  it("normalizes a bare private key before sending the bucket transaction", async () => {
+    const barePrivateKey = "4".repeat(64);
+    const fixture = bucketSdkFixture({ privateKeyValue: barePrivateKey });
+    await expect(fixture.publisher.ensureCanaryBucket()).resolves.toMatchObject({ status: "created" });
+    expect(fixture.broadcast()).toMatchObject({ privateKey: `0x${barePrivateKey}` });
   });
 
   it("does not rebroadcast an unknown bucket create while indexing is delayed", async () => {
