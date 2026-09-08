@@ -1,15 +1,17 @@
 # BNBEra MVP status
 
-Updated: `2026-09-08` (current documentation baseline at merged `main` `8ab4692620278c73904c1c012204e8ba4707e719`)
+Updated: `2026-09-08` (current documentation baseline at merged `main` `e5a25362625209368712ba63dbcb499d67390a1b`)
 
 ## Current audited state — merged main
 
 This section is the current source of truth for the reconciled checkout. GitHub
-`main` is `8ab4692620278c73904c1c012204e8ba4707e719`, and PRs #20–#29 are
-merged. PR #29 reconciled the active documents; it did not rerun or relabel the
-earlier canary evidence. Those merges include the T5 WalletConnect-only EOA/SIWE buyer boundary,
-sequential ERC-8183 commerce implementation, refund-projection repair, and the
-completed active T6/T7 Creator path. Both PR #28 validation runs succeeded.
+`main` is `e5a25362625209368712ba63dbcb499d67390a1b`; the prior reconciled
+PRs #20–#29 remain merged and PR #33 adds the final T8 listing-assembly fix.
+PR #29 reconciled the active documents; PR #33 also reran the local app/API
+smoke described below. Those merges include the T5 WalletConnect-only EOA/SIWE
+buyer boundary, sequential ERC-8183 commerce implementation, refund-projection
+repair, and the completed active T6/T7 Creator path. Both PR #28 validation
+runs and PR #33 CI succeeded.
 
 ### Current gate result
 
@@ -18,8 +20,45 @@ completed active T6/T7 Creator path. Both PR #28 validation runs succeeded.
 | G1 persistent marketplace | Retained/local scope only | T1–T3 discovery, enrichment, category, vector, publication, API/SSR, restart and freshness evidence remains accepted for the retained/local scope. No stable public HTTPS/deployed-browser claim is made. |
 | G2 paid hiring | Pending interactive WalletConnect browser acceptance | The merged T5 implementation and authorized operator EOA canary provide live chain evidence for agent 2206, including useful health-factor work, paid cycle `job1103`, settlement and a verified-purchase review. The operator harness is not interactive WalletConnect pairing, browser SIWE/session binding or browser recovery acceptance. |
 | G3 Creator | Completed (active documented scope; temporary Studio trial) | Browser grant/revoke, tBNB→BUSD Creator deployment/registration, exact identity reconciliation, pre-Studio denial and publication/category/vector follow-through are evidenced below. This does not claim G2 WalletConnect browser acceptance. |
-| G4 Greenfield | Pending final app walkthrough | T8 bucket/object/readback canary passed; final API/detail and public walkthrough remain. |
+| G4 Greenfield | Completed (testnet/local API-detail scope; public walkthrough pending) | T8 bucket/object/readback plus final local API/detail links passed for agent 2206. A stable deployed origin and browser walkthrough remain T9 work; this is not a deployment or browser-acceptance claim. |
 | ERC-8183 release | Disabled | The standards-lock `releaseEnabled` value remains `false`; the quick tunnel and operator canary are development evidence only. |
+
+## T8 final local app/API smoke (2026-09-08)
+
+Status: Completed for the Greenfield testnet canary and the local API/detail
+runtime. The retained PostgreSQL database was read-only; no retained data was
+edited. This closes the demonstrated testnet/local portion of G4. It does not
+claim a public deployment, deployed-browser acceptance or production/mainnet
+release; `releaseEnabled=false` remains unchanged.
+
+The exact marketplace identity is
+`eip155:97:0x8004a818bfb912233c491871b3d84c89a494bd9e:2206`. The final local
+API returned the collision-safe slug `studio-agent-2a6e16a7e8`, current version
+`14`, the historical version-11 profile/run bundle, one completed job and the
+confirmed settlement reference
+`0x8f580a37cb22ec2f5c19c78cb9f3371caee02426e60c499bd9b18064ede3f26f`. The
+detail route rendered the historical label and both exact-version Greenfield
+links. The colliding slugs stayed identity-safe: `studio-agent` resolved to
+agent `2056`, while `studio-agent-2a6e16a7e8` resolved to agent `2206`.
+
+| Artifact | Exact public readback | SHA-256 |
+| --- | --- | --- |
+| Profile, agent `2206`, version `11` | `https://gnfd-testnet-sp1.bnbchain.org/view/bnbera-t8-230072625f8090d5271c5f882748ce11134ac2ba/evidence/hackathon/agent_profile/agent-2206/versions/11/agent_profile.json` | `69e0294f83908f355a1a883c98768b52786a3f88439cf6f02fcd5b63e70279d8` |
+| Run bundle, protocol job `1103`, version `11` | `https://gnfd-testnet-sp1.bnbchain.org/view/bnbera-t8-230072625f8090d5271c5f882748ce11134ac2ba/evidence/hackathon/run_bundle/run-b5a033ff-f4a9-5622-97c6-d0594a501db8/versions/11/run_bundle.json` | `12cba7d6a989d2603a525bb4965d84fe5bff4569f106a0ce3decb84d56e24446` |
+
+Both objects were independently read back with matching hashes and status
+`verified`. Greenfield returned an all-zero seal transaction field; the app
+normalizes that to unavailable and makes no fabricated seal-hash claim. PR #33
+(`2997d1e073c1573c9ea8f2270bca43b7e06b4449`, merged in `e5a2536`) fixed the
+listing assembler's exact failure: the commerce deliverable data URL exceeded
+the 500-character marketplace reference bound, so the listing was withheld;
+the MVP-safe fallback uses the confirmed settlement transaction hash instead.
+Marketplace tests passed `48/48`, web tests `164/164`, and PR #33 CI passed.
+
+Next task is T9: secure the authorized stable deployment, run the deployed
+browser/public walkthrough and complete the remaining G2/category/comparison
+submission evidence. No production/mainnet write or release enablement is
+authorized by this local smoke.
 
 ### T5 implementation and operator EOA evidence
 
@@ -108,10 +147,10 @@ Studio trial temporary and keep G2's separate WalletConnect browser gate and
 | Public runtime | Local retained cron/API/SSR evidence and temporary tunnels exist. | Stable public HTTPS deployment, immutable SHA/cron alignment and deployed-browser walkthrough. |
 | Network decision | Chain-97 canaries are evidenced; chain-56 ERC-8004 reads are pinned. | Organizer-acceptable chain-56/97 submission decision; no unapproved mainnet writes. |
 | Agent Advantage | Requirement and measurement shape are documented. | Three paired comparisons, including one trading, stock/equities or security task. |
-| Greenfield | Testnet bucket 25041 plus historical version-11 profile and settled job-1103 bundle are public, persisted and independently hash-matched; replay is idempotent. | Capture both exact-version links through the final API/detail runtime. Zero seal hashes remain hidden as unavailable. |
+| Greenfield | Testnet bucket 25041 plus historical version-11 profile and settled job-1103 bundle are public, persisted and independently hash-matched; replay is idempotent; the final local API/detail runtime displayed both exact-version links. | Stable public deployment and deployed-browser walkthrough remain T9 work. Zero seal hashes remain hidden as unavailable. |
 
-Next delivery order: implement T8's bounded Greenfield publication, then use T9
-to complete stable deployment, the deferred G2 browser acceptance, current
+Next delivery order: preserve the completed T8 testnet/local evidence, then use
+T9 to complete stable deployment, the deferred G2 browser acceptance, current
 four-category checks, comparisons and submission evidence.
 
 ## Historical retained/local snapshots
