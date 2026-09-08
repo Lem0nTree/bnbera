@@ -19,10 +19,14 @@ export const GREENFIELD_SDK_PACKAGE = "@bnb-chain/greenfield-js-sdk" as const;
 export const GREENFIELD_SDK_VERSION = "2.2.0" as const;
 export const GREENFIELD_REED_SOLOMON_PACKAGE = "@bnb-chain/reed-solomon" as const;
 export const GREENFIELD_REED_SOLOMON_VERSION = "1.1.4" as const;
+/** Zero additional charged read quota keeps the one-off public canary bounded. */
+export const GREENFIELD_CANARY_CHARGED_READ_QUOTA = "0" as const;
 
 export interface GreenfieldStorageProviderPin {
   readonly providerLabel: string;
   readonly endpoint: string;
+  /** Standards-lock SP operator address used in the bucket create message. */
+  readonly operatorAddress: string;
   readonly publicReadBaseUrls?: readonly string[];
 }
 
@@ -67,8 +71,18 @@ interface GreenfieldSdkObjectApi {
   readonly headObject?: (bucketName: string, objectName: string) => Promise<UnknownRecord>;
 }
 
+interface GreenfieldSdkBucketApi {
+  /** Official SDK shape: createBucket returns a simulate/broadcast tx object. */
+  readonly createBucket: (message: UnknownRecord) => Promise<GreenfieldSdkTxResponse>;
+  /** Official SDK query shape: headBucket receives the bucket name directly. */
+  readonly headBucket: (bucketName: string) => Promise<UnknownRecord>;
+  /** SP metadata includes the operator address used to bind a bucket to its SP. */
+  readonly getBucketMeta?: (params: UnknownRecord) => Promise<UnknownRecord>;
+}
+
 interface GreenfieldSdkClient {
   readonly object: GreenfieldSdkObjectApi;
+  readonly bucket?: GreenfieldSdkBucketApi;
   readonly sp?: { readonly getSPUrlByBucket?: (bucketName: string) => Promise<string> };
 }
 
@@ -126,6 +140,15 @@ export interface GreenfieldPublicUriOptions {
   readonly baseUrl: string;
   readonly bucket: string;
   readonly objectName: string;
+}
+
+export interface GreenfieldBucketEnsureReceipt {
+  readonly status: "reused" | "created" | "unknown";
+  readonly bucketName: string;
+  readonly owner: string;
+  readonly primarySpAddress: string;
+  readonly visibility: "public-read";
+  readonly creationTransactionHash: string | null;
 }
 
 /**
@@ -208,12 +231,18 @@ function validateStandardsPins(options: GreenfieldSdkPublisherOptions): readonly
   ) {
     throw new PublicationProviderError("UNSUPPORTED_PROVIDER", "Greenfield runtime does not match standards pins", false);
   }
-  const providers = pins.storageProviders.map((provider) => ({
-    ...provider,
-    providerLabel: provider.providerLabel.trim(),
-    endpoint: canonicalHttpsUrl(provider.endpoint, "storage provider endpoint"),
-    publicReadBaseUrls: (provider.publicReadBaseUrls ?? []).map((url) => canonicalHttpsUrl(url, "public read URL"))
-  }));
+  const providers = pins.storageProviders.map((provider) => {
+    if (provider.providerLabel.trim().length === 0 || !/^0x[0-9a-fA-F]{40}$/.test(provider.operatorAddress.trim())) {
+      throw new PublicationProviderError("UNSUPPORTED_PROVIDER", "Greenfield storage provider pin is incomplete", false);
+    }
+    return {
+      ...provider,
+      providerLabel: provider.providerLabel.trim(),
+      endpoint: canonicalHttpsUrl(provider.endpoint, "storage provider endpoint"),
+      operatorAddress: provider.operatorAddress.trim().toLowerCase(),
+      publicReadBaseUrls: (provider.publicReadBaseUrls ?? []).map((url) => canonicalHttpsUrl(url, "public read URL"))
+    };
+  });
   const publicReadUrls = pins.publicReadBaseUrls.map((url) => canonicalHttpsUrl(url, "public read URL"));
   const allowedPublic = new Set([...publicReadUrls, ...providers.flatMap((provider) => provider.publicReadBaseUrls ?? [])]);
   if (options.spEndpoint !== undefined) {
@@ -309,6 +338,14 @@ function canonicalLong(sdk: GreenfieldSdkModule, value: number): unknown {
   return { toNumber: () => value, toString: () => String(value), low: value, high: 0, unsigned: true };
 }
 
+function canonicalLongString(sdk: GreenfieldSdkModule, value: string): unknown {
+  const fromString = sdk.Long?.fromString;
+  if (fromString !== undefined) return fromString(value);
+  const numeric = Number(value);
+  if (Number.isSafeInteger(numeric) && numeric >= 0) return canonicalLong(sdk, numeric);
+  throw new PublicationProviderError("CREATE_FAILED", "Greenfield bucket quota is not representable", false);
+}
+
 function enumValue(values: UnknownRecord | undefined, name: string, fallback: number): number {
   const value = values?.[name];
   return typeof value === "number" ? value : fallback;
@@ -376,12 +413,52 @@ function responseCode(response: UnknownRecord): number {
 }
 
 function responseStatus(response: UnknownRecord): number | null {
-  const value = response.statusCode;
-  return typeof value === "number" ? value : null;
+  return numericField(response.statusCode);
 }
 
 function hashOrNull(value: unknown): string | null {
   return typeof value === "string" && transactionHashPattern.test(value) ? value.toLowerCase() : null;
+}
+
+function transactionHashFromResponse(response: UnknownRecord): string | null {
+  return hashOrNull(response.txhash ?? response.txHash ?? response.transactionHash);
+}
+
+function firstField(source: UnknownRecord | null, ...names: string[]): unknown {
+  if (source === null) return undefined;
+  for (const name of names) {
+    if (source[name] !== undefined) return source[name];
+  }
+  return undefined;
+}
+
+function recordValue(value: unknown): UnknownRecord | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as UnknownRecord;
+}
+
+function notFoundError(error: unknown): boolean {
+  const source = recordValue(error);
+  const response = recordValue(source?.response);
+  const status = numericField(
+    source?.statusCode ?? source?.status ?? source?.code ?? response?.statusCode ?? response?.status ?? response?.code
+  );
+  if (status === 404) return true;
+  const message = error instanceof Error ? error.message : typeof source?.message === "string" ? source.message : "";
+  return /(?:\b404\b|not[ -]?found|does not exist)/i.test(message);
+}
+
+function publicReadVisibility(value: unknown): boolean {
+  if (numericField(value) === 1 || value === "VISIBILITY_TYPE_PUBLIC_READ" || value === "PUBLIC_READ" || value === "public-read") {
+    return true;
+  }
+  return false;
+}
+
+function createdBucketStatus(value: unknown): boolean {
+  const numeric = numericField(value);
+  if (numeric !== null) return numeric === 0;
+  return typeof value === "string" && /^(?:BUCKET_STATUS_)?CREATED$/i.test(value.trim());
 }
 
 function metadataObject(response: UnknownRecord): UnknownRecord | null {
@@ -412,6 +489,37 @@ function checksumList(value: unknown): string[] {
   return typeof value === "string" && value.length > 0 ? [value] : [];
 }
 
+function bucketInfoFromResponse(response: UnknownRecord): UnknownRecord | null {
+  const direct = recordValue(firstField(response, "bucketInfo", "BucketInfo", "bucket_info"));
+  if (direct !== null) return direct;
+  const body = recordValue(response.body);
+  const bodyInfo = recordValue(firstField(body, "bucketInfo", "BucketInfo", "bucket_info"));
+  if (bodyInfo !== null) return bodyInfo;
+  const bodyEnvelope = recordValue(firstField(body, "QueryHeadBucketResponse", "queryHeadBucketResponse"));
+  const envelopeInfo = recordValue(firstField(bodyEnvelope, "bucketInfo", "BucketInfo", "bucket_info"));
+  if (envelopeInfo !== null) return envelopeInfo;
+  // Structural test doubles may return BucketInfo directly. Only accept it
+  // when a canonical field is present; an empty HTTP-200 response is malformed.
+  if (firstField(response, "owner", "Owner", "bucketName", "BucketName", "bucket_name") !== undefined) return response;
+  if (body !== null && firstField(body, "owner", "Owner", "bucketName", "BucketName", "bucket_name") !== undefined) return body;
+  return null;
+}
+
+function bucketMetaFromResponse(response: UnknownRecord): UnknownRecord | null {
+  const body = recordValue(response.body);
+  if (body === null) return null;
+  const envelope = recordValue(firstField(body, "GfSpGetBucketMetaResponse", "gfSpGetBucketMetaResponse"));
+  const envelopeBucket = recordValue(firstField(envelope, "Bucket", "bucket", "BucketMeta", "bucketMeta"));
+  if (envelopeBucket !== null) return envelopeBucket;
+  const nested = recordValue(firstField(body, "Bucket", "bucket", "BucketMeta", "bucketMeta"));
+  return nested ?? body;
+}
+
+interface GreenfieldBucketInspection {
+  readonly status: "missing" | "present" | "unknown";
+  readonly creationTransactionHash: string | null;
+}
+
 /**
  * Real Node adapter for the official Greenfield JS SDK. SDK and Reed-Solomon
  * packages are loaded dynamically so the provider remains disabled when the
@@ -422,6 +530,9 @@ export class GreenfieldSdkPublisher implements GreenfieldPublisher {
   private readonly client: GreenfieldSdkClient;
   private readonly providerPins: readonly GreenfieldStorageProviderPin[];
   private readonly options: GreenfieldSdkPublisherOptions;
+  /** An unknown broadcast is retry-disabled for this adapter instance until
+   * a later reconciliation observes the exact bucket. */
+  private canaryBucketUnknown = false;
 
   constructor(options: GreenfieldSdkPublisherOptions) {
     if (options.network !== GREENFIELD_TESTNET_NETWORK) {
@@ -476,6 +587,216 @@ export class GreenfieldSdkPublisher implements GreenfieldPublisher {
   publicHttpsUri(objectName: string): string | null {
     const baseUrl = this.options.publicBaseUrl;
     return baseUrl === undefined ? null : greenfieldPublicHttpsUri({ baseUrl, bucket: this.options.bucket, objectName });
+  }
+
+  /**
+   * Ensure the one configured public-read canary bucket exists. This is the
+   * only bucket mutation exposed by the adapter; all other bucket management
+   * remains outside the T8 boundary.
+   */
+  async ensureCanaryBucket(): Promise<GreenfieldBucketEnsureReceipt> {
+    const provider = this.bucketProviderPin();
+    const inspected = await this.inspectCanaryBucket(provider);
+    if (inspected.status === "present") {
+      this.canaryBucketUnknown = false;
+      return this.bucketReceipt("reused", inspected.creationTransactionHash, provider);
+    }
+    // A query failure is not proof that a previous create failed. Do not
+    // create while the chain/SP state is indeterminate, and never rebroadcast
+    // in the same invocation after an unknown broadcast.
+    if (inspected.status === "unknown") {
+      return this.bucketReceipt("unknown", null, provider);
+    }
+    if (this.canaryBucketUnknown) {
+      return this.bucketReceipt("unknown", null, provider);
+    }
+
+    const bucketApi = this.client.bucket;
+    if (bucketApi?.createBucket === undefined) {
+      throw new PublicationProviderError("UNSUPPORTED_PROVIDER", "Official Greenfield bucket API is unavailable", false);
+    }
+    const message: UnknownRecord = {
+      bucketName: this.options.bucket,
+      creator: this.options.creator,
+      visibility: enumValue(this.sdk.VisibilityType, "VISIBILITY_TYPE_PUBLIC_READ", 1),
+      chargedReadQuota: canonicalLongString(this.sdk, GREENFIELD_CANARY_CHARGED_READ_QUOTA),
+      primarySpAddress: provider.operatorAddress,
+      paymentAddress: this.options.creator
+    };
+
+    let tx: GreenfieldSdkTxResponse;
+    try {
+      tx = await bucketApi.createBucket.call(bucketApi, message);
+    } catch (error) {
+      throw providerFailure(error, "CREATE_FAILED");
+    }
+    if (tx.simulate === undefined) {
+      throw new PublicationProviderError("UNSUPPORTED_PROVIDER", "Greenfield bucket transaction cannot be simulated", false);
+    }
+    let simulation: UnknownRecord;
+    try {
+      simulation = await tx.simulate({ denom: this.options.transaction?.denom ?? "BNB" });
+    } catch (error) {
+      throw providerFailure(error, "CREATE_FAILED");
+    }
+    let broadcastOptions: UnknownRecord;
+    try {
+      broadcastOptions = await this.broadcastOptions(simulation);
+    } catch (error) {
+      throw providerFailure(error, "CREATE_FAILED");
+    }
+
+    let result: UnknownRecord;
+    try {
+      result = await tx.broadcast(broadcastOptions);
+    } catch {
+      this.canaryBucketUnknown = true;
+      return this.reconcileCanaryBucket(provider);
+    }
+    if (responseCode(result) !== 0) {
+      throw new PublicationProviderError("CREATE_FAILED", "Greenfield bucket creation transaction was rejected", false);
+    }
+    const creationTransactionHash = transactionHashFromResponse(result);
+    if (creationTransactionHash === null) {
+      this.canaryBucketUnknown = true;
+      return this.reconcileCanaryBucket(provider);
+    }
+    this.canaryBucketUnknown = false;
+    return this.bucketReceipt("created", creationTransactionHash, provider);
+  }
+
+  private bucketProviderPin(): GreenfieldStorageProviderPin {
+    if (this.providerPins.length === 0) {
+      throw new PublicationProviderError("UNSUPPORTED_PROVIDER", "Greenfield storage provider pins are unavailable", false);
+    }
+    const endpoint = this.options.spEndpoint === undefined
+      ? null
+      : canonicalHttpsUrl(this.options.spEndpoint, "storage provider endpoint");
+    const label = this.options.providerLabel?.trim() ?? null;
+    const candidates = this.providerPins.filter((provider) =>
+      (endpoint === null || provider.endpoint === endpoint) && (label === null || provider.providerLabel === label)
+    );
+    if (candidates.length !== 1) {
+      throw new PublicationProviderError("UNSUPPORTED_PROVIDER", "Greenfield canary storage provider selection is ambiguous", false);
+    }
+    return candidates[0] as GreenfieldStorageProviderPin;
+  }
+
+  private bucketReceipt(
+    status: GreenfieldBucketEnsureReceipt["status"],
+    creationTransactionHash: string | null,
+    provider: GreenfieldStorageProviderPin
+  ): GreenfieldBucketEnsureReceipt {
+    return {
+      status,
+      bucketName: this.options.bucket,
+      owner: this.options.creator,
+      primarySpAddress: provider.operatorAddress,
+      visibility: "public-read",
+      creationTransactionHash
+    };
+  }
+
+  private async reconcileCanaryBucket(provider: GreenfieldStorageProviderPin): Promise<GreenfieldBucketEnsureReceipt> {
+    const inspected = await this.inspectCanaryBucket(provider);
+    if (inspected.status === "present") {
+      this.canaryBucketUnknown = false;
+      return this.bucketReceipt("reused", inspected.creationTransactionHash, provider);
+    }
+    // Missing/unknown after a broadcast is durable UNKNOWN for this adapter
+    // instance. A caller may reconcile again, but this method never retries
+    // the mutation without observing the matching bucket first.
+    return this.bucketReceipt("unknown", null, provider);
+  }
+
+  private async inspectCanaryBucket(provider: GreenfieldStorageProviderPin): Promise<GreenfieldBucketInspection> {
+    const bucketApi = this.client.bucket;
+    if (bucketApi?.headBucket === undefined) {
+      throw new PublicationProviderError("UNSUPPORTED_PROVIDER", "Official Greenfield bucket query API is unavailable", false);
+    }
+
+    let response: UnknownRecord;
+    try {
+      response = await bucketApi.headBucket.call(bucketApi, this.options.bucket);
+    } catch (error) {
+      if (notFoundError(error)) return { status: "missing", creationTransactionHash: null };
+      return { status: "unknown", creationTransactionHash: null };
+    }
+    const status = responseStatus(response);
+    const code = responseCode(response);
+    if (status === 404 || code === 404) return { status: "missing", creationTransactionHash: null };
+    if (status !== null && status >= 400 || code !== 0) return { status: "unknown", creationTransactionHash: null };
+    const info = bucketInfoFromResponse(response);
+    if (info === null) {
+      throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield bucket metadata response was malformed", false);
+    }
+    const bucketName = stringField(firstField(info, "bucketName", "BucketName", "bucket_name"));
+    const owner = stringField(firstField(info, "owner", "Owner", "creator", "Creator"));
+    const visibility = firstField(info, "visibility", "Visibility", "bucketVisibility", "bucket_visibility");
+    if (bucketName === null || owner === null || visibility === undefined) {
+      throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield bucket metadata response was incomplete", false);
+    }
+    if (bucketName !== this.options.bucket) {
+      throw new PublicationProviderError("DURABLE_GRAPH_INVALID", "Greenfield bucket name does not match the configured canary", false);
+    }
+    if (owner.toLowerCase() !== this.options.creator.toLowerCase()) {
+      throw new PublicationProviderError("DURABLE_GRAPH_INVALID", "Greenfield canary bucket belongs to a different owner", false);
+    }
+    if (!publicReadVisibility(visibility)) {
+      throw new PublicationProviderError("DURABLE_GRAPH_INVALID", "Greenfield canary bucket is not public-read", false);
+    }
+    const bucketStatus = firstField(info, "bucketStatus", "BucketStatus", "bucket_status", "status");
+    if (bucketStatus !== undefined && !createdBucketStatus(bucketStatus)) {
+      throw new PublicationProviderError("DURABLE_GRAPH_INVALID", "Greenfield canary bucket is not in the created state", false);
+    }
+    const paymentAddress = stringField(firstField(info, "paymentAddress", "PaymentAddress", "payment_address"));
+    if (paymentAddress !== null && paymentAddress.toLowerCase() !== this.options.creator.toLowerCase()) {
+      throw new PublicationProviderError("DURABLE_GRAPH_INVALID", "Greenfield canary bucket payment address differs", false);
+    }
+
+    let operator = stringField(firstField(info, "operator", "Operator", "primarySpAddress", "PrimarySpAddress", "primary_sp_address"));
+    let creationTransactionHash = hashOrNull(firstField(info, "createTxHash", "CreateTxHash", "create_tx_hash"));
+    if (operator === null) {
+      const getBucketMeta = bucketApi.getBucketMeta;
+      if (getBucketMeta === undefined) {
+        throw new PublicationProviderError("UNSUPPORTED_PROVIDER", "Greenfield SP bucket metadata API is unavailable", false);
+      }
+      let metaResponse: UnknownRecord;
+      try {
+        metaResponse = await getBucketMeta.call(bucketApi, {
+          bucketName: this.options.bucket,
+          endpoint: provider.endpoint
+        });
+      } catch {
+        // An SP 404 or transient error does not prove the chain bucket is
+        // absent; keep creation blocked until a later reconciliation.
+        return { status: "unknown", creationTransactionHash: null };
+      }
+      const metaStatus = responseStatus(metaResponse);
+      const metaCode = responseCode(metaResponse);
+      if (metaStatus === 404 || metaCode === 404 || (metaStatus !== null && metaStatus >= 400) || metaCode !== 0) {
+        return { status: "unknown", creationTransactionHash: null };
+      }
+      const metadata = bucketMetaFromResponse(metaResponse);
+      if (metadata === null) {
+        throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield bucket metadata response was malformed", false);
+      }
+      operator = stringField(firstField(metadata, "operator", "Operator", "primarySpAddress", "PrimarySpAddress", "primary_sp_address"));
+      const createValue = firstField(metadata, "createTxHash", "CreateTxHash", "create_tx_hash");
+      if (createValue !== undefined && createValue !== "") {
+        creationTransactionHash = hashOrNull(createValue);
+        if (creationTransactionHash === null) {
+          throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield bucket create transaction hash was malformed", false);
+        }
+      }
+    }
+    if (operator === null || !/^0x[0-9a-fA-F]{40}$/.test(operator)) {
+      throw new PublicationProviderError("PROVIDER_FAILED", "Greenfield bucket SP operator metadata was malformed", false);
+    }
+    if (operator.toLowerCase() !== provider.operatorAddress.toLowerCase()) {
+      throw new PublicationProviderError("DURABLE_GRAPH_INVALID", "Greenfield canary bucket SP differs from the pinned operator", false);
+    }
+    return { status: "present", creationTransactionHash };
   }
 
   async inspectObject(input: {

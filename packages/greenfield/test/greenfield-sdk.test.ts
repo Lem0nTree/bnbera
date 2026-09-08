@@ -94,7 +94,11 @@ function sdkFixture(options: { readonly unknownCreate?: boolean; readonly provid
     sdkClient: client,
     standardsPins: {
       ...GREENFIELD_CANDIDATE_STANDARDS_PINS,
-      storageProviders: [{ providerLabel: "test-sp", endpoint: "https://sp.example" }]
+      storageProviders: [{
+        providerLabel: "test-sp",
+        endpoint: "https://sp.example",
+        operatorAddress: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }]
     },
     reedSolomonModule: {
       ReedSolomon: class {
@@ -106,6 +110,141 @@ function sdkFixture(options: { readonly unknownCreate?: boolean; readonly provid
     spEndpoint: "https://sp.example"
   });
   return { publisher, bytes, counts: () => ({ createCalls, uploadCalls, broadcastCalls }), createMessage: () => seenCreateMessage, upload: () => seenUpload, seal: () => { sealed = true; } };
+}
+
+type BucketMismatch = "owner" | "sp" | "visibility" | "payment";
+
+function bucketSdkFixture(options: {
+  readonly bucketExists?: boolean;
+  readonly unknownBroadcast?: boolean;
+  readonly delayedIndexPolls?: number;
+  readonly mismatch?: BucketMismatch;
+  readonly malformedHead?: boolean;
+  readonly malformedSp?: boolean;
+  readonly spNotFound?: boolean;
+} = {}) {
+  const creator = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const operator = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const bytes = new TextEncoder().encode("unused");
+  let bucketExists = options.bucketExists ?? false;
+  let delayedIndexPolls = 0;
+  let headCalls = 0;
+  let metaCalls = 0;
+  let createCalls = 0;
+  let simulateCalls = 0;
+  let broadcastCalls = 0;
+  let seenCreateMessage: Record<string, unknown> | null = null;
+  let seenSimulation: Record<string, unknown> | null = null;
+  let seenBroadcast: Record<string, unknown> | null = null;
+  const bucketApi = {
+    headBucket: async function (this: unknown, bucketName: string) {
+      expect(this).toBe(bucketApi);
+      headCalls += 1;
+      expect(bucketName).toBe("greenfield-test");
+      if (!bucketExists) {
+        const error = Object.assign(new Error("bucket not found"), { statusCode: 404 });
+        throw error;
+      }
+      if (delayedIndexPolls > 0) {
+        delayedIndexPolls -= 1;
+        const error = Object.assign(new Error("bucket not found while indexing"), { statusCode: 404 });
+        throw error;
+      }
+      if (options.malformedHead) return { code: 0, statusCode: 200, body: {} };
+      return {
+        code: 0,
+        statusCode: 200,
+        bucketInfo: {
+          BucketName: "greenfield-test",
+          Owner: options.mismatch === "owner" ? "0xcccccccccccccccccccccccccccccccccccccccc" : creator,
+          PaymentAddress: options.mismatch === "payment" ? "0xcccccccccccccccccccccccccccccccccccccccc" : creator,
+          Visibility: options.mismatch === "visibility" ? 2 : 1,
+          BucketStatus: 0
+        }
+      };
+    },
+    getBucketMeta: async function (this: unknown, params: Record<string, unknown>) {
+      expect(this).toBe(bucketApi);
+      metaCalls += 1;
+      expect(params).toEqual({ bucketName: "greenfield-test", endpoint: "https://sp.example" });
+      if (options.spNotFound) {
+        const error = Object.assign(new Error("SP returned 404"), { statusCode: 404 });
+        throw error;
+      }
+      if (options.malformedSp) return { code: 0, statusCode: 200, body: {} };
+      return {
+        code: 0,
+        statusCode: 200,
+        body: {
+          GfSpGetBucketMetaResponse: {
+            Bucket: {
+              Operator: options.mismatch === "sp" ? "0xcccccccccccccccccccccccccccccccccccccccc" : operator,
+              CreateTxHash: createHash
+            }
+          }
+        }
+      };
+    },
+    createBucket: async function (this: unknown, message: Record<string, unknown>) {
+      expect(this).toBe(bucketApi);
+      createCalls += 1;
+      seenCreateMessage = message;
+      return {
+        simulate: async (params: Record<string, unknown>) => {
+          simulateCalls += 1;
+          seenSimulation = params;
+          return { gasLimit: 100n, gasPrice: "1" };
+        },
+        broadcast: async (params: Record<string, unknown>) => {
+          broadcastCalls += 1;
+          seenBroadcast = params;
+          bucketExists = true;
+          if (options.unknownBroadcast) {
+            delayedIndexPolls = options.delayedIndexPolls ?? 0;
+            throw new Error("connection closed after broadcast");
+          }
+          return { code: 0, transactionHash: createHash };
+        }
+      };
+    }
+  };
+  const client = {
+    object: {
+      createObject: async () => ({ broadcast: async () => ({}) }),
+      uploadObject: async () => ({ code: 0 }),
+      getObject: async () => ({ code: 0, body: new Blob([bytes]) }),
+      getObjectMeta: async () => ({ code: 0, statusCode: 404, body: {} })
+    },
+    bucket: bucketApi,
+    sp: { getSPUrlByBucket: async () => "https://sp.example" }
+  };
+  const publisher = new GreenfieldSdkPublisher({
+    network: GREENFIELD_TESTNET_NETWORK,
+    chainId: GREENFIELD_TESTNET_CHAIN_ID,
+    rpcUrl: "https://rpc.example",
+    bucket: "greenfield-test",
+    creator,
+    keyReference: "GREENFIELD_PUBLISHER_PRIVATE_KEY",
+    loadSecret: () => privateKey,
+    sdkModule: {
+      Client: { create: () => client },
+      Long: { fromString: (value) => ({ toString: () => value }) },
+      VisibilityType: { VISIBILITY_TYPE_PUBLIC_READ: 1 }
+    },
+    sdkClient: client,
+    standardsPins: {
+      ...GREENFIELD_CANDIDATE_STANDARDS_PINS,
+      storageProviders: [{ providerLabel: "test-sp", endpoint: "https://sp.example", operatorAddress: operator }]
+    },
+    spEndpoint: "https://sp.example"
+  });
+  return {
+    publisher,
+    counts: () => ({ headCalls, metaCalls, createCalls, simulateCalls, broadcastCalls }),
+    createMessage: () => seenCreateMessage,
+    simulation: () => seenSimulation,
+    broadcast: () => seenBroadcast
+  };
 }
 
 describe("official Greenfield SDK adapter boundary", () => {
@@ -165,5 +304,69 @@ describe("official Greenfield SDK adapter boundary", () => {
   it("rejects malformed successful metadata instead of treating it as missing", async () => {
     const fixture = sdkFixture({ malformedMetadata: true });
     await expect(fixture.publisher.inspectObject({ objectName: "evidence/x" })).rejects.toMatchObject({ code: "PROVIDER_FAILED" });
+  });
+
+  it("reuses an existing matching public-read canary bucket", async () => {
+    const fixture = bucketSdkFixture({ bucketExists: true });
+    await expect(fixture.publisher.ensureCanaryBucket()).resolves.toEqual({
+      status: "reused",
+      bucketName: "greenfield-test",
+      owner: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      primarySpAddress: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      visibility: "public-read",
+      creationTransactionHash: createHash
+    });
+    expect(fixture.counts()).toMatchObject({ headCalls: 1, metaCalls: 1, createCalls: 0 });
+  });
+
+  it("creates a missing canary bucket with the official bounded message and simulated gas", async () => {
+    const fixture = bucketSdkFixture();
+    await expect(fixture.publisher.ensureCanaryBucket()).resolves.toMatchObject({
+      status: "created",
+      creationTransactionHash: createHash,
+      bucketName: "greenfield-test",
+      visibility: "public-read"
+    });
+    const message = fixture.createMessage();
+    expect(message?.bucketName).toBe("greenfield-test");
+    expect(message?.creator).toBe("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(message?.paymentAddress).toBe("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(message?.primarySpAddress).toBe("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    expect(message?.visibility).toBe(1);
+    expect((message?.chargedReadQuota as { readonly toString: () => string }).toString()).toBe("0");
+    expect(fixture.simulation()).toEqual({ denom: "BNB" });
+    expect(fixture.broadcast()).toMatchObject({ privateKey });
+    expect(fixture.counts()).toMatchObject({ headCalls: 1, createCalls: 1, simulateCalls: 1, broadcastCalls: 1 });
+  });
+
+  it("does not rebroadcast an unknown bucket create while indexing is delayed", async () => {
+    const fixture = bucketSdkFixture({ unknownBroadcast: true, delayedIndexPolls: 1 });
+    await expect(fixture.publisher.ensureCanaryBucket()).resolves.toMatchObject({ status: "unknown", creationTransactionHash: null });
+    await expect(fixture.publisher.ensureCanaryBucket()).resolves.toMatchObject({ status: "reused", creationTransactionHash: createHash });
+    expect(fixture.counts()).toMatchObject({ createCalls: 1, broadcastCalls: 1, metaCalls: 1 });
+  });
+
+  it.each(["owner", "sp", "visibility", "payment"] as const)("rejects a canary bucket with a %s binding mismatch", async (mismatch) => {
+    const fixture = bucketSdkFixture({ bucketExists: true, mismatch });
+    await expect(fixture.publisher.ensureCanaryBucket()).rejects.toMatchObject({ code: "DURABLE_GRAPH_INVALID" });
+    expect(fixture.counts().createCalls).toBe(0);
+  });
+
+  it("treats malformed successful chain metadata as an error", async () => {
+    const fixture = bucketSdkFixture({ bucketExists: true, malformedHead: true });
+    await expect(fixture.publisher.ensureCanaryBucket()).rejects.toMatchObject({ code: "PROVIDER_FAILED" });
+    expect(fixture.counts().createCalls).toBe(0);
+  });
+
+  it("does not treat an SP 404 as proof that a chain bucket is absent", async () => {
+    const fixture = bucketSdkFixture({ bucketExists: true, spNotFound: true });
+    await expect(fixture.publisher.ensureCanaryBucket()).resolves.toMatchObject({ status: "unknown", creationTransactionHash: null });
+    expect(fixture.counts().createCalls).toBe(0);
+  });
+
+  it("rejects malformed successful SP metadata", async () => {
+    const fixture = bucketSdkFixture({ bucketExists: true, malformedSp: true });
+    await expect(fixture.publisher.ensureCanaryBucket()).rejects.toMatchObject({ code: "PROVIDER_FAILED" });
+    expect(fixture.counts().createCalls).toBe(0);
   });
 });

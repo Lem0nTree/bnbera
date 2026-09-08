@@ -16,6 +16,7 @@ import {
   deterministicEvidenceObjectIdForBinding,
   type FrozenAgentProfileRows,
   type FrozenRunBundleRows,
+  type GreenfieldBucketEnsureReceipt,
   type GreenfieldArtifactBinding,
   type GreenfieldStandardsPins,
   type PublicationConfiguration
@@ -26,7 +27,7 @@ import { createGreenfieldPostgresAdapter } from "../packages/db/src/greenfield-p
 export const T8_GREENFIELD_CANARY_BUCKET =
   "bnbera-t8-230072625f8090d5271c5f882748ce11134ac2ba" as const;
 
-type Command = "plan" | "publish" | "reconcile";
+type Command = "plan" | "publish" | "reconcile" | "create-bucket";
 
 export interface T8GreenfieldCliConfig {
   readonly network: string;
@@ -114,6 +115,7 @@ async function readLockedGreenfieldRuntime(): Promise<LockedGreenfieldRuntime> {
       readonly rpcUrl?: unknown;
       readonly storageProviders?: readonly {
         readonly providerLabel?: unknown;
+        readonly operatorAddress?: unknown;
         readonly endpoint?: unknown;
         readonly publicReadBaseUrls?: readonly unknown[];
       }[];
@@ -133,6 +135,8 @@ async function readLockedGreenfieldRuntime(): Promise<LockedGreenfieldRuntime> {
     lock.reedSolomonIntegrity !== "sha512-mebL6p1iHt9B6lpxX1pxW/K3KA35sVdMsIyW/B31URjktSJ0osGEvVUoYGb53nuSIUIUtm2wPtE0+0dZV1CMLw==" ||
     typeof lock.rpcUrl !== "string" ||
     typeof provider?.providerLabel !== "string" ||
+    typeof provider.operatorAddress !== "string" ||
+    !/^0x[0-9a-fA-F]{40}$/.test(provider.operatorAddress) ||
     typeof provider.endpoint !== "string" ||
     typeof publicReadBaseUrl !== "string"
   ) {
@@ -155,6 +159,7 @@ async function readLockedGreenfieldRuntime(): Promise<LockedGreenfieldRuntime> {
       sdkVersion: lock.sdkVersion,
       storageProviders: [{
         providerLabel: provider.providerLabel,
+        operatorAddress: provider.operatorAddress,
         endpoint: provider.endpoint,
         publicReadBaseUrls: [publicReadBaseUrl]
       }],
@@ -179,8 +184,8 @@ function argument(argv: readonly string[], name: string): string | null {
 
 function commandFrom(argv: readonly string[]): Command {
   const value = argv[0] ?? "plan";
-  if (value === "plan" || value === "publish" || value === "reconcile") return value;
-  throw new Error("Usage: t8-greenfield-publish.ts <plan|publish|reconcile> [--artifact-file path] [--idempotency-key key]");
+  if (value === "plan" || value === "publish" || value === "reconcile" || value === "create-bucket") return value;
+  throw new Error("Usage: t8-greenfield-publish.ts <plan|publish|reconcile|create-bucket> [--artifact-file path] [--idempotency-key key]");
 }
 
 async function jsonInput(path: string): Promise<unknown> {
@@ -285,6 +290,26 @@ function requireLiveWrite(
   }
 }
 
+function requireBucketLiveWrite(config: T8GreenfieldCliConfig): void {
+  if (!config.enabled || !config.liveWriteEnabled || !config.canaryApproved) {
+    throw new Error("T8 Greenfield bucket creation is disabled; require T8_GREENFIELD_ENABLED, T8_GREENFIELD_LIVE_WRITE_ENABLED, and T8_GREENFIELD_CANARY_APPROVED");
+  }
+  if (config.rpcUrl === null || config.creator === "" || config.keyReference === null || config.spEndpoint === null) {
+    throw new Error("T8 Greenfield bucket creation configuration is incomplete");
+  }
+}
+
+function safeBucketResult(result: GreenfieldBucketEnsureReceipt): Record<string, unknown> {
+  return {
+    status: result.status,
+    bucketName: result.bucketName,
+    owner: result.owner,
+    primarySpAddress: result.primarySpAddress,
+    visibility: result.visibility,
+    creationTransactionHash: result.creationTransactionHash
+  };
+}
+
 function safeResult(result: { readonly state: string; readonly attemptId: string; readonly providerReference: string | null; readonly sealTransactionHash: string | null; readonly locator: { readonly uri: string } | null; readonly verification: { readonly status: string } | null }): Record<string, unknown> {
   return {
     state: result.state,
@@ -303,6 +328,22 @@ export async function runT8GreenfieldCli(
   const command = commandFrom(argv);
   const locked = await readLockedGreenfieldRuntime();
   const config = applyLockedRuntime(readT8GreenfieldCliConfig(env), locked);
+  if (command === "create-bucket") {
+    requireBucketLiveWrite(config);
+    const greenfield = new GreenfieldSdkPublisher({
+      network: config.network,
+      chainId: config.chainId,
+      rpcUrl: config.rpcUrl as string,
+      bucket: config.bucket,
+      creator: config.creator,
+      keyReference: config.keyReference as string,
+      loadSecret: createGreenfieldEnvironmentSecretLoader(env),
+      spEndpoint: config.spEndpoint as string,
+      publicBaseUrl: config.publicReadBaseUrl as string,
+      standardsPins: locked.pins
+    });
+    return safeBucketResult(await greenfield.ensureCanaryBucket());
+  }
   const input = await artifactFromArgs(argv);
   const artifact = input.artifact;
   const binding = input.binding;
