@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Pool, PoolClient } from "pg";
+import type { Pool } from "pg";
 import { creatorTemplate, type CreatorDraftRequest, canonicalDraftConfiguration, draftConfigurationDigest } from "./creator-contract";
 
 export type CreatorDraft = { readonly id: string; readonly name: string; readonly slug: string; readonly status: string; readonly createdAt: string; readonly deploymentId: string | null; readonly deploymentState: string | null; readonly currentStep: string | null; };

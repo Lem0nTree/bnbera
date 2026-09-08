@@ -101,8 +101,8 @@
     "agentStudioRuntime": {
       "package": "@bnbagent/studio-runtime",
       "version": "0.0.13",
-      "integrity": null,
-      "verificationStatus": "pending-package-integrity"
+      "integrity": "sha512-8/ZuHCDjVihrQdeZzAayR/QiZW8or7ca5nDiDOrhGDqIHO836Ktta+s+yTxvck9mSOXQQWTs6VbCSNZkcJbgLQ==",
+      "verificationStatus": "pinned-from-npm-registry"
     },
     "altanaSdk": {
       "package": "@altananetwork/sdk",
@@ -279,10 +279,14 @@
   },
   "altana": {
     "mainnet": {
-      "relay": null,
-      "keyStore": null,
-      "controller": null,
-      "verificationStatus": "pending-address-capture-and-code-check"
+      "chainId": 56,
+      "relay": "https://relay.altana.network",
+      "keyStore": "0x6572427ED530BadcF7375Cf9A4709D8d2b0E7E0a",
+      "controller": "0x0834Ee2C9BdC3E3efF0a2dC34393D4B0e546A555",
+      "verificationBlock": 120599051,
+      "keyStoreRuntimeSha256": "a6fd38a6c657bf35a02ad3505be00a58893ae058b886264e4c6ac69c51c4d368",
+      "controllerRuntimeSha256": "7930e45bbc782cf9d5ac050df5f77df3e8318832285ec6183cc2026449905c56",
+      "verificationStatus": "verified-read-only-runtime-from-official-sdk-addresses"
     },
     "testnet": {
       "chainId": 97,
@@ -302,6 +306,36 @@
         "body": "Used HTTP Method is not allowed. POST is required"
       },
       "verificationStatus": "verified-read-only-runtime-at-block-129582452"
+    }
+  },
+  "pancakeSwapV2": {
+    "function": "swapExactETHForTokens(uint256,address[],address,uint256)",
+    "selector": "0x7ff36ab5",
+    "exactInputWei": "1000000000000000",
+    "maxSessionNativeSpendPerHourWei": "2000000000000000",
+    "maxSlippageBps": 50,
+    "maxDeadlineSeconds": 120,
+    "testnet": {
+      "chainId": 97,
+      "router": "0xD99D1c33F9fC3444f8101754aBC46c52416550D1",
+      "factory": "0x6725F303b657a9451d8BA641348b6761A6CC7a17",
+      "wbnb": "0xae13d989daC2f0dEbFf460aC112a837C89BAa7cd",
+      "cake": "0x8d008B313C1d6C7fE2982F62d32Da7507cF43551",
+      "pair": "0xd08759B57BBd0158fEAC17457Ce5871B45e85bD9",
+      "verificationBlock": 129743072,
+      "releaseEnabled": false,
+      "verificationStatus": "verified-read-only-router-factory-pair-token-and-liquidity"
+    },
+    "mainnet": {
+      "chainId": 56,
+      "router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
+      "factory": "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73",
+      "wbnb": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
+      "cake": "0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82",
+      "pair": "0x0eD7e52944161450477ee417DE9Cd3a859b14fD0",
+      "verificationBlock": 120598699,
+      "releaseEnabled": false,
+      "verificationStatus": "verified-read-only-router-factory-pair-code-and-liquidity"
     }
   },
   "releaseGates": {
