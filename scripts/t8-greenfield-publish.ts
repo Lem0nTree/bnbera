@@ -349,6 +349,23 @@ function safeResult(result: { readonly state: string; readonly attemptId: string
   };
 }
 
+/** Resolve only after stdout/stderr has accepted the complete CLI line. */
+export function writeT8GreenfieldCliOutput(stream: NodeJS.WritableStream, output: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    try {
+      stream.write(output, (error?: Error | null) => {
+        if (error !== undefined && error !== null) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+}
+
 export async function runT8GreenfieldCli(
   argv: readonly string[],
   env: NodeJS.ProcessEnv = process.env
@@ -437,13 +454,20 @@ export async function runT8GreenfieldCli(
 
 async function main(): Promise<void> {
   const result = await runT8GreenfieldCli(process.argv.slice(2));
-  process.stdout.write(`${JSON.stringify(result)}\n`);
+  await writeT8GreenfieldCliOutput(process.stdout, `${JSON.stringify(result)}\n`);
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : "T8 Greenfield command failed";
-    process.stderr.write(`${message}\n`);
-    process.exitCode = 1;
-  });
+  main()
+    .then(() => process.exit(0))
+    .catch(async (error: unknown) => {
+      const message = error instanceof Error ? error.message : "T8 Greenfield command failed";
+      try {
+        await writeT8GreenfieldCliOutput(process.stderr, `${message}\n`);
+      } finally {
+        // The output callback above confirms the line was handed to the
+        // stream before the SDK's open handles are forcibly released.
+        process.exit(1);
+      }
+    });
 }

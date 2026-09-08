@@ -6,7 +6,8 @@ import {
   publicationConfiguration,
   readT8GreenfieldCliConfig,
   t8GreenfieldSealBackoffBudgetMs,
-  t8GreenfieldSleep
+  t8GreenfieldSleep,
+  writeT8GreenfieldCliOutput
 } from "./t8-greenfield-publish.js";
 
 describe("T8 Greenfield runtime scheduling", () => {
@@ -36,5 +37,27 @@ describe("T8 Greenfield runtime scheduling", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("waits for CLI output completion before allowing shutdown", async () => {
+    let completeWrite: ((error?: Error | null) => void) | undefined;
+    let resolved = false;
+    const stream = {
+      write: vi.fn((_output: string, callback?: (error?: Error | null) => void) => {
+        completeWrite = callback;
+        return false;
+      })
+    } as unknown as NodeJS.WritableStream;
+
+    const pending = writeT8GreenfieldCliOutput(stream, '{"status":"present"}\n').then(() => {
+      resolved = true;
+    });
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+    expect(stream.write).toHaveBeenCalledWith('{"status":"present"}\n', expect.any(Function));
+
+    completeWrite?.();
+    await pending;
+    expect(resolved).toBe(true);
   });
 });
