@@ -37,15 +37,17 @@ export interface CreatorUriUpdateAdapter {
 }
 
 export interface CreatorSwapAdapter {
-  execute(): Promise<{ readonly executionId: string; readonly transactionHash: string | null; readonly status: "confirmed" | "unknown" | "rejected"; readonly quoteBlock: number; readonly calldataDigest: string; readonly balanceDeltaAtomic: string | null }>;
+  execute(executionId: string): Promise<{ readonly transactionHash: string | null; readonly status: "confirmed" | "unknown" | "rejected"; readonly quoteBlock: number; readonly calldataDigest: string; readonly balanceDeltaAtomic: string | null }>;
   reconcile(executionId: string): Promise<"confirmed" | "unknown" | "rejected">;
 }
 
 /** Persist quote/execution receipt facts before a swap is treated as complete. */
-export async function runCreatorSwap(input: { readonly adapter: CreatorSwapAdapter; readonly priorExecutionId: string | null; readonly persist: (value: { executionId: string; transactionHash: string | null; quoteBlock: number; calldataDigest: string; balanceDeltaAtomic: string | null; status: string }) => Promise<void> }): Promise<"confirmed" | "unknown" | "rejected"> {
+export async function runCreatorSwap(input: { readonly adapter: CreatorSwapAdapter; readonly priorExecutionId: string | null; readonly createExecution: () => Promise<{ executionId: string; quoteBlock: number; calldataDigest: string }>; readonly persist: (value: { executionId: string; transactionHash: string | null; quoteBlock: number; calldataDigest: string; balanceDeltaAtomic: string | null; status: string }) => Promise<void> }): Promise<"confirmed" | "unknown" | "rejected"> {
   if (input.priorExecutionId !== null) return input.adapter.reconcile(input.priorExecutionId);
-  const result = await input.adapter.execute();
-  await input.persist({ ...result });
+  const intent = await input.createExecution(); // durable intent before broadcast
+  await input.persist({ ...intent, transactionHash: null, balanceDeltaAtomic: null, status: "submitted" });
+  const result = await input.adapter.execute(intent.executionId);
+  await input.persist({ ...intent, ...result, status: result.status === "unknown" ? "unknown" : result.status });
   return result.status;
 }
 

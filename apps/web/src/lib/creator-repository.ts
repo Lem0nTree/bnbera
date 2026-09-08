@@ -18,11 +18,17 @@ export class CreatorRepository {
     const row = await this.pool.query<{ id: string }>(
       `INSERT INTO agent_templates (slug, semantic_version, category, display_metadata, configuration_schema, capability_manifest, protocol_manifest, contract_selector_allowlist, artifact_digest, source_commit, release_status, activated_at)
        VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10,'review',NULL)
-       ON CONFLICT (slug, semantic_version) DO UPDATE SET artifact_digest = EXCLUDED.artifact_digest
+       ON CONFLICT (slug, semantic_version) DO NOTHING
        RETURNING id`,
       [creatorTemplate.slug, creatorTemplate.semanticVersion, creatorTemplate.category, json(creatorTemplate.displayMetadata), json(creatorTemplate.configurationSchema), json(creatorTemplate.capabilityManifest), json(creatorTemplate.protocolManifest), json(policy), creatorTemplate.artifactDigest, creatorTemplate.sourceCommit]
     );
-    return row.rows[0]!.id;
+    if (row.rows[0] !== undefined) return row.rows[0].id;
+    const existing = await this.pool.query<{ id: string; artifact_digest: string; configuration_schema: unknown; capability_manifest: unknown; protocol_manifest: unknown; contract_selector_allowlist: unknown }>(
+      `SELECT id, artifact_digest, configuration_schema, capability_manifest, protocol_manifest, contract_selector_allowlist FROM agent_templates WHERE slug=$1 AND semantic_version=$2`, [creatorTemplate.slug, creatorTemplate.semanticVersion]
+    );
+    const value = existing.rows[0];
+    if (value === undefined || value.artifact_digest !== creatorTemplate.artifactDigest || json(value.configuration_schema) !== json(creatorTemplate.configurationSchema) || json(value.capability_manifest) !== json(creatorTemplate.capabilityManifest) || json(value.protocol_manifest) !== json(creatorTemplate.protocolManifest) || json(value.contract_selector_allowlist) !== json(policy)) throw new CreatorRepositoryError("TEMPLATE_IMMUTABLE_MISMATCH", "The fixed Creator template version differs from its persisted manifest.");
+    return value.id;
   }
 
   async createDraft(userId: string, input: CreatorDraftRequest): Promise<CreatorDraft> {
