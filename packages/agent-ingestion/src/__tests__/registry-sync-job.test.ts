@@ -230,17 +230,76 @@ describe("official direct registry event seam", () => {
     expect((await repository.findIdentity(identity))?.agentUri).toBe("https://agent.example/finalized.json");
   });
 
-  it("rejects a provider read wider than the configured block bound", async () => {
+  it("advances a finalized catch-up one bounded chunk per run", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const events = [2, 4].map((blockNumber) => ({
+      ...registryEvent(),
+      transactionHash: `0x${blockNumber.toString(16).padStart(2, "0").repeat(32)}`,
+      blockNumber,
+      blockHash: `0x${blockNumber.toString(16).padStart(2, "0").repeat(32)}`
+    }));
+    const queries: Array<{ fromBlock: number; toBlock: number }> = [];
+    const boundedReader: RegistryChainReader = {
+      ...reader(events),
+      async getTrustedBlockHash(blockNumber) {
+        return `0x${blockNumber.toString(16).padStart(2, "0").repeat(32)}`;
+      },
+      async getFinalizedBlockTag() {
+        return { blockNumber: 8, blockHash: `0x${"08".repeat(32)}` };
+      },
+      async readIdentity(_identity, blockTag) {
+        const observedBlock = blockTag?.blockNumber ?? 10;
+        const observedBlockHash = blockTag?.blockHash ?? blockHash;
+        return {
+          ownerAddress: owner,
+          agentWallet: null,
+          agentUri: "https://agent.example/metadata.json",
+          contentDigest: null,
+          observedBlock,
+          observedBlockHash,
+          readConsistency: "finalized",
+          ownerObservedBlock: observedBlock,
+          agentWalletObservedBlock: null,
+          agentUriObservedBlock: observedBlock,
+          contentDigestObservedBlock: null
+        };
+      },
+      async getRegistryEvents(query) {
+        queries.push({ fromBlock: query.fromBlock, toBlock: query.toBlock });
+        return events.filter((event) => event.blockNumber >= query.fromBlock && event.blockNumber <= query.toBlock);
+      }
+    };
     const job = new Erc8004DirectRegistrySyncJob({
-      repository: new InMemoryIngestionRepository(),
-      reader: { ...reader(), async getLatestBlock() { return 10; } },
+      repository,
+      reader: boundedReader,
       gates: { ERC8004_INGESTION_ENABLED: true, ERC8004_DIRECT_REGISTRY_SYNC_ENABLED: true },
       chainId: 97,
       identityRegistry: registry,
       startBlock: 1,
+      finalityMode: "rpc-finalized-tag",
       confirmationThreshold: 0,
-      maxBlockRange: 2
+      maxBlockRange: 2,
+      maxEvents: 1
     });
-    await expect(job.run()).rejects.toMatchObject({ code: "REGISTRY_SYNC_RANGE_EXCEEDED" });
+
+    const first = await job.run();
+    const second = await job.run();
+    const third = await job.run();
+    const fourth = await job.run();
+    const afterFinalizedHead = await job.run();
+
+    expect(first.sync?.checkpoint).toMatchObject({ lastScannedBlock: 2, lastFinalizedBlock: 2 });
+    expect(second.sync?.checkpoint).toMatchObject({ lastScannedBlock: 4, lastFinalizedBlock: 4 });
+    expect(third.sync?.checkpoint).toMatchObject({ lastScannedBlock: 6, lastFinalizedBlock: 6 });
+    expect(fourth.sync?.checkpoint).toMatchObject({ lastScannedBlock: 8, lastFinalizedBlock: 8 });
+    expect(afterFinalizedHead.sync?.scannedThroughBlock).toBeNull();
+    expect(afterFinalizedHead.sync?.checkpoint).toMatchObject({ lastScannedBlock: 8, lastFinalizedBlock: 8 });
+    expect(queries).toEqual([
+      { fromBlock: 1, toBlock: 2 },
+      { fromBlock: 3, toBlock: 4 },
+      { fromBlock: 5, toBlock: 6 },
+      { fromBlock: 7, toBlock: 8 }
+    ]);
+    expect((await repository.listObservations({ chainId: 97, identityRegistry: registry })).length).toBe(2);
   });
 });

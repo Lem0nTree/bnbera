@@ -1,0 +1,2 @@
+# Owner-only delegated session files are outside app/agent and its artifact.
+.studio/

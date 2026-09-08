@@ -1,6 +1,6 @@
 # BNBEra MVP status
 
-Updated: `2026-09-07` (current audited state at merged `main` `3cbd4135d809fe865e2a88285e9b79b8e357085a`)
+Updated: `2026-09-08` (current audited state at merged `main` `3cbd4135d809fe865e2a88285e9b79b8e357085a`)
 
 ## Current audited state — merged main
 
@@ -16,7 +16,7 @@ and the guarded 2206 marketplace provider path.
 | --- | --- | --- |
 | G1 persistent marketplace | Retained/local scope only | T1–T3 discovery, enrichment, category, vector, publication, API/SSR, restart and freshness evidence remains accepted for the retained/local scope. No stable public HTTPS/deployed-browser claim is made. |
 | G2 paid hiring | Pending interactive WalletConnect browser acceptance | The merged T5 implementation and authorized operator EOA canary provide live chain evidence for agent 2206, including useful health-factor work, paid cycle `job1103`, settlement and a verified-purchase review. The operator harness is not interactive WalletConnect pairing, browser SIWE/session binding or browser recovery acceptance. |
-| G3 Creator | Planned | Altana grant/status/revoke and Agent Studio creation remain unaccepted. |
+| G3 Creator | Completed (active documented scope; temporary Studio trial) | Browser grant/revoke, tBNB→BUSD Creator deployment/registration, exact identity reconciliation, pre-Studio denial and publication/category/vector follow-through are evidenced below. This does not claim G2 WalletConnect browser acceptance. |
 | G4 Greenfield | Planned | Greenfield pins, upload/seal/readback and final walkthrough remain unaccepted. |
 | ERC-8183 release | Disabled | The standards-lock `releaseEnabled` value remains `false`; the quick tunnel and operator canary are development evidence only. |
 
@@ -74,6 +74,29 @@ browser flow is accepted. Keep `releaseEnabled=false`; the authorized quick
 HTTPS tunnel remains canary-only with no uptime guarantee. A redundant second
 web build in CI is tracked as a nonblocking P2 note; CI was not changed by this
 documentation reconciliation.
+
+## G3 Creator browser/Studio trial (2026-09-08)
+
+Status: Completed for the active documented G3/T6/T7 scope. The Studio trial is
+temporary. This evidence does not claim G2 WalletConnect browser acceptance.
+The audited allowlist remains unchanged: only tBNB→CAKE or tBNB→BUSD and bounded
+amount, slippage, quote-freshness and deadline values are accepted; chain,
+router, token addresses, selectors and caps remain server-locked.
+
+| Area | Evidence |
+| --- | --- |
+| Browser authority | Wallet `0x1a295...d370`; grant `0xdb9118...20e9e`; revoke `0xdcfa54...5d911`; persisted authority status `revoked`. |
+| Pre-Studio denial | Subsequent worker attempt denied before Studio with `CREATOR_DEPLOYMENT_BINDING_MISSING`; platform list unchanged at three existing agents including the final agent. |
+| Studio/card | Agent `01M212RS9NVG13X6JQM5BS00AF`; card HTTP 200 at `https://bnbagent-api.bnbchain.world/v1/rt/01M212RS9NVG13X6JQM5BS00AF/.well-known/agent-card.json`; healthy A2A protocol `0.3`. |
+| Exact Creator binding | Browser tBNB→BUSD flow used configuration digest `5f2fe561...f93e`; persisted canonical configuration and job binding remained exact through the runtime. |
+| ERC-8004 registration | Identity `2283`, chain 97, registry `0x8004...bd9e`, owner and agentWallet `0x8fe691...1b0be`; mint `0x2ef91e...ef939`, URI `0xb54693...b7439`; final state `registered` after exact reconciliation. |
+| Marketplace follow-through | Finalized read, metadata, capability, service health, version, publication and category completed; API live total `1`, category `rebalancing`, OpenRouter `text-embedding-3-small` vector dimension `1536`. |
+| Existing negative/settlement evidence | Explicit over-cap/expiry denial and managed action/settle/refund evidence remain valid; no raw session or credential is documented or retained. |
+
+The active documented browser grant -> bounded session -> Studio/runtime -> exact
+registration -> publication/revoke path is complete for G3/T6/T7. Keep the
+Studio trial temporary and keep G2's separate WalletConnect browser gate and
+`releaseEnabled=false` unchanged.
 
 ## Historical retained/local snapshots
 
@@ -480,3 +503,16 @@ change; do not add a second provider silently.
 Focused verification after the recovery passed: agent-ingestion `111/111`
 tests, database schema/legacy tests `17/17`, and `pnpm db:check` (`Everything's
 fine`).
+# Historical G3 composition update (pre-managed canary)
+
+This pre-canary snapshot records the earlier state only. The current managed
+canary and its remaining boundaries are recorded in the section above. At that
+time the Creator code had disabled scaffolding only: a bounded opt-in worker and
+tuple-bound reconciliation seams to ERC-8004/G1 and ERC-8183/G2. It did not hold
+an operator key: an absent browser caller or uncomposed T6 authority gateway
+blocked status, revoke, deployment and the worker; missing exact
+browser-persisted identity/owner/agent-wallet/endpoint/version evidence left
+reconciliation pending. The reviewed handoff was Studio-owned
+`.studio/wallets/altana-session.json`, managed as `ALTANA_SESSION`; no raw
+session reached HTTP, PostgreSQL or logs. PostgreSQL stored only the T6 secret
+reference and public policy/receipt metadata.

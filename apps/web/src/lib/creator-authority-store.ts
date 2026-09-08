@@ -1,0 +1,34 @@
+import type { CreatorAuthorityDraftResolver, CreatorAuthorityRecord, CreatorAuthorityStore, ScopedPolicy } from "@bnbera/altana";
+
+export type CreatorAuthorityPool = { query<T = Record<string, unknown>>(sql: string, values?: readonly unknown[]): Promise<{ rows: readonly T[] }> };
+
+type Row = { id: string; draft_id: string; admin_wallet: string | null; execution_wallet: string | null; session_public_address: string | null; calls_allowlist: unknown; spend_limits: unknown; expires_at: Date | string; keystore_registration_tx: string | null; secret_reference: string | null; status: "none" | "active" | "expired" | "revoked"; last_verified_block: string | number | null };
+const asObject = (value: unknown): Record<string, unknown> | null => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+const seconds = (value: Date | string) => Math.floor(new Date(value).getTime() / 1000);
+
+function decode(row: Row): CreatorAuthorityRecord | null {
+  const meta = asObject(row.calls_allowlist); const policy = meta === null ? null : asObject(meta.policy);
+  if (meta === null || policy === null || typeof meta.sessionId !== "string" || typeof meta.policyDigest !== "string" || row.secret_reference === null || row.admin_wallet === null || row.status === "none") return null;
+  // JSON persistence uses decimal strings for bigint policy fields. The policy
+  // is only reconstructed inside the server boundary; no secret is present.
+  try {
+    const calls = Array.isArray(policy.calls) ? policy.calls.map((item) => { const call = asObject(item); if (call === null || typeof call.target !== "string" || !Array.isArray(call.selectors) || typeof call.maxNativeValueWei !== "string") throw new Error("invalid call"); return { target: call.target as `0x${string}`, selectors: call.selectors as `0x${string}`[], maxNativeValueWei: BigInt(call.maxNativeValueWei) }; }) : null;
+    const spend = Array.isArray(policy.spend) ? policy.spend.map((item) => { const limit = asObject(item); if (limit === null || (typeof limit.token !== "string") || typeof limit.limitAtomic !== "string" || typeof limit.period !== "string") throw new Error("invalid spend"); return { token: limit.token as "native" | `0x${string}`, limitAtomic: BigInt(limit.limitAtomic), period: limit.period as ScopedPolicy["spend"][number]["period"] }; }) : null;
+    if (calls === null || spend === null || typeof policy.chainId !== "number" || typeof policy.walletAddress !== "string" || typeof policy.sessionPublicAddress !== "string") return null;
+    const scoped: ScopedPolicy = { chainId: policy.chainId as 56 | 97, adminAddress: row.admin_wallet as `0x${string}`, walletAddress: policy.walletAddress as `0x${string}`, sessionPublicAddress: policy.sessionPublicAddress as `0x${string}`, ...(typeof policy.sessionPublicKey === "string" ? { sessionPublicKey: policy.sessionPublicKey as `0x${string}` } : {}), calls, spend, expiresAtUnix: seconds(row.expires_at) };
+    const handoff = asObject(meta.handoff);
+    if (handoff === null || typeof handoff.handoffId !== "string" || typeof handoff.destinationProvider !== "string" || typeof handoff.acceptedAtUnix !== "number") return null;
+    return { authorityId: row.id, draftId: row.draft_id, ownerAddress: row.admin_wallet, secretReference: row.secret_reference, descriptor: { sessionId: meta.sessionId, policy: scoped, policyDigest: meta.policyDigest as `0x${string}`, grantTransactionHash: row.keystore_registration_tx as `0x${string}` | null, secretReference: row.secret_reference, grantedAtUnix: typeof meta.grantedAtUnix === "number" ? meta.grantedAtUnix : seconds(row.expires_at) - 3600 }, handoff: { handoffId: handoff.handoffId, destinationProvider: handoff.destinationProvider as "studio-delegated-secret-channel", sessionId: meta.sessionId, policyDigest: meta.policyDigest as `0x${string}`, acceptedAtUnix: handoff.acceptedAtUnix, consumed: true }, observation: { sessionId: meta.sessionId, policyDigest: meta.policyDigest as `0x${string}`, status: row.status, observedAtUnix: Math.floor(Date.now() / 1000), observedBlockNumber: row.last_verified_block === null ? null : BigInt(row.last_verified_block), source: "chain-read", reasonCode: null } };
+  } catch { return null; }
+}
+
+function encodedPolicy(policy: ScopedPolicy): Record<string, unknown> { return { ...policy, calls: policy.calls.map((call) => ({ ...call, maxNativeValueWei: call.maxNativeValueWei.toString() })), spend: policy.spend.map((limit) => ({ ...limit, limitAtomic: limit.limitAtomic.toString() })) }; }
+
+export function createPostgresCreatorAuthorityStore(pool: CreatorAuthorityPool): CreatorAuthorityStore & CreatorAuthorityDraftResolver {
+  const get = async (column: "id" | "draft_id", value: string) => { const result = await pool.query<Row>(`SELECT id,draft_id,admin_wallet,execution_wallet,session_public_address,calls_allowlist,spend_limits,expires_at,keystore_registration_tx,secret_reference,status,last_verified_block FROM agent_authorities WHERE ${column}=$1 ORDER BY "updatedAt" DESC LIMIT 1`, [value]); return result.rows[0] === undefined ? null : decode(result.rows[0]); };
+  return {
+    get: (id) => get("id", id), getByDraft: (draftId) => get("draft_id", draftId),
+    async ownerAddressForDraft(draftId) { const result = await pool.query<{ wallet_address: string }>(`SELECT s.wallet_address FROM agent_drafts d JOIN auth_sessions s ON s.user_id=d.creator_user_id WHERE d.id=$1 AND s.revoked_at IS NULL AND s.expires_at>NOW() ORDER BY s.issued_at DESC LIMIT 1`, [draftId]); return result.rows[0]?.wallet_address ?? null; },
+    async put(record) { const policy = encodedPolicy(record.descriptor.policy); await pool.query(`INSERT INTO agent_authorities (id,draft_id,chain_id,wallet_provider,execution_wallet,altana_smart_wallet,admin_wallet,session_public_address,calls_allowlist,spend_limits,expires_at,keystore_registration_tx,last_verified_block,status,secret_reference) VALUES ($1,$2,$3,'altana',$4,$4,$5,$6,$7::jsonb,$8::jsonb,to_timestamp($9),$10,$11,$12,$13) ON CONFLICT (id) DO UPDATE SET calls_allowlist=EXCLUDED.calls_allowlist,spend_limits=EXCLUDED.spend_limits,status=EXCLUDED.status,last_verified_block=EXCLUDED.last_verified_block,secret_reference=EXCLUDED.secret_reference,"updatedAt"=NOW()`, [record.authorityId, record.draftId, record.descriptor.policy.chainId, record.descriptor.policy.walletAddress, record.ownerAddress, record.descriptor.policy.sessionPublicAddress, JSON.stringify({ sessionId: record.descriptor.sessionId, policyDigest: record.descriptor.policyDigest, policy, grantedAtUnix: record.descriptor.grantedAtUnix, handoff: record.handoff }), JSON.stringify(policy.spend), record.descriptor.policy.expiresAtUnix, record.descriptor.grantTransactionHash, record.observation.observedBlockNumber?.toString() ?? null, record.observation.status, record.secretReference]); }
+  };
+}

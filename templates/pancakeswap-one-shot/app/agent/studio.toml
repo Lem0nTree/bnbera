@@ -1,0 +1,28 @@
+[project]
+name = "bnbera-pancakeswap-one-shot"
+
+[stack]
+runtime = "agentcore"
+protocols = ["A2A"]
+
+[network]
+default = "bsc-testnet"
+
+[deploy]
+destination = "platform"
+platform_artifact = "zip"
+
+[wallet]
+kind = "altana"
+# Set address to the confirmed user-controlled smart wallet when preparing a
+# per-creator workspace. Never use a placeholder identity or include secrets.
+keystore_dir = "../../.studio/wallets"
+session_file = "../../.studio/wallets/altana-session.json"
+
+[payments.erc8183]
+currency = "0xc70B8741B8B07A6d61E54fd4B20f22Fa648E5565"
+price = "1000000000000000"
+min_price = "1000000000000000"
+max_price = "1000000000000000"
+quote_ttl_seconds = 900
+auto_settle = false

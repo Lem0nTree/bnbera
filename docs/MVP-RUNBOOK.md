@@ -125,8 +125,79 @@ quick-tunnel card/invocation, finalized reingestion and publication evidence;
 the tunnel has no uptime guarantee. Keep `releaseEnabled=false` until the full
 EOA browser journey, useful result, settlement/review and recovery evidence
 passes. Do not wholesale-revert the recent T5 passkey changes, reset
-migrations or delete retained database evidence; passkey/bootstrap work is
-deferred to T6/T7 Creator custody.
+migrations or delete retained database evidence; the passkey/bootstrap work
+supports the completed T6/T7 Creator custody path and remains separate from G2.
+
+## G3 Creator browser/Studio trial
+
+The active documented G3/T6/T7 scope is complete. The Studio trial is
+temporary, and this result does not claim G2 WalletConnect browser acceptance.
+The Creator form accepts only the audited tBNB→CAKE and tBNB→BUSD pairs, plus
+bounded amount, slippage, quote-freshness and deadline values. Chain, router,
+token addresses, selectors and caps remain server-locked. Verify that the
+persisted public configuration, canonical digest, exact job binding, compiled
+Studio configuration and runtime action all describe the same selected pair.
+
+The Studio 0.0.13 trial agent is
+`01M212RS9NVG13X6JQM5BS00AF`. Verify its public card without exposing managed
+OAuth or Altana material:
+
+Managed Studio uses the contextual `toolchain.agentStudioAltanaSdk`
+`@altananetwork/sdk@0.7.1` integrity pin; the app/browser/provider boundary
+continues to use `toolchain.altanaSdk` `@altananetwork/sdk@0.9.0`. The Studio
+template must not consume the 0.7.1 SDK registry's obsolete policy address: it
+uses the standards-locked local ERC-8183 ABI reads, local submit encoding and
+Router policy allowlisting instead.
+
+```bash
+CREATOR_ENDPOINT='https://bnbagent-api.bnbchain.world/v1/rt/01M212RS9NVG13X6JQM5BS00AF/.well-known/agent-card.json'
+curl --fail --show-error --silent --include "$CREATOR_ENDPOINT"
+```
+
+The trial card returned HTTP 200 with healthy A2A protocol `0.3`. The browser
+tBNB→BUSD configuration used exact digest `5f2fe561...f93e`; ERC-8004 identity
+`2283` on chain 97/registry `0x8004...bd9e` reached `registered` after exact
+reconciliation, with owner and agentWallet `0x8fe691...1b0be`. Mint transaction
+`0x2ef91e...ef939` and URI transaction `0xb54693...b7439` are the public
+operation references.
+When invoking the runtime, use the canonical A2A `message/send` JSON-RPC
+envelope with the exact inner action/job binding and the managed OAuth
+credential loaded from its secret reference. Do not send a raw action body, log
+the bearer token, or persist a raw session.
+
+Browser/trial reconciliation evidence:
+
+- Browser grant used wallet `0x1a295...d370`, grant `0xdb9118...20e9e` and revoke `0xdcfa54...5d911`; persisted status is `revoked`.
+- A subsequent worker attempt was denied before Studio with `CREATOR_DEPLOYMENT_BINDING_MISSING`; the platform list remained unchanged at three existing agents including the final agent.
+- The pipeline completed finalized chain read, metadata, capability, service health, version, publication and category; API live total is `1`, detail is healthy A2A `0.3`, category is `rebalancing`, and OpenRouter `text-embedding-3-small` persisted a 1536-dimensional vector.
+- Existing explicit over-cap/expiry denial and managed action/settle/refund evidence remains valid. Keep any post-revoke unknown runtime outcome classified as unknown, never as an invented relay error.
+
+Reconcile current chain/job state before any retry. Do not blindly retry the
+unknown post-revoke action or settle/refund automatically. The active browser
+Creator registration/grant/revoke and exact reconciliation path is complete for
+G3/T6/T7; keep G2's separate WalletConnect browser gate and `releaseEnabled=false`
+unchanged.
+
+For the local Creator worker, use an absolute private workspace outside the
+repository and load the root environment explicitly. Studio 0.0.13 also needs
+Bun on `PATH`. Enable these switches only for the bounded G3 run:
+
+```bash
+export PATH="/home/ubuntu/.bun/bin:$PATH"
+export T5_ALTANA_AUTH_ENABLED=true
+export CREATOR_RUNTIME_AUTHORITY_ENABLED=true
+export CREATOR_WORKER_ENABLED=true
+export CREATOR_STUDIO_WORKSPACE_ROOT=/var/lib/bnbera/creator-studio
+node scripts/run-with-repo-env.mjs -- pnpm ops:creator-worker
+```
+
+The generated workspace pins a unique Studio project slug and the confirmed
+Altana wallet address, keeps `.studio/` out of the deploy artifact, and stores
+the session only in the owner-only Studio secret file. The Studio trial is
+temporary. Before a live deploy,
+run `bag deploy prepare --provider bnb --project-root <generated-runtime-root>
+--json --no-info --force`; proceed only with `ready_to_deploy: true` and zero
+BLOCKED/CRITICAL checks.
 
 ## Target cron behavior — implemented by T1
 

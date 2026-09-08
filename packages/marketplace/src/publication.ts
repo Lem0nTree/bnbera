@@ -499,6 +499,22 @@ function normalizePublicMetadata(
     // both version manifests. Raw provider price fields are never retained.
     pricing: pricingManifest
   };
+  // Creator browser registration binds the selected bounded runtime pair and
+  // canonical configuration digest in a public `x-bnbera` extension. Retain
+  // only those validated fields in the immutable G1 version so a later
+  // handoff can prove it selected the exact config-bearing version; arbitrary
+  // registration extensions remain excluded from the marketplace projection.
+  const creatorBinding = safePublicObject(metadata["x-bnbera"]);
+  const creatorConfigurationDigest = safeString(creatorBinding?.configurationDigest, 64);
+  const creatorTradingPair = creatorBinding?.tradingPair === "tbnb-cake" || creatorBinding?.tradingPair === "tbnb-busd"
+    ? creatorBinding.tradingPair
+    : null;
+  if (creatorConfigurationDigest !== null && /^[0-9a-f]{64}$/iu.test(creatorConfigurationDigest) && creatorTradingPair !== null) {
+    result["x-bnbera"] = {
+      configurationDigest: creatorConfigurationDigest.toLowerCase(),
+      tradingPair: creatorTradingPair
+    };
+  }
   const slug = safeString(metadata.slug, 160);
   if (slug !== null && marketplaceListingMetadataSchema.shape.slug.safeParse(slug).success) {
     result.slug = slug;

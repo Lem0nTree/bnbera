@@ -15,7 +15,7 @@ export async function POST(request: Request, { params }: { readonly params: Prom
     const input = await parseCreatorJson(request, requestSchema);
     // T6 supplies only an expiring descriptor/reference; no secret crosses this seam.
     const { draftId } = await params;
-    await creatorAuthorityResolver().requireRuntimeAuthority({ userId: identity.userId, draftId, authorityId: input.authorityId });
-    return creatorJson({ deployment: await creatorRepository().queueDeployment(identity.userId, draftId, input.authorityId) }, 202);
+    const authority = await creatorAuthorityResolver().requireRuntimeAuthority({ userId: identity.userId, draftId, authorityId: input.authorityId });
+    return creatorJson({ deployment: await creatorRepository().queueDeployment(identity.userId, draftId, authority) }, 202);
   } catch (error) { return creatorHttpError(error); }
 }

@@ -475,6 +475,7 @@ export class AgentIngestionService {
       }
     }
     const finalizedBlock = finalizedTag?.blockNumber ?? Math.max(0, latestBlock - options.confirmationThreshold);
+    const scanThroughBlock = finalizedTag?.blockNumber ?? latestBlock;
     let checkpoint = await repository.getCheckpoint(options.chainId, registry);
     const persistedCheckpoint = checkpoint;
     if (
@@ -521,18 +522,14 @@ export class AgentIngestionService {
     let scannedThrough: number | null = null;
     let scannedBlock: number | null = checkpoint?.lastScannedBlock ?? null;
     let scannedHashForQuery: string | null = null;
-    if (fromBlock <= latestBlock) {
-      if (latestBlock - fromBlock + 1 > maxBlockRange) {
-        throw ingestionError(
-          "REGISTRY_SYNC_RANGE_EXCEEDED",
-          "The registry sync range exceeds its bounded read window.",
-          "advance_registry_checkpoint"
-        );
-      }
+    if (fromBlock <= scanThroughBlock) {
+      // Advance one bounded window per run so a historical gap can recover
+      // without requiring an unsafe or unbounded provider request.
+      const boundedThroughBlock = Math.min(scanThroughBlock, fromBlock + maxBlockRange - 1);
       scannedFromBlock = fromBlock;
-      scannedThrough = latestBlock;
-      scannedBlock = latestBlock;
-      scannedHashForQuery = await reader.getTrustedBlockHash(latestBlock);
+      scannedThrough = boundedThroughBlock;
+      scannedBlock = boundedThroughBlock;
+      scannedHashForQuery = finalizedTag?.blockHash ?? await reader.getTrustedBlockHash(latestBlock);
       if (scannedHashForQuery === null) {
         throw ingestionError(
           "REORG_RECONCILIATION_REQUIRED",
@@ -546,8 +543,8 @@ export class AgentIngestionService {
         chainId: options.chainId,
         identityRegistry: registry,
         fromBlock,
-        toBlock: latestBlock,
-        blockTag: { blockNumber: latestBlock, blockHash: scannedHashForQuery }
+        toBlock: boundedThroughBlock,
+        blockTag: finalizedTag ?? { blockNumber: latestBlock, blockHash: scannedHashForQuery }
       });
       if (events.length > maxEvents) {
         throw ingestionError(
@@ -556,7 +553,7 @@ export class AgentIngestionService {
           "reduce_registry_range"
         );
       }
-      if (events.some((event) => event.blockNumber < fromBlock || event.blockNumber > latestBlock)) {
+      if (events.some((event) => event.blockNumber < fromBlock || event.blockNumber > boundedThroughBlock)) {
         throw ingestionError(
           "INGESTION_INPUT_INVALID",
           "The registry provider returned an event outside the requested block range.",
@@ -588,7 +585,7 @@ export class AgentIngestionService {
       const scannedHash = await reader.getTrustedBlockHash(scannedBlock);
       const finalizedHash = await reader.getTrustedBlockHash(finalityBlock);
       if (scannedHash === null || finalizedHash === null ||
-        (finalizedTag !== null && (finalizedTag.blockNumber !== finalityBlock || finalizedTag.blockHash !== finalizedHash))) {
+        (finalizedTag !== null && finalityBlock === finalizedTag.blockNumber && finalizedTag.blockHash !== finalizedHash)) {
         throw ingestionError(
           "REORG_RECONCILIATION_REQUIRED",
           "The chain provider did not return block hashes required for a safe checkpoint.",
