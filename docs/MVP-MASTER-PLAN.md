@@ -1,7 +1,7 @@
 # BNBEra MVP master plan
 
 Status: active scope, following the user's simplified MVP direction. Updated: 2026-09-08.
-Implementation baseline: merged GitHub `main` at `40a209300317d2a81adf0f96b00f2b679e9ddb94`, with PRs #20–#28 merged and both PR #28 validation runs green. This includes the T5 WalletConnect-only buyer/commerce path, the refund-projection repair, and the completed active T6/T7 Creator scope. Retained/local T1–T3 evidence remains separate from any public-preview claim.
+Implementation baseline: merged GitHub `main` at `8ab4692620278c73904c1c012204e8ba4707e719`, with PRs #20–#29 merged. PR #28's validation runs were green; PR #29 reconciled these active documents without rerunning the earlier canaries. This includes the T5 WalletConnect-only buyer/commerce path, the refund-projection repair, and the completed active T6/T7 Creator scope. Retained/local T1–T3 evidence remains separate from any public-preview claim.
 This plan supersedes the archived plans. It defines the intended MVP; branch-only implementation and unit tests are not gate acceptance. The source-of-truth interpretation of the competition rubric is [HACKATHON-REQUIREMENTS.md](HACKATHON-REQUIREMENTS.md).
 
 ## Product and delivery order
