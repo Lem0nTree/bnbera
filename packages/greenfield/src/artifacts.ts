@@ -202,6 +202,21 @@ function asDecimalString(value: unknown, name: string): string | undefined {
   return result;
 }
 
+/** Public pricing labels are persisted as JSON and the database can return a
+ * numeric chain/network value (for example `97`). Keep the artifact schema
+ * string-based without rejecting that lossless integer representation. Other
+ * labels remain string-only so malformed persisted pricing cannot be silently
+ * coerced. */
+function pricingLabel(value: unknown, name: string): string {
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new GreenfieldArtifactBuilderError(`${name} must be a non-negative integer or string`);
+    }
+    return String(value);
+  }
+  return requiredString(value, name);
+}
+
 function supportedProtocols(metadata: FrozenRow, services: readonly FrozenRow[]): string[] {
   const supplied = field(metadata, "supportedProtocols", "supported_protocols");
   if (Array.isArray(supplied)) {
@@ -235,7 +250,11 @@ function publicPricing(metadata: FrozenRow, version?: FrozenRow): FrozenRow {
   for (const key of ["currency", "unit", "asset", "network", "quoteType", "expiresAt"]) {
     const value = field(source, key, key.replace(/[A-Z]/g, (character) => `_${character.toLowerCase()}`));
     if (value !== undefined && value !== null) {
-      output[key] = key === "expiresAt" ? timestamp(value, "pricing expiresAt") : requiredString(value, `pricing ${key}`);
+      output[key] = key === "expiresAt"
+        ? timestamp(value, "pricing expiresAt")
+        : key === "network"
+          ? pricingLabel(value, `pricing ${key}`)
+          : requiredString(value, `pricing ${key}`);
     }
   }
   const amount = asDecimalString(field(source, "amount"), "pricing amount");

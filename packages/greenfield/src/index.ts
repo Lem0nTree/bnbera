@@ -5,3 +5,4 @@ export * from "./fakes.js";
 export * from "./repositories.js";
 export * from "./greenfield-sdk.js";
 export * from "./artifacts.js";
+export * from "./t8-inputs.js";

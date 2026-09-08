@@ -26,6 +26,7 @@
     "ops:t5-reference-provider-worker": "tsx scripts/t5-reference-provider-worker.ts",
     "ops:t5-reference-registration": "tsx scripts/t5-reference-registration.ts",
     "ops:creator-worker": "tsx scripts/creator-worker.ts",
+    "ops:t8-greenfield-inputs": "tsx scripts/t8-greenfield-inputs.ts",
     "ops:t4-canary": "tsx scripts/t4-operator-canary.ts",
     "ops:standards-check": "tsx scripts/standards-check.ts",
     "lint": "pnpm --recursive --if-present run lint",

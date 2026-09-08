@@ -64,6 +64,29 @@ describe("immutable Greenfield artifact builders", () => {
     expect(Object.isFrozen(artifact.payload)).toBe(true);
   });
 
+  it("stringifies a persisted numeric pricing network without widening other labels", () => {
+    const artifact = buildAgentProfileArtifact({
+      environment: "hackathon",
+      identityRow: identity,
+      agentRow: agent,
+      versionRow: {
+        ...version,
+        pricing_manifest: { currency: "U", amount_atomic: "42", network: 97 }
+      }
+    });
+
+    expect(artifact.payload.pricing).toEqual({ currency: "U", amountAtomic: "42", network: "97" });
+    expect(() => buildAgentProfileArtifact({
+      environment: "hackathon",
+      identityRow: identity,
+      agentRow: agent,
+      versionRow: {
+        ...version,
+        pricing_manifest: { currency: 97 }
+      }
+    })).toThrow("pricing currency");
+  });
+
   it("builds a run bundle using only whitelisted public projections", () => {
     const artifact = buildRunBundleArtifact({
       environment: "hackathon",
