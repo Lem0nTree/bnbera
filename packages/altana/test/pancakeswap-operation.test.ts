@@ -3,7 +3,7 @@ import test from "node:test";
 import { buildBoundedPancakeSwap, pancakeSwapProfile, PANCAKESWAP_V2_TESTNET, type ScopedPolicy } from "../src/index.ts";
 
 const wallet = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as const;
-function policy(overrides: Partial<ScopedPolicy> = {}): ScopedPolicy { return { chainId: 97, adminAddress: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", walletAddress: wallet, sessionPublicAddress: "0xcccccccccccccccccccccccccccccccccccccccc", calls: [{ target: PANCAKESWAP_V2_TESTNET.router, selectors: [PANCAKESWAP_V2_TESTNET.selector], maxNativeValueWei: PANCAKESWAP_V2_TESTNET.exactValueWei }], spend: [{ token: "native", limitAtomic: 2_000_000_000_000_000n, period: "day" }], expiresAtUnix: 2_000_000_000, ...overrides }; }
+function policy(overrides: Partial<ScopedPolicy> = {}): ScopedPolicy { return { chainId: 97, adminAddress: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", walletAddress: wallet, sessionPublicAddress: "0xcccccccccccccccccccccccccccccccccccccccc", calls: [{ target: PANCAKESWAP_V2_TESTNET.router, selectors: [PANCAKESWAP_V2_TESTNET.selector], maxNativeValueWei: PANCAKESWAP_V2_TESTNET.exactValueWei }], spend: [{ token: "native", limitAtomic: 2_000_000_000_000_000n, period: "hour" }], expiresAtUnix: 2_000_000_000, ...overrides }; }
 
 test("builds only the pinned exact PancakeSwap V2 testnet swap", () => {
   const result = buildBoundedPancakeSwap({ policy: policy(), wallet, quotedOut: 1_000n, nowUnix: 1_700_000_000, deadlineUnix: 1_700_000_120 });
