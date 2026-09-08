@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { setTimeout as sleepTimer } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import {
   EvidencePublisher,
@@ -26,6 +27,27 @@ import { createGreenfieldPostgresAdapter } from "../packages/db/src/greenfield-p
 
 export const T8_GREENFIELD_CANARY_BUCKET =
   "bnbera-t8-230072625f8090d5271c5f882748ce11134ac2ba" as const;
+export const T8_GREENFIELD_MAX_SEAL_POLLS = 6 as const;
+export const T8_GREENFIELD_SEAL_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
+export const T8_GREENFIELD_LEASE_DURATION_MS = 60_000 as const;
+
+/** Sum the delays the publisher can actually await for this bounded poll set. */
+export function t8GreenfieldSealBackoffBudgetMs(
+  maxSealPolls: number,
+  sealBackoffMs: readonly number[]
+): number {
+  if (maxSealPolls <= 1 || sealBackoffMs.length === 0) return 0;
+  let budget = 0;
+  for (let attempt = 1; attempt < maxSealPolls; attempt += 1) {
+    budget += sealBackoffMs[Math.min(attempt - 1, sealBackoffMs.length - 1)] ?? 0;
+  }
+  return budget;
+}
+
+/** Production scheduler injected into EvidencePublisher; tests replace it at the publisher seam. */
+export async function t8GreenfieldSleep(milliseconds: number): Promise<void> {
+  await sleepTimer(milliseconds);
+}
 
 type Command = "plan" | "publish" | "reconcile" | "create-bucket";
 
@@ -222,7 +244,12 @@ async function artifactFromArgs(argv: readonly string[]): Promise<T8ArtifactInpu
   }
 }
 
-function publicationConfiguration(config: T8GreenfieldCliConfig): PublicationConfiguration {
+export function publicationConfiguration(config: T8GreenfieldCliConfig): PublicationConfiguration {
+  const sealBackoffMs = [...T8_GREENFIELD_SEAL_BACKOFF_MS];
+  const backoffBudgetMs = t8GreenfieldSealBackoffBudgetMs(T8_GREENFIELD_MAX_SEAL_POLLS, sealBackoffMs);
+  if (T8_GREENFIELD_LEASE_DURATION_MS <= backoffBudgetMs) {
+    throw new Error("T8 Greenfield lease must exceed its seal polling backoff budget");
+  }
   return {
     environment: config.environment,
     enabledProviders: ["greenfield"],
@@ -234,9 +261,9 @@ function publicationConfiguration(config: T8GreenfieldCliConfig): PublicationCon
     },
     maxArtifactBytes: 10_000_000,
     maxObjectBytes: 10_000_000,
-    maxSealPolls: 30,
-    sealBackoffMs: [1_000, 2_000, 4_000, 8_000, 16_000],
-    leaseDurationMs: 120_000
+    maxSealPolls: T8_GREENFIELD_MAX_SEAL_POLLS,
+    sealBackoffMs,
+    leaseDurationMs: T8_GREENFIELD_LEASE_DURATION_MS
   };
 }
 
@@ -376,7 +403,7 @@ export async function runT8GreenfieldCli(
       publicBaseUrl: config.publicReadBaseUrl as string,
       standardsPins: locked.pins
     });
-    const publisher = new EvidencePublisher({ store, configuration: publication, greenfield });
+    const publisher = new EvidencePublisher({ store, configuration: publication, greenfield, sleep: t8GreenfieldSleep });
     const result = command === "publish"
       ? (await publisher.publish({ artifact, idempotencyKey })).attempts.find((attempt) => attempt.provider === "greenfield")
       : await publisher.reconcile({ artifact, idempotencyKey, provider: "greenfield" });
