@@ -1,4 +1,4 @@
-import { searchDirectoryCatalog } from "./directory-search";
+import { isDirectoryIdentifierQuery, searchDirectoryCatalog } from "./directory-search";
 /**
  * Server-only marketplace read wiring.
  *
@@ -1230,7 +1230,7 @@ async function readRegisteredDirectorySearch(input: MarketplaceSearchInput) {
   const pool=getPool(runtime.databaseUrl,runtime.databaseSsl);
   let semantic:Parameters<typeof searchDirectoryCatalog>[2];
   let warning:string|null=null;
-  if(input.query?.trim() && runtime.marketplaceSemanticRetrievalEnabled) {
+  if(input.query?.trim() && !isDirectoryIdentifierQuery(input.query) && runtime.marketplaceSemanticRetrievalEnabled) {
     try {
       validateSemanticEmbeddingLock(readCheckedInStandardsLock(),runtime);
       const provider=createEmbeddingProviderFromRuntimeConfig(runtime,ref=>process.env[ref]);

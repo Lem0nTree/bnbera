@@ -1,6 +1,12 @@
 import type pg from 'pg';
 import type { MarketplaceSearchInput } from './marketplace-contract';
 
+export function isDirectoryIdentifierQuery(query: string): boolean {
+  const text = query.trim();
+  return /^\d+$/u.test(text) || /^0x[0-9a-f]{40,64}$/iu.test(text)
+    || /^(?:[\p{L}\p{N}]+[-_:]){2,}\d+$/u.test(text);
+}
+
 // Filter/count the catalog before loading expensive per-agent commerce projections.
 export const directoryCatalogSql = `select distinct on(i.id) i.id,i.chain_id,i.agent_id,a.origin_type,a.verification_status,a.runtime_status,
  a.listing_status,eo.agent_version_id,eo.normalized_payload as profile,eo.source_timestamp,
@@ -36,7 +42,7 @@ export async function searchDirectoryCatalog(pool:pg.Pool,input:MarketplaceSearc
   const tokens=(input.query??'').trim().toLowerCase().split(/\s+/u).filter(Boolean);
   const lexical=tokens.length?tokens.map(token=>`strpos(${text},${bind(token)})>0`).join(' and '):'true';
   let join='',distance='null::double precision';
-  if(semantic&&tokens.length) {
+  if(semantic&&tokens.length&&!isDirectoryIdentifierQuery(input.query??'')) {
     const vec=bind(JSON.stringify(semantic.vector));
     join=`left join agent_listing_embeddings e on e.agent_version_id=d.agent_version_id and e.provider=${bind(semantic.provider)} and e.model=${bind(semantic.model)} and e.model_version=${bind(semantic.modelVersion)} and e.source_text_digest=d.profile->>'semanticDigest' and e.dimension=${bind(semantic.dimension)} and e.semantic_document_schema_version=${bind(semantic.schema)}`;
     distance=`e.embedding <=> ${vec}::vector`;
