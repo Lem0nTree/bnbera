@@ -534,6 +534,35 @@ describe("T5 commerce server composition", () => {
     expect(prepareEoaStep).toHaveBeenCalledTimes(4);
   });
 
+  it.each(["confirmed", "reconciled"])("preserves %s funding evidence when a later RPC read fails", async (status) => {
+    const persisted = eoaOperation("fund", status, "7");
+    const markManualReview = vi.fn();
+    const persistEoaFunding = vi.fn();
+    const composition = testComposition({
+      adapter: { pin: PIN, verifyEoaReceipt: vi.fn(async () => { throw new CommerceError({ code: "CHAIN_PROVIDER_INVALID", message: "Receipt RPC unavailable" }); }) },
+      operations: { get: vi.fn(async () => persisted), markManualReview },
+      service: { persistEoaFunding },
+      reads: { get: vi.fn(async () => null) }
+    });
+    const result = await composition.operationStatus(new Request("http://localhost"), persisted.operationId as string);
+    expect(result.operation).toBe(persisted);
+    expect(result.dispatch).toBeNull();
+    expect(markManualReview).not.toHaveBeenCalled();
+    expect(persistEoaFunding).not.toHaveBeenCalled();
+  });
+
+  it("still flags a contradictory confirmed funding receipt for review", async () => {
+    const persisted = eoaOperation("fund", "confirmed", "7");
+    const markManualReview = vi.fn();
+    const composition = testComposition({
+      adapter: { pin: PIN, verifyEoaReceipt: vi.fn(async () => { throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "Receipt actor mismatch" }); }) },
+      operations: { get: vi.fn(async () => persisted), markManualReview },
+      reads: { get: vi.fn(async () => null) }
+    });
+    await expect(composition.operationStatus(new Request("http://localhost"), persisted.operationId as string)).rejects.toMatchObject({ code: "ONCHAIN_MISMATCH" });
+    expect(markManualReview).toHaveBeenCalledWith({ operationId: persisted.operationId, failureCode: "ONCHAIN_MISMATCH" });
+  });
+
   it("rechecks a confirmed create when receipt persistence preceded job ID attachment", async () => {
     const persisted = eoaOperation("create", "confirmed", null);
     const attached = eoaOperation("create", "confirmed", "7");

@@ -952,6 +952,11 @@ export class Erc8183CommerceComposition {
       if (step === "claim_refund") await this.service.persistEoaTerminal(current, verified.job, verified.receipt, "expired");
       return await this.advanceEoa(current, verified);
     } catch (cause) {
+      // A later RPC outage does not invalidate an already verified receipt.
+      // Keep its evidence and allow another read; never dispatch another call.
+      if (cause instanceof CommerceError && cause.code === "CHAIN_PROVIDER_INVALID" && (operation.status === "confirmed" || operation.status === "reconciled")) {
+        return { operation, replayed: true, dispatch: null, read: await this.optionalJob(operation.jobId) };
+      }
       if (cause instanceof CommerceError && cause.code === "TRANSACTION_UNKNOWN") {
         if (operation.status === "confirmed" || operation.status === "manual_review" || operation.status === "reconciled") return { operation, replayed: false, dispatch: null, read: await this.optionalJob(operation.jobId) };
         const unknown = await this.operations.markUnknown({ operationId: operation.operationId, failureCode: "EOA_RECEIPT_PENDING" });
