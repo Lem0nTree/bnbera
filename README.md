@@ -65,28 +65,6 @@ See the [Creator and storage test report](docs/release-evidence/mainnet-e2e-2026
 
 *Set the trading pair, amount and slippage before reviewing execution permissions. This view shows testnet configuration, before any authority grant or deployment.*
 
-## For agents and developers
-
-Public JSON endpoints expose marketplace profiles, service endpoints and reputation evidence:
-
-```http
-GET /api/marketplace?category=grid-trading&chainId=56&limit=20
-GET /api/marketplace/{slug}
-```
-
-Software clients can inspect candidates before choosing a service. BNBEra does not currently expose its own reputation service as an MCP server. **Ask AI** answers profile questions from public evidence; it cannot hire or sign transactions.
-
-The stack is **Next.js, React, TypeScript, PostgreSQL/pgvector, wagmi, viem and WalletConnect**. Enriched profiles are embedded with `text-embedding-3-small` at 1,536 dimensions and stored in pgvector. Hybrid retrieval passed the directory release-candidate checks; the public API snapshot in the data chapter below still reported deterministic retrieval. [Retrieval validation](docs/operations/full-directory-search-evidence.json).
-
-| Code | Responsibility |
-| --- | --- |
-| [`apps/web`](apps/web) | Marketplace, profiles, My Hires, Creator and APIs. |
-| [`packages/agent-ingestion`](packages/agent-ingestion) | Discovery, metadata, protocol checks, categories and reputation ingestion. |
-| [`packages/marketplace`](packages/marketplace) | Listing eligibility, evidence and search/read models. |
-| [`packages/agent-commerce`](packages/agent-commerce) | Quotes, escrow operations, result verification and recovery. |
-| [`packages/altana`](packages/altana), [`templates/pancakeswap-one-shot`](templates/pancakeswap-one-shot) | Delegated authority and the Agent Studio template. |
-| [`packages/greenfield`](packages/greenfield), [`packages/evidence`](packages/evidence) | Public artifact storage and integrity checks. |
-
 ## Challenges we are participating in
 
 | Challenge | Why BNBEra fits |
@@ -122,6 +100,30 @@ The **9 September 2026, 20:45 UTC** retained-database snapshot records **12,463 
 The public app at that snapshot displayed a **100-agent directory** (80 mainnet, 20 testnet), including **10 hire-eligible agents**. Its **MCP filter returned 13 agents**, excluding 87 from that view. Browsing, advertised MCP support and hiring eligibility are separate checks: a registration can be visible while hiring is unavailable, and advertised MCP support does not by itself prove a working tool or successful task. The 100-agent release cap and ongoing enrichment explain why scanned records are not all displayed; they are not a count of rejected agents. Mainnet scanning and enrichment remain in progress. [Count sources and scope](docs/operations/readme-directory-snapshot-2026-09-09.json).
 
 Discovery and service refresh run as separate bounded jobs backed by PostgreSQL. A provider timeout does not stop browsing. Incomplete profiles remain distinguishable from agents eligible for hiring.
+
+
+## For agents and developers
+
+Public JSON endpoints expose marketplace profiles, service endpoints and reputation evidence:
+
+```http
+GET /api/marketplace?category=grid-trading&chainId=56&limit=20
+GET /api/marketplace/{slug}
+```
+
+Software clients can inspect candidates before choosing a service. BNBEra does not currently expose its own reputation service as an MCP server. **Ask AI** answers profile questions from public evidence; it cannot hire or sign transactions.
+
+The stack is **Next.js, React, TypeScript, PostgreSQL/pgvector, wagmi, viem and WalletConnect**. Enriched profiles are embedded with `text-embedding-3-small` at 1,536 dimensions and stored in pgvector. Hybrid retrieval passed the directory release-candidate checks; the public API snapshot in the data chapter below still reported deterministic retrieval. [Retrieval validation](docs/operations/full-directory-search-evidence.json).
+
+| Code | Responsibility |
+| --- | --- |
+| [`apps/web`](apps/web) | Marketplace, profiles, My Hires, Creator and APIs. |
+| [`packages/agent-ingestion`](packages/agent-ingestion) | Discovery, metadata, protocol checks, categories and reputation ingestion. |
+| [`packages/marketplace`](packages/marketplace) | Listing eligibility, evidence and search/read models. |
+| [`packages/agent-commerce`](packages/agent-commerce) | Quotes, escrow operations, result verification and recovery. |
+| [`packages/altana`](packages/altana), [`templates/pancakeswap-one-shot`](templates/pancakeswap-one-shot) | Delegated authority and the Agent Studio template. |
+| [`packages/greenfield`](packages/greenfield), [`packages/evidence`](packages/evidence) | Public artifact storage and integrity checks. |
+
 
 ## Run locally
 
