@@ -151,8 +151,11 @@ def deploy(sha, config):
             run(wrapper + ["pnpm", "build"], cwd=release, env=env, stdout=log, stderr=log)
             (release / ".deploy-built").touch()
         # Existing read-only check includes exact migration journal hashes. No migrations run here.
+        # Its early core-gate check expects writer flags off. Scope that to the
+        # probe; the app and separately supervised ingestion retain their config.
+        probe_env = {**env, "ERC8004_INGESTION_ENABLED": "false", "ERC8004SCAN_DISCOVERY_ENABLED": "false"}
         run(wrapper + ["pnpm", "exec", "tsx", "scripts/marketplace-readiness.ts", "--database-only"],
-            cwd=release, env=env, stdout=log, stderr=log)
+            cwd=release, env=probe_env, stdout=log, stderr=log)
         build_id = (release / "apps/web/.next/BUILD_ID").read_text().strip()
         if not re.fullmatch(r"[A-Za-z0-9_-]+", build_id):
             raise RuntimeError("INVALID_BUILD_ID")
