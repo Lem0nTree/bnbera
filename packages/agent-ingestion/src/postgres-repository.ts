@@ -1104,7 +1104,6 @@ export class PostgresIngestionRepository implements IngestionRepository, ScanDis
     // The provider's live catalog can grow or shrink between pages. Total is
     // an observation, while query identity and cursor advancement are invariants.
     if (
-      (existing.nextOffset !== null && input.nextCursor !== null) ||
       (existing.nextCursor !== null && input.nextOffset !== null)
     ) {
       scanConflict("The 8004scan pagination mode changed within one query stream.", { existing, input });

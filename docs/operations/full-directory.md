@@ -7,6 +7,13 @@ never invokes agents or writes chain transactions.
 Discovery uses `directory-full-v1:56` and `directory-full-v1:97` in
 `scan_discovery_checkpoints`: 100 records/page, ascending creation time,
 transactional page checkpoints, bounded runs and resume after restart.
+The provider now caps shallow offsets at 10,000. The adapter follows its
+opaque `next_cursor` with identical filters/order and without an offset. To
+resume a legacy checkpoint immediately beyond that window, it rereads the
+preceding supported page only to obtain the handoff cursor; candidates from
+that page are not ingested twice. Cursor checkpoints never revert to offsets.
+The 2026-09-09 live cursor was 239 characters; the existing checkpoint column
+supports 256. Longer future cursors fail closed pending a forward schema change.
 Live provider totals may change between pages without invalidating the cursor.
 Full-page requests have a 60-second timeout within the bounded job deadline.
 Completion means this source sweep ended, not that enrichment finished or that
@@ -67,3 +74,9 @@ The scan service can load a temporary key from the owner-only file
 only that worker's credential. After rotating this file, remove only
 `.runtime/full-directory/provider-cooldown.json` and restart the scan service
 to recheck access immediately; preserve database checkpoints.
+
+Cursor contract review: the live [provider OpenAPI](https://api.8004scan.io/openapi.json)
+documents cursor traversal for `created_at` ordering, mutually exclusive
+cursor/offset parameters, and a maximum offset of 10,000. A live request at
+offset 10,100 returned HTTP 422. The September 4 full-document hashes remain
+historical pins; this additive pagination behavior was reviewed separately.

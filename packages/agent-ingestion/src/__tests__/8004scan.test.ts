@@ -35,6 +35,24 @@ const summary = {
 } as const;
 
 describe("reviewed 8004scan contract boundary", () => {
+  it("bridges a legacy offset checkpoint and follows opaque cursors without offset", async () => {
+    const urls: URL[] = [];
+    const client = new EightHundredFourScanHttpClient({ minRequestIntervalMs: 0, maxRetries: 0,
+      fetch: async input => {
+        const url = new URL(String(input)); urls.push(url);
+        return Response.json({ items: [summary], total: 311820, limit: 100, offset: 0,
+          has_more: urls.length === 1, next_cursor: urls.length === 1 ? "opaque-page-cursor" : null });
+      } });
+    const result = await client.listCandidates({ chainId: 56, isActive: "any", sortBy: "created_at", sortOrder: "asc", offset: 10100, limit: 100 });
+    expect(urls[0]!.searchParams.get("offset")).toBe("10000");
+    expect(urls[1]!.searchParams.has("offset")).toBe(false);
+    expect(urls[1]!.searchParams.get("cursor")).toBe("opaque-page-cursor");
+    expect(urls[1]!.searchParams.get("is_active")).toBe("any");
+    expect(result).toMatchObject({ nextCursor: null, nextOffset: null });
+    await expect(client.listCandidates({ offset: 0, cursor: "opaque" })).rejects.toMatchObject({ code: "SCAN_CONFIG_INVALID" });
+    await expect(client.listCandidates({ offset: 50000 })).rejects.toMatchObject({ code: "SCAN_CONFIG_INVALID" });
+  });
+
   it("accepts a full 100-profile page while preserving each profile's safety budget", async () => {
     const items = Array.from({ length: 100 }, (_, index) => ({ ...summary, id: `summary-${index}`, extraPublicFacts: Array.from({ length: 30 }, (_, fact) => `fact-${fact}`) }));
     const client = new EightHundredFourScanHttpClient({ minRequestIntervalMs: 0, maxRetries: 0,

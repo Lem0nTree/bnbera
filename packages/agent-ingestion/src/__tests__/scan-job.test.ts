@@ -33,6 +33,23 @@ const enabled = {
 } as const;
 
 describe("bounded resumable 8004scan discovery job", () => {
+  it("switches from offset to cursor and resumes without reintroducing offset zero", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const adapter = adapterFor(async query => query.offset === 0
+      ? { candidates: [candidate("90")], nextOffset: 1, nextCursor: null, total: 3 }
+      : query.cursor === undefined
+        ? { candidates: [candidate("91")], nextOffset: null, nextCursor: "opaque-next", total: 3 }
+        : { candidates: [candidate("92")], nextOffset: null, nextCursor: null, total: 3 });
+    const query = { chainId: 97, limit: 1 };
+    await new Erc8004ScanJob({ repository, adapter, gates: enabled }).run({ scope: "cursor-resume", query, maxPages: 1 });
+    await new Erc8004ScanJob({ repository, adapter, gates: enabled }).run({ scope: "cursor-resume", query, maxPages: 1 });
+    const result = await new Erc8004ScanJob({ repository, adapter, gates: enabled }).run({ scope: "cursor-resume", query, maxPages: 1 });
+    expect(adapter.fetchPage.mock.calls[2]![0]).toMatchObject({ cursor: "opaque-next" });
+    expect(adapter.fetchPage.mock.calls[2]![0]).not.toHaveProperty("offset");
+    expect(result.status).toBe("completed");
+    expect(await repository.listIdentities()).toHaveLength(3);
+  });
+
   it("resumes when the live catalog total changes between pages", async () => {
     const repository = new InMemoryIngestionRepository();
     const adapter = adapterFor(async (query) => {

@@ -734,7 +734,6 @@ export class InMemoryIngestionRepository implements IngestionRepository, ScanDis
     }
     // A live catalog's total is an observation, not a cursor invariant.
     if (
-      (existing.nextOffset !== null && input.nextCursor !== null) ||
       (existing.nextCursor !== null && input.nextOffset !== null)
     ) {
       throw scanCheckpointConflict("The 8004scan pagination mode changed within one query stream.", { existing, input });
