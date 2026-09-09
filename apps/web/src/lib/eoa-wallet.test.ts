@@ -37,4 +37,13 @@ describe("EOA buyer authority binding", () => {
     expect(isEoaDispatchGenerationCurrent(4, 4, snapshot({ address: OTHER_ADDRESS }), ADDRESS)).toBe(false);
     expect(isEoaDispatchGenerationCurrent(4, 4, snapshot({ chainId: 56 }), ADDRESS)).toBe(false);
   });
+
+  it("requires the exact mainnet operation chain without changing the testnet default", () => {
+    const mainnet = snapshot({ chainId: 56 });
+    expect(isEoaDispatchGenerationCurrent(4, 4, mainnet, ADDRESS, 56)).toBe(true);
+    expect(isEoaDispatchGenerationCurrent(4, 4, snapshot(), ADDRESS, 56)).toBe(false);
+    expect(isEoaDispatchGenerationCurrent(4, 5, mainnet, ADDRESS, 56)).toBe(false);
+    expect(isEoaDispatchGenerationCurrent(4, 4, mainnet, OTHER_ADDRESS, 56)).toBe(false);
+    expect(isEoaDispatchGenerationCurrent(4, 4, mainnet, ADDRESS)).toBe(false);
+  });
 });

@@ -1,4 +1,5 @@
 /** The browser only receives exact WalletConnect EOA calls from the server. */
+export { referenceBuyerTaskSchema, parseReferenceBuyerTask } from "./reference-task.js";
 export {
   ERC8183_EOA_CHAIN_ID,
   ERC8183_EOA_CONTRACTS,

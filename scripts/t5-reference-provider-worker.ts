@@ -116,7 +116,8 @@ export function createReferenceProviderAuthorityResolver(env: WorkerEnvironment)
       throw new CommerceError({ code: "COMMERCE_DISABLED", message: "This reference worker has no resolver for the configured secret-manager scheme.", nextAction: "configure_secret_reference" });
     }
     const secretName = match[1];
-    const rawKey = secretName === undefined ? undefined : nonEmpty(env, secretName);
+    const storedKey = secretName === undefined ? undefined : nonEmpty(env, secretName);
+    const rawKey = storedKey && /^[0-9a-f]{64}$/iu.test(storedKey) ? `0x${storedKey}` : storedKey;
     if (rawKey === undefined || !/^0x[0-9a-f]{64}$/iu.test(rawKey)) {
       throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The configured provider authority secret reference could not be resolved.", nextAction: "configure_secret_reference" });
     }
@@ -198,6 +199,10 @@ export async function runReferenceProviderWorker(input: {
   const config = referenceProviderRunnerConfigFromEnvironment(env);
   if (!config.enabled) {
     return { status: "disabled", idempotencyKey: "disabled", operation: null };
+  }
+  if(env.T5_REFERENCE_PROVIDER_AGENT_ID==="2293" && env.T5_REFERENCE_PROVIDER_JOB_ID!=="1171" &&
+    (env.T5_REFERENCE_SERVICE_ENABLED!=="true"||dependencies.compose===undefined)) {
+    throw new CommerceError({code:"COMMERCE_DISABLED",message:"New reference jobs require the durable bounded service transport; the legacy exact-job command cannot dispatch them.",nextAction:"inspect_bounded_service"});
   }
   const databaseUrl = nonEmpty(env, "DATABASE_URL");
   if (databaseUrl === undefined) {

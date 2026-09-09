@@ -4,25 +4,14 @@ import {
   createReferenceHealthFactorTask,
   referenceHealthFactorInvocationSchema
 } from "@bnbera/agent-commerce";
+import { boundedJsonBody } from "@/lib/bounded-json-body";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const maxBodyBytes = 64 * 1024;
-
-async function parseBody(request: Request): Promise<unknown> {
-  const contentLength = request.headers.get("content-length");
-  if (contentLength !== null && (!/^[0-9]+$/u.test(contentLength) || Number(contentLength) > maxBodyBytes)) {
-    throw new Error("request too large");
-  }
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > maxBodyBytes) throw new Error("request too large");
-  return JSON.parse(body) as unknown;
-}
-
 export async function POST(request: Request): Promise<Response> {
   try {
-    const parsed = referenceHealthFactorInvocationSchema.parse(await parseBody(request));
+    const parsed = referenceHealthFactorInvocationSchema.parse(await boundedJsonBody(request));
     const task = createReferenceHealthFactorTask({
       jobKey: parsed.jobKey,
       providerBinding: parsed.providerBinding,

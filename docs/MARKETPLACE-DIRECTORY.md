@@ -2,6 +2,8 @@
 
 Implemented 2026-09-09 for the bounded mainnet/testnet marketplace review. This is a read-only-chain discovery surface, not acceptance of a payment, Creator or Greenfield gate.
 
+Follow-up: [Protocol verification and bounded commerce acceptance](PROTOCOL-COMMERCE-REVIEW.md) supersedes the initial card-check-only/no-cron state below. It documents fresh A2A/MCP/Web checks, reference 97/2293, the completed 0.001-U testnet WalletConnect lifecycle, and paused new-task admission. Initial-sync counts below are historical observations, not current live health.
+
 ## Why the old marketplace showed zero
 
 The retained database contained 2,211 identities on chain 97 and no mainnet identities. The existing ingestion runner defaulted to the configured testnet and a 20-candidate batch. Its publication-oriented projection omitted 2,174 identities without a complete executable metadata/capability projection; the remaining 37 were excluded by its callable-service gate. An unknown/stale probe was presented under the same `ENDPOINT_UNHEALTHY` reason as a recent failed probe. Those counts were not a measurement of all ERC-8004 registrations on BSC.

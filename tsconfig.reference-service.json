@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true, "allowImportingTsExtensions": true, "baseUrl": ".",
+    "paths": {
+      "viem": ["packages/agent-commerce/node_modules/viem/_types/index.d.ts"],
+      "viem/*": ["packages/agent-commerce/node_modules/viem/_types/*/index.d.ts"]
+    }
+  },
+  "files": ["scripts/t5-reference-service.ts", "scripts/t5-reference-quoted-worker.ts", "scripts/reference-admission-db-check.ts"]
+}

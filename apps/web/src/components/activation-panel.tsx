@@ -7,6 +7,7 @@ export function ActivationPanel({
   activation,
   detail = false,
   identityKey = "agent",
+  targetChainId,
   commerceJobId = null,
   runBundle
 }: {
@@ -14,6 +15,7 @@ export function ActivationPanel({
   readonly detail?: boolean;
   /** Canonical ERC-8004 identity key; slugs are presentation-only. */
   readonly identityKey?: string;
+  readonly targetChainId?: 56 | 97;
   readonly commerceJobId?: string | null;
   readonly runBundle?: MarketplaceAgentReadModel["evidence"]["runBundle"];
 }) {
@@ -31,7 +33,7 @@ export function ActivationPanel({
       <p className="activation-panel__footnote">
         {activation.nextAction} · Browser signing is user-controlled; the server stores only public operation evidence.
       </p>
-      {detail && <CommerceJourney activation={activation} identityKey={identityKey} commerceJobId={commerceJobId} runBundle={runBundle} />}
+      {detail && <CommerceJourney activation={activation} {...(targetChainId === undefined ? {} : { targetChainId })} identityKey={identityKey} commerceJobId={commerceJobId} runBundle={runBundle} />}
     </div>
   );
 

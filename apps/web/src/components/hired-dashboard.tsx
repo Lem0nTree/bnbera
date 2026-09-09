@@ -7,12 +7,12 @@ import { erc8004IdentityKey } from "@bnbera/domain";
 import { Callout, EmptyState, LoadingState, StatusBadge } from "@bnbera/ui";
 import type { BuyerJobSummary, CommerceJobsResponse } from "@/lib/commerce-job-list";
 import { CommerceJourney } from "./commerce-journey";
-import { buyerHistoryResponseCurrent, buyerSessionKey, hiredJobMatches } from "@/lib/hired-presentation";
+import { buyerHistoryResponseCurrent, buyerSessionKey, hiredJobMatches, hiredWalletTargetChain } from "@/lib/hired-presentation";
 const activation = { enabled: false, availability: "unavailable", method: "erc8183", title: "Persisted hire", reason: "Resume an existing buyer-owned job.", nextAction: "Inspect persisted status" } as const;
-export function HiredDashboard() {
-  return <HiredDashboardInner />;
+export function HiredDashboard({ defaultChainId = 97 }: { defaultChainId?: 56 | 97 }) {
+  return <HiredDashboardInner defaultChainId={defaultChainId} />;
 }
-function HiredDashboardInner() {
+function HiredDashboardInner({ defaultChainId }: { defaultChainId: 56 | 97 }) {
   const { address, chainId, isConnected } = useAccount();
   const walletKey = `${isConnected}:${address?.toLowerCase() ?? ""}:${chainId ?? ""}`;
   const walletKeyRef = useRef(walletKey);
@@ -42,7 +42,7 @@ function HiredDashboardInner() {
     return buyerSessionKey(await response.json() as { authenticated?: boolean; walletAddress?: string; chainId?: number; expiresAt?: string }, address, chainId);
   }, [address, chainId, isConnected]);
   const load = useCallback(async (nextCursor: string | null = null) => {
-    if (!isConnected || !address || chainId !== 97) { clearHistory(); return; }
+    if (!isConnected || !address || (chainId !== 97 && chainId !== 56)) { clearHistory(); return; }
     controller.current?.abort();
     const requestController = new AbortController();
     controller.current = requestController;
@@ -86,7 +86,7 @@ function HiredDashboardInner() {
   const visibleSelected = historyWalletKey === walletKey ? selected : null;
   return <section className="section-block">
     {authRequired && <Callout title="Sign in to view your hires" tone="info">Connect the buyer wallet you used to hire agents, then sign in to load your history.</Callout>}
-    <CommerceJourney activation={activation} identityKey="hired-wallet" walletOnly onAuthenticated={authenticated} />
+    <CommerceJourney activation={activation} targetChainId={hiredWalletTargetChain(defaultChainId, chainId)} identityKey="hired-wallet" walletOnly onAuthenticated={authenticated} />
     <button className="button button--ghost" disabled={busy} onClick={() => void load()} type="button">{busy ? "Loading history…" : "Reload history"}</button>
     {error && <Callout title="History unavailable" tone="warning">{error}</Callout>}
     {!jobs && busy && <LoadingState label="Loading your buyer-owned jobs" />}
@@ -103,6 +103,6 @@ function HiredDashboardInner() {
       {jobs.length > 0 && !jobs.some((job) => hiredJobMatches(job, filter)) && <EmptyState title="No loaded jobs match this filter">Choose another filter or load more history.</EmptyState>}
       {cursor && <button className="button button--ghost" disabled={busy} type="button" onClick={() => void load(cursor)}>Load more jobs</button>}
     </>}
-    {visibleSelected?.latestOperation && <section className="section-block"><h2>{visibleSelected.agent.name ?? "Hired agent"} · job {visibleSelected.protocolJobId ?? "pending"}</h2><p>This is the persisted hire for version {visibleSelected.agent.version}. Its current marketplace listing may have changed.</p><CommerceJourney key={visibleSelected.commerceJobId} activation={activation} identityKey={erc8004IdentityKey(visibleSelected.agent.identity)} commerceJobId={visibleSelected.commerceJobId} resumeOperationId={visibleSelected.latestOperation.operationId} expectedProtocolJobId={visibleSelected.protocolJobId} /></section>}
+    {visibleSelected?.latestOperation && <section className="section-block"><h2>{visibleSelected.agent.name ?? "Hired agent"} · job {visibleSelected.protocolJobId ?? "pending"}</h2><p>This is the persisted hire for version {visibleSelected.agent.version}. Its current marketplace listing may have changed.</p><CommerceJourney key={visibleSelected.commerceJobId} activation={activation} targetChainId={visibleSelected.price.chainId === 56 ? 56 : 97} identityKey={erc8004IdentityKey(visibleSelected.agent.identity)} commerceJobId={visibleSelected.commerceJobId} resumeOperationId={visibleSelected.latestOperation.operationId} expectedProtocolJobId={visibleSelected.protocolJobId} /></section>}
   </section>;
 }

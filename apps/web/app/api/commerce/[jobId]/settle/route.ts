@@ -22,7 +22,7 @@ export async function POST(
     const { jobId: rawJobId } = await params;
     const jobId = parseCommerceJobId(rawJobId);
     const input = await parseCommerceJson(request, commerceSettleRequestSchema);
-    const composition = await getCommerceComposition();
+    const composition = await getCommerceComposition(request);
     const result = await composition.settle(request, jobId, input.idempotencyKey);
     return commerceHttpJson(commerceActionResponse({
       status: result.replayed ? "replayed" : "prepared",

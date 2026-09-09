@@ -9,6 +9,7 @@ import {
 import { ingestionError, type IngestionErrorCode } from "./errors.js";
 import {
   resolveSafePublicNetworkTarget,
+  normalizedContentType,
   type MetadataResolverOptions
 } from "./metadata.js";
 import { assertSafePublicValue } from "./normalize.js";
@@ -23,7 +24,7 @@ type ProbeValidationStatus = Extract<ServiceValidationStatus, "healthy" | "unhea
 export type ServiceProbeTransportInput = {
   readonly url: string;
   /** The explicit service kind is used for protocol validation. */
-  readonly kind?: ServiceKind;
+  readonly kind?: ServiceKind | "web" | "api";
   /** Provider-declared protocol version; never guessed or used as a credential. */
   readonly protocolVersion?: string;
   readonly timeoutMs: number;
@@ -88,10 +89,6 @@ const controlPattern = /[\u0000-\u001f\u007f]/u;
 const credentialQueryKey = /(?:api[_-]?key|access[_-]?token|authorization|credential|password|private[_-]?key|secret|token)/iu;
 const serviceUrlLength = 2_048;
 const safeSummaryArrayLimit = 32;
-
-function normalizedContentType(value: string | null | undefined): string {
-  return value?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-}
 
 function publicString(value: unknown, maximum = 256): string | null {
   return typeof value === "string" && value.trim().length > 0 && value.length <= maximum && !controlPattern.test(value)
@@ -238,7 +235,8 @@ async function readBoundedBody(response: Response, maxResponseBytes: number): Pr
 async function readJsonObject(
   response: Response,
   maxResponseBytes: number,
-  invalidCode: IngestionErrorCode
+  invalidCode: IngestionErrorCode,
+  validate: (value: unknown) => void = (value) => assertSafePublicValue(value, "serviceProbe")
 ): Promise<Record<string, unknown>> {
   const contentType = normalizedContentType(response.headers.get("content-type"));
   if (!jsonContentType.test(contentType)) {
@@ -253,7 +251,7 @@ async function readJsonObject(
     throw protocolError(invalidCode, "The service returned invalid JSON protocol evidence.", "repair_service_contract");
   }
   try {
-    assertSafePublicValue(body, "serviceProbe");
+    validate(body);
   } catch {
     throw protocolError(invalidCode, "The service protocol evidence is too large or contains unsafe fields.", "repair_service_contract");
   }
@@ -549,7 +547,8 @@ function validateTransportInput(input: ServiceProbeTransportInput): void {
 /**
  * Safe GET transport for advertised services. It probes the URL as supplied,
  * follows only explicitly bounded HTTPS redirects, validates each protocol's
- * read-only contract, and never sends JSON-RPC, payment, or tool messages.
+ * read-only contract. MCP sends only initialization and capability-list
+ * JSON-RPC messages; never payment, tool invocation, or task messages.
  */
 export class HttpServiceProbeTransport implements ServiceProbeTransport {
   private readonly fetcher: typeof globalThis.fetch;
@@ -572,6 +571,7 @@ export class HttpServiceProbeTransport implements ServiceProbeTransport {
   public async probe(input: ServiceProbeTransportInput): Promise<ServiceProbeTransportResponse> {
     validateTransportInput(input);
     const kind = input.kind ?? "adapter";
+    if (kind === "mcp") return this.probeMcp(input);
     if (kind === "mpp") {
       throw protocolError("SERVICE_PROTOCOL_UNSUPPORTED", "MPP probing is disabled until a reviewed read-only contract is pinned.", "review_service_protocol");
     }
@@ -592,11 +592,9 @@ export class HttpServiceProbeTransport implements ServiceProbeTransport {
       const timer = setTimeout(() => controller.abort(), input.timeoutMs);
       let response: Response;
       try {
-        const accept = kind === "mcp"
-          ? "text/event-stream"
-          : kind === "a2a"
+        const accept = kind === "a2a"
             ? "application/a2a+json, application/json;q=0.9"
-            : "application/json";
+            : kind === "web" ? "text/html, application/json;q=0.9" : "application/json";
         response = await this.fetcher(current.toString(), {
           method: "GET",
           headers: { accept, "accept-encoding": "identity" },
@@ -647,22 +645,6 @@ export class HttpServiceProbeTransport implements ServiceProbeTransport {
           throw protocolError("SERVICE_RESPONSE_TOO_LARGE", "Compressed service responses are not accepted by the bounded probe.", "serve_uncompressed_response");
         }
 
-        if (kind === "mcp" && response.status === 405) {
-          await cancelBody(response);
-          return {
-            statusCode: response.status,
-            latencyMs,
-            contentType: contentType || null,
-            contractStatus: "healthy",
-            safeCapabilityProbe: {
-              protocol: "mcp",
-              transport: "streamable-http",
-              contract: "safe-get-405",
-              capabilityValidation: "transport-only"
-            }
-          };
-        }
-
         if (kind === "x402" && response.status === 402) {
           const body = contentType === "" || jsonContentType.test(contentType)
             ? await readJsonObject(response, input.maxResponseBytes, "SERVICE_X402_CHALLENGE_INVALID").catch((error) => {
@@ -688,22 +670,12 @@ export class HttpServiceProbeTransport implements ServiceProbeTransport {
           return { statusCode: response.status, latencyMs, contentType: contentType || null, errorCode, contractStatus: "unhealthy" };
         }
 
-        if (kind === "mcp") {
-          await cancelBody(response);
-          if (!sseContentType.test(contentType)) throw protocolError("SERVICE_MCP_CONTRACT_INVALID", "The MCP GET endpoint must return text/event-stream or HTTP 405.", "repair_mcp_transport");
-          const contentLength = response.headers.get("content-length");
-          if (contentLength !== null && /^[0-9]+$/u.test(contentLength) && Number(contentLength) > input.maxResponseBytes) throw protocolError("SERVICE_RESPONSE_TOO_LARGE", "The MCP stream exceeds the configured size limit.", "reduce_probe_response");
+        if (kind === "web" || kind === "api") {
+          const bytes = await readBoundedBody(response, input.maxResponseBytes);
+          if (bytes.byteLength === 0) throw protocolError("SERVICE_PROBE_FAILED", "The advertised page returned an empty response.", "repair_service_response");
           return {
-            statusCode: response.status,
-            latencyMs,
-            contentType,
-            contractStatus: "healthy",
-            safeCapabilityProbe: {
-              protocol: "mcp",
-              transport: "streamable-http",
-              contract: "safe-get-sse",
-              capabilityValidation: "transport-only"
-            }
+            statusCode: response.status, latencyMs, contentType, contractStatus: "healthy",
+            safeCapabilityProbe: { protocol: kind, contract: "http-availability-only", capabilityEvidence: "not-tested" }
           };
         }
 
@@ -714,13 +686,15 @@ export class HttpServiceProbeTransport implements ServiceProbeTransport {
             : kind === "adapter"
               ? "SERVICE_ADAPTER_CONTRACT_INVALID"
               : "SERVICE_PROBE_FAILED";
-        const body = await readJsonObject(response, input.maxResponseBytes, invalidCode);
+        const body = await readJsonObject(response, input.maxResponseBytes, invalidCode,
+          kind === "a2a" ? value => assertBoundedProtocolResponse(value, invalidCode) : undefined);
         if (kind === "a2a") {
           const safeCapabilityProbe = validateA2AAgentCard(body, input, this.allowInsecureHttp);
           await validateA2AInvocationTargets(safeCapabilityProbe, {
             lookup: this.lookup,
             allowPrivateAddresses: this.allowPrivateAddresses
           });
+          assertSafePublicValue(safeCapabilityProbe, "serviceProbe");
           return { statusCode: response.status, latencyMs, contentType, contractStatus: "healthy", safeCapabilityProbe };
         }
         if (kind === "readiness") {
@@ -739,6 +713,126 @@ export class HttpServiceProbeTransport implements ServiceProbeTransport {
       }
     }
   }
+
+  /** MCP Streamable HTTP lifecycle only. Never invokes a tool or supplies credentials. */
+  private async probeMcp(input: ServiceProbeTransportInput): Promise<ServiceProbeTransportResponse> {
+    const started = Date.now();
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const timer = setTimeout(abort, input.timeoutMs);
+    input.signal?.addEventListener("abort", abort, { once: true });
+    const targetOptions = { lookup: this.lookup, allowPrivateAddresses: this.allowPrivateAddresses, allowInsecureHttp: this.allowInsecureHttp };
+    let session: string | null = null; // Ephemeral transport credential: never persisted or logged.
+    let version = "2025-11-25";
+    let lastStatus = 0;
+    let lastMime: string | null = null;
+    const request = async (method: string, id?: number, params?: unknown): Promise<Record<string, unknown> | null> => {
+      const remaining = input.timeoutMs - (Date.now() - started);
+      if (remaining <= 0 || input.signal?.aborted || controller.signal.aborted) throw protocolError("SERVICE_PROBE_TIMEOUT", "The MCP handshake timed out.", "retry_probe", true);
+      const target = await resolveServiceTarget(input.url, targetOptions, remaining);
+      const response = await this.fetcher(target.url.toString(), {
+        method: "POST", redirect: "manual", signal: controller.signal,
+        headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "accept-encoding": "identity",
+          ...(method === "initialize" ? {} : { "MCP-Protocol-Version": version }), ...(session === null ? {} : { "Mcp-Session-Id": session }) },
+        body: JSON.stringify({ jsonrpc: "2.0", ...(id === undefined ? {} : { id }), method, ...(params === undefined ? {} : { params }) })
+      });
+      lastStatus = response.status; lastMime = normalizedContentType(response.headers.get("content-type")) || null;
+      try {
+        const after = await resolveServiceTarget(input.url, targetOptions, Math.max(1, input.timeoutMs - (Date.now() - started)));
+        if (!sameAddressSet(target.addresses, after.addresses)) throw protocolError("SERVICE_DNS_REBINDING", "The service DNS answer changed during the probe.", "review_service_dns");
+        if (!response.ok) throw protocolError(response.status >= 300 && response.status < 400 ? "SERVICE_REDIRECT_BLOCKED" : httpFailureCode(response.status), "The MCP endpoint did not accept the read-only handshake.", "review_service_protocol");
+        if (method === "initialize") {
+          const value = response.headers.get("mcp-session-id");
+          if (value !== null && (!/^[\x21-\x7e]{1,256}$/u.test(value))) throw protocolError("SERVICE_MCP_CONTRACT_INVALID", "The MCP session header is invalid.", "repair_mcp_transport");
+          session = value;
+        }
+        if (id === undefined) return null;
+        let body: Record<string, unknown>;
+        if (sseContentType.test(lastMime ?? "")) body = await readMcpEvent(response, input.maxResponseBytes, id);
+        else body = await readJsonObject(response, input.maxResponseBytes, "SERVICE_MCP_CONTRACT_INVALID", value => assertBoundedProtocolResponse(value, "SERVICE_MCP_CONTRACT_INVALID"));
+        if (body.jsonrpc !== "2.0" || body.id !== id || body.error !== undefined || plainObject(body.result) === null) throw protocolError("SERVICE_MCP_CONTRACT_INVALID", "The MCP JSON-RPC response does not match the request.", "repair_mcp_transport");
+        return plainObject(body.result)!;
+      } finally { await cancelBody(response); }
+    };
+    try {
+      const initialized = (await request("initialize", 1, { protocolVersion: version, capabilities: {}, clientInfo: { name: "bnbera-read-only-verifier", version: "1.0.0" } }))!;
+      const negotiated = publicString(initialized.protocolVersion, 64);
+      const info = plainObject(initialized.serverInfo); const capabilities = plainObject(initialized.capabilities);
+      if (!negotiated || !["2025-11-25", "2025-06-18", "2025-03-26"].includes(negotiated) || !publicString(info?.name, 160) || !publicString(info?.version, 128) || !capabilities) throw protocolError("SERVICE_MCP_CONTRACT_INVALID", "The MCP initialization contract is invalid or unsupported.", "repair_mcp_transport");
+      version = negotiated;
+      await request("notifications/initialized");
+      const kind = plainObject(capabilities.tools) ? "tools" : plainObject(capabilities.resources) ? "resources" : plainObject(capabilities.prompts) ? "prompts" : null;
+      let names: string[] = []; let hasMore = false;
+      if (kind !== null) {
+        const result = (await request(`${kind}/list`, 2, {}))!; const entries = result[kind];
+        if (!Array.isArray(entries) || entries.length > 1000) throw protocolError("SERVICE_MCP_CONTRACT_INVALID", "The MCP capability listing is invalid.", "repair_mcp_transport");
+        names = entries.map(entry => {
+          const item = plainObject(entry); const name = publicString(item?.name, 160);
+          if (!item || !name || (kind === "tools" && (plainObject(item.inputSchema)?.type !== "object"))) throw protocolError("SERVICE_MCP_CONTRACT_INVALID", "The MCP capability schema is invalid.", "repair_mcp_transport");
+          return name;
+        });
+        hasMore = typeof result.nextCursor === "string";
+      }
+      const summary = {
+        protocol: "mcp", contract: "initialize-and-capability-list-v1", protocolVersion: version, serverName: info!.name,
+        capabilityEvidence: "listed-not-invoked", capabilityKind: kind, capabilityCount: names.length, capabilityNames: names.slice(0,32), hasMore,
+        toolInvocationPerformed: false, authenticationSupplied: false
+      };
+      assertSafePublicValue(summary, "serviceProbe");
+      return { statusCode: lastStatus, latencyMs: Date.now() - started, contentType: lastMime, contractStatus: "healthy", safeCapabilityProbe: summary };
+    } catch (error) {
+      const code = controller.signal.aborted ? "SERVICE_PROBE_TIMEOUT" : errorCodeOf(error);
+      return { statusCode: lastStatus, latencyMs: Date.now() - started, contentType: lastMime, contractStatus: "unhealthy", errorCode: code };
+    } finally { clearTimeout(timer); input.signal?.removeEventListener("abort", abort); }
+  }
+}
+
+/** MCP and A2A extension JSON Schemas are deeper than persisted profile metadata. This
+ * bounded wire document stays in memory; only the small allowlisted summary
+ * above crosses the unchanged public-metadata boundary. */
+function assertBoundedProtocolResponse(value: unknown, invalidCode: IngestionErrorCode, depth = 0, budget = { nodes: 0 }): void {
+  if (depth > 32 || budget.nodes++ > 50_000) throw protocolError(invalidCode, "The protocol schema exceeds the structural bound.", "reduce_probe_response");
+  if (value === null || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) return;
+  if (typeof value === "string" && value.length <= 10_000) return;
+  if (Array.isArray(value)) {
+    if (value.length > 1_000) throw protocolError(invalidCode, "The protocol array exceeds the structural bound.", "reduce_probe_response");
+    for (const item of value) assertBoundedProtocolResponse(item, invalidCode, depth + 1, budget);
+    return;
+  }
+  const object = plainObject(value);
+  if (!object) throw protocolError(invalidCode, "The protocol response has an unsupported value.", "repair_service_contract");
+  for (const [key, child] of Object.entries(object)) {
+    if (/(private[_-]?key|secret|password|mnemonic|seed phrase|access[_-]?token|api[_-]?key|authorization|credential)/iu.test(key)) {
+      throw protocolError(invalidCode, "The protocol response contains credential-bearing fields.", "repair_service_contract");
+    }
+    assertBoundedProtocolResponse(child, invalidCode, depth + 1, budget);
+  }
+}
+
+/** Read one matching JSON-RPC event, then close the stream instead of waiting indefinitely. */
+async function readMcpEvent(response: Response, limit: number, id: number): Promise<Record<string, unknown>> {
+  const reader = response.body?.getReader();
+  if (!reader) throw protocolError("SERVICE_MCP_CONTRACT_INVALID", "The MCP stream is empty.", "repair_mcp_transport");
+  let size = 0; let text = ""; const decoder = new TextDecoder();
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > limit) throw protocolError("SERVICE_RESPONSE_TOO_LARGE", "The MCP stream exceeded the response bound.", "reduce_probe_response");
+      text += decoder.decode(chunk.value, { stream: true }); text = text.replace(/\r\n/gu, "\n");
+      let boundary: number;
+      while ((boundary = text.indexOf("\n\n")) >= 0) {
+        const event = text.slice(0,boundary); text = text.slice(boundary+2);
+        const data = event.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
+        if (!data) continue;
+        let body: Record<string, unknown> | null;
+        try { body = plainObject(JSON.parse(data)); } catch { throw protocolError("SERVICE_MCP_CONTRACT_INVALID", "The MCP stream contains invalid JSON.", "repair_mcp_transport"); }
+        if (body?.id === id) { assertBoundedProtocolResponse(body, "SERVICE_MCP_CONTRACT_INVALID"); return body; }
+      }
+    }
+    throw protocolError("SERVICE_MCP_CONTRACT_INVALID", "The MCP stream contains no matching response.", "repair_mcp_transport");
+  } finally { try { await reader.cancel(); } catch { /* best effort */ } reader.releaseLock(); }
 }
 
 export type ServiceProbeResult = ServiceProbeRecord;

@@ -22,7 +22,7 @@ export async function POST(
     const { jobId: rawJobId } = await params;
     const jobId = parseCommerceJobId(rawJobId);
     const input = await parseCommerceJson(request, commerceApprovalOrDisputeRequestSchema);
-    const composition = await getCommerceComposition();
+    const composition = await getCommerceComposition(request);
     const result = await composition.approveOrDispute(request, jobId, input);
     return commerceHttpJson(commerceActionResponse({
       status: result.replayed ? "replayed" : "prepared",

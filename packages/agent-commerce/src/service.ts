@@ -838,7 +838,9 @@ export class Erc8183CommerceService {
               : {};
     const taskDigest = input.task === undefined ? undefined : PostgresErc8183OperationRepository.requestDigest(input.task);
     const parameters: Record<string, unknown> = {
-      connector: "walletConnect",
+      // The server binds the signer and chain, not the extension's brand.
+      // Both injected wallets and WalletConnect expose this browser transport.
+      connector: "eip1193",
       eoaStep: input.step,
       ...(jobId === null ? {} : { jobId }),
       ...(input.providerAddress === undefined ? {} : { providerAddress: normalizeAddress(input.providerAddress, "provider address") }),

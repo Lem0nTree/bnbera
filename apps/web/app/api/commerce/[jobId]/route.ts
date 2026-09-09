@@ -18,7 +18,7 @@ export async function GET(
   try {
     const { jobId: rawJobId } = await params;
     const jobId = parseCommerceJobId(rawJobId);
-    const composition = await getCommerceComposition();
+    const composition = await getCommerceComposition(request);
     const job = await composition.status(request, jobId);
     return commerceHttpJson(commerceStatusResponse(job));
   } catch (error) {

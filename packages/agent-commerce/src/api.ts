@@ -85,6 +85,7 @@ export const erc8183JobReadSchema = z.object({
   job: erc8183JobRecordSchema,
   submission: erc8183ConfirmedSubmissionSchema.nullable(),
   operations: z.array(erc8183PublicOperationSchema).max(128),
+  settlementGate: z.object({status:z.enum(["waiting","ready","unavailable"]),notBeforeUnix:z.number().int().positive().nullable(),windowSeconds:z.number().int().nonnegative().nullable()}).optional(),
   approvalRequired: z.boolean()
 }).strict();
 export type Erc8183JobRead = z.infer<typeof erc8183JobReadSchema>;

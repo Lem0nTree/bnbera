@@ -20,7 +20,7 @@ export const runtime = "nodejs";
 export async function POST(request: Request): Promise<Response> {
   try {
     const input = await parseCommerceJson(request, commerceQuoteRequestSchema);
-    const composition = await getCommerceComposition();
+    const composition = await getCommerceComposition(request);
     const quote = await composition.createQuote(request, input);
     return commerceHttpJson(commerceQuoteResponse(quote));
   } catch (error) {

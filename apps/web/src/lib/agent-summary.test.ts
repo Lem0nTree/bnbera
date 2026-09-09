@@ -21,7 +21,7 @@ describe("agent decision summaries", () => {
   it("expires healthy heartbeat and uses only supported explorer origins", async () => {
     const original = await fixture();
     const agent = { ...original, dataProvenance: { ...original.dataProvenance, mode: "live" as const }, health: { ...original.health, endpointStatus: "healthy" as const, observedAt: "2026-09-09T00:00:00Z" } };
-    expect(heartbeatLabel(agent, Date.parse("2026-09-09T00:01:00Z"))).toBe("Online");
+    expect(heartbeatLabel(agent, Date.parse("2026-09-09T00:01:00Z"))).toBe("Interface verified");
     expect(heartbeatLabel(agent, Date.parse("2026-09-09T00:03:00Z"))).toBe("Not recently checked");
     expect(agentExplorerUrl(agent)).toBe(`https://testnet.bscscan.com/address/${agent.identity.identityRegistry}`);
     expect(agentExplorerUrl({ ...agent, identity: { ...agent.identity, chainId: 1 } })).toBeNull();

@@ -178,11 +178,49 @@
         "verificationStatus": "verified-read-only-bytecode-and-abi"
       },
       "erc8183": {
-        "commerceProxy": null,
-        "routerProxy": null,
-        "policy": null,
-        "paymentToken": null,
-        "verificationStatus": "pending-address-extraction-and-bytecode-check"
+        "enabled": true,
+        "releaseEnabled": false,
+        "disabledReason": "Read-only verified mainnet candidate; external seller execution and application release acceptance remain pending.",
+        "specRevision": "a078cab5cc8e9581c15f76c091ed96eed28f02f7",
+        "sourceRevision": "b40b18011407ba13516661d3784bcb727a0c7794",
+        "commerceProxy": "0xEa4DAa3100A767e86FDed867729ae7446476EBA6",
+        "routerProxy": "0x51895229E12F9876011789B04f8698af06cCD6DA",
+        "policy": "0x9C01845705b3078Aa2e8cfF7520a6376FD766dE5",
+        "paymentToken": "0xcE24439F2D9C6a2289F741120FE202248B666666",
+        "paymentTokenSymbol": "U",
+        "paymentTokenName": "United Stables",
+        "paymentDecimals": 18,
+        "commerceImplementation": "0xd5f9b570c96b5d67702d508c0BFb8B3b09209787",
+        "routerImplementation": "0xf0Cf8F47e5c035F16247fF16E9F367e477eE5007",
+        "paymentTokenImplementation": "0xbef21313C69c009fD7D9510A8d3A481a32473DFC",
+        "paymentTokenProxyAdmin": "0x36124fa57e049846e9dc181c8caa31a3c5da4e9c",
+        "abiHashes": {
+          "commerce": "4d8ac8b406dff522f1b9066eb3e00e2c8e491d4d09df2564ede124220b623ede",
+          "router": "75194cd4777b17459108a69da2e65c15dc00b2b8c7fe340794d28dceeb3d3329",
+          "policy": "843d484a26c8a21271df31078347cdb5bcfad705cd69bed729c2773bb392cc62"
+        },
+        "runtimeSha256": {
+          "commerceProxy": "a04dc24cdccd0690eae672f2ce21d4b2188c15bc30000b783da51d6bbd6ea13d",
+          "routerProxy": "a04dc24cdccd0690eae672f2ce21d4b2188c15bc30000b783da51d6bbd6ea13d",
+          "commerceImplementation": "18ab1644559ab359007b835dc749bdae2621efea62f87c53e4c0d77a20bbb407",
+          "routerImplementation": "7d4d9422804dbd0afce17242c81d2dd859174f5c916219f1ccf40bdc3e2bc87b",
+          "paymentTokenImplementation": "d6c77e5ad76d639516b22b00244bd0c94e2631f1940fc550b77e059f24fe75a3",
+          "policy": "91fffcd007e9beef30bcc69bc3bb4697a7d73a31468769b9e85e7088555ed0d8",
+          "paymentToken": "1076ca0b58e992bba671ddbde6a9d96685c712113eee50caa891c458fc2b48a9"
+        },
+        "riskLimits": {
+          "network": 56,
+          "token": "0xcE24439F2D9C6a2289F741120FE202248B666666",
+          "tokenSymbol": "U",
+          "maxBudgetAtomic": "115792089237316195423570985008687907853269984665640564039457584007913129639934",
+          "limitKind": "uint256-exact-amount-only-no-marketplace-price-cap",
+          "buyerConfirmationRequired": true,
+          "defaultWarningThresholdDisplay": "10"
+        },
+        "policyState": { "disputeWindowSeconds": 604800, "voteQuorum": 3, "activeVoterCount": 5 },
+        "verificationBlock": 120856720,
+        "verificationObservedAt": "2026-09-09T09:52:52Z",
+        "verificationStatus": "verified-read-only-address-bytecode-linkage-policy-and-abi-source-pins; external-execution-and-release-pending"
       },
       "b402": {
         "enabled": false,

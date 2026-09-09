@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { encodeAbiParameters, encodeEventTopics, type Abi, type Address, type Hex } from "viem";
 import {
   Erc8183AltanaAdapter,
   type Erc8183DeploymentReader,
   ERC8183_COMMERCE_EVENTS_ABI,
   ERC8183_POLICY_EVENTS_ABI,
+  ERC8183_ROUTER_EVENTS_ABI,
   type Erc8183OnchainJob,
   type Erc8183RpcLog,
   type Erc8183RpcReceipt
@@ -120,6 +121,32 @@ async function ensureNetworkVerified(instance: Erc8183AltanaAdapter): Promise<vo
 }
 
 describe("ERC-8183 operation-specific receipt correctness", () => {
+  it("verifies permissionless completed and exact-refund outcomes without pretending the caller signed", async () => {
+    const input = { transactionHash: TX, jobId: "7", client: CLIENT, provider: PROVIDER, budgetAtomic: "1000", description: "task" };
+    const refund = logFor(ERC8183_COMMERCE_EVENTS_ABI, "Refunded", { jobId: 7n, client: CLIENT }, [{ type: "uint256" }], [1000n]);
+    const outcomes = [
+      { status: "EXPIRED" as const, state: "expired", logs: [refund, logFor(ERC8183_COMMERCE_EVENTS_ABI, "JobExpired", { jobId: 7n })] },
+      { status: "REJECTED" as const, state: "rejected", logs: [refund, logFor(ERC8183_COMMERCE_EVENTS_ABI, "JobRejected", { jobId: 7n, rejector: ROUTER }, [{ type: "bytes32" }], [DIGEST]), logFor(ERC8183_ROUTER_EVENTS_ABI, "JobSettled", { jobId: 7n, policy: POLICY, verdict: 2 }, [{ type: "bytes32" }], [DIGEST], ROUTER), logFor(ERC8183_ROUTER_EVENTS_ABI, "JobFinalised", { jobId: 7n, status: 4 }, [], [], ROUTER)] },
+      { status: "COMPLETED" as const, state: "completed", logs: [
+        logFor(ERC8183_ROUTER_EVENTS_ABI, "JobSettled", { jobId: 7n, policy: POLICY, verdict: 1 }, [{ type: "bytes32" }], [DIGEST], ROUTER),
+        logFor(ERC8183_ROUTER_EVENTS_ABI, "JobFinalised", { jobId: 7n, status: 3 }, [], [], ROUTER),
+        logFor(ERC8183_COMMERCE_EVENTS_ABI, "JobCompleted", { jobId: 7n, evaluator: ROUTER }, [{ type: "bytes32" }], [DIGEST])
+      ] }
+    ];
+    for (const outcome of outcomes) {
+      const instance = adapter(job(outcome.status), receipt(outcome.logs));
+      vi.spyOn(instance, "verifyNetwork").mockResolvedValue({} as never);
+      await expect(instance.verifyPublicTerminalReceipt(input)).resolves.toMatchObject({ state: outcome.state });
+      for (const mismatch of [{ client: PROVIDER }, { provider: CLIENT }, { budgetAtomic: "999" }, { description: "other" }]) await expect(instance.verifyPublicTerminalReceipt({ ...input, ...mismatch })).rejects.toMatchObject({ code: "ONCHAIN_MISMATCH" });
+      const wrongContract = adapter(job(outcome.status), receipt(outcome.logs.map(log => ({ ...log, address: TOKEN }))));
+      vi.spyOn(wrongContract, "verifyNetwork").mockResolvedValue({} as never);
+      await expect(wrongContract.verifyPublicTerminalReceipt(input)).rejects.toMatchObject({ code: "ONCHAIN_MISMATCH" });
+    }
+    const shortRefund = adapter(job("REJECTED"), receipt([logFor(ERC8183_COMMERCE_EVENTS_ABI, "Refunded", { jobId: 7n, client: CLIENT }, [{ type: "uint256" }], [999n]), outcomes[1]!.logs[1]!]));
+    vi.spyOn(shortRefund, "verifyNetwork").mockResolvedValue({} as never);
+    await expect(shortRefund.verifyPublicTerminalReceipt(input)).rejects.toMatchObject({ code: "ONCHAIN_MISMATCH" });
+  });
+
   it("keeps the release path blocked by default after successful live verification", async () => {
     const mocked = mockedLiveReader();
     const instance = new Erc8183AltanaAdapter({ pin: PIN, standardsLock: canaryLock(), deploymentReader: mocked.reader });
@@ -135,7 +162,7 @@ describe("ERC-8183 operation-specific receipt correctness", () => {
   });
 
   it("rejects the development canary outside development or test configuration", () => {
-    expect(() => new Erc8183AltanaAdapter({ pin: PIN, standardsLock: canaryLock(), developmentCanaryEnabled: true, runtimeEnvironment: "production" })).toThrow(/development or test/i);
+    expect(() => new Erc8183AltanaAdapter({ pin: PIN, standardsLock: canaryLock(), developmentCanaryEnabled: true, runtimeEnvironment: "production" })).toThrow(/chain 97.*development, test/i);
   });
 
   it("fails closed when standards-locked runtime observations are absent", async () => {

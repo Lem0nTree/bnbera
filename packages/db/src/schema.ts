@@ -1691,7 +1691,47 @@ export const matchEvents = pgTable(
   (table) => [index("match_request_time_idx").on(table.buyerRequestDigest, table.createdAt)]
 );
 
+export const referenceProviderAllowance = pgTable("reference_provider_allowance", {
+  id: text("id").primaryKey(), configDigest: text("config_digest").notNull(),
+  enabled: boolean("enabled").notNull().default(false), healthy: boolean("healthy").notNull().default(false),
+  heartbeat: timestamp("heartbeat", {withTimezone:true}), reason: text("reason").notNull().default("NOT_STARTED"),
+  workerPid: integer("worker_pid"),
+}, table=>[check("reference_allowance_exact_id",sql`${table.id} = 'reference-2293-after-1171-v1'`)]);
+
+export const referenceProviderSlots = pgTable("reference_provider_slots", {
+  slot: integer("slot").primaryKey(), commerceJobId: uuid("commerce_job_id").notNull().unique().references(()=>commerceJobs.id),
+  gasReserved: numeric("gas_reserved",{precision:78,scale:0}).notNull(),
+  gasSpent: numeric("gas_spent",{precision:78,scale:0}),
+  state: text("state").notNull().default("reserved"),
+  transactionHash: text("transaction_hash"), nonce: integer("nonce"),
+  createdAt: timestamp("created_at",{withTimezone:true}).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at",{withTimezone:true}).notNull().defaultNow(),
+}, table=>[check("reference_slots_hard_cap",sql`${table.slot} BETWEEN 1 AND 3`),
+  check("reference_slot_gas_cap",sql`${table.gasReserved} = 100000000000000 AND (${table.gasSpent} IS NULL OR (${table.gasSpent} >= 0 AND ${table.gasSpent} <= ${table.gasReserved}))`)]);
+
+/** One irreversible notification claim per immutable buyer-funded job.
+ * Unknown delivery outcomes never automatically recycle into a second POST. */
+export const externalSellerDeliveries = pgTable("external_seller_deliveries", {
+  commerceJobId: uuid("commerce_job_id").primaryKey().references(() => commerceJobs.id, { onDelete: "cascade" }),
+  buyerUserId: uuid("buyer_user_id").notNull().references(() => authUsers.id),
+  quoteDigest: varchar("quote_digest", { length: 64 }).notNull(),
+  protocolJobId: text("protocol_job_id").notNull(),
+  status: varchar("status", { length: 24 }).notNull(),
+  responseDigest: varchar("response_digest", { length: 64 }),
+  resultDigest: varchar("result_digest", { length: 64 }),
+  lastCheckedBlock: text("last_checked_block"),
+  createdAt: now(),
+  updatedAt: now()
+}, table => [
+  check("external_seller_delivery_status_check", sql`${table.status} in ('claimed','notified','unknown','result_verified')`),
+  check("external_seller_delivery_quote_digest_check", sql`${table.quoteDigest} ~ '^[0-9a-f]{64}$'`),
+  check("external_seller_delivery_job_id_check", sql`${table.protocolJobId} ~ '^[1-9][0-9]*$'`)
+]);
+
 export const schemaTables = {
+  externalSellerDeliveries,
+  referenceProviderAllowance,
+  referenceProviderSlots,
   authUsers,
   authSessions,
   authNonces,

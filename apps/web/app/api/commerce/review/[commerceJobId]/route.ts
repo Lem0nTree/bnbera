@@ -21,7 +21,7 @@ export async function POST(
     const { commerceJobId: rawCommerceJobId } = await params;
     const commerceJobId = parseCommerceParentJobId(rawCommerceJobId);
     const input = await parseCommerceJson(request, commerceReviewRequestSchema);
-    const composition = await getCommerceComposition();
+    const composition = await getCommerceComposition(request);
     const result = await composition.createReview(request, { ...input, comment: input.comment ?? "", commerceJobId });
     return commerceHttpJson(commerceReviewResponse({ status: result.replayed ? "replayed" : "created", review: result.review }));
   } catch (error) {

@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { buyerHistoryResponseCurrent, buyerSessionKey, hiredJobMatches, resumedOperationMatches } from "./hired-presentation";
+import { buyerHistoryResponseCurrent, buyerSessionKey, hiredJobMatches, hiredWalletTargetChain, resumedOperationMatches } from "./hired-presentation";
 import type { BuyerJobSummary } from "./commerce-job-list";
 import type { CommerceOperationStatusResponse } from "./commerce-contract";
 describe("buyer history presentation guards", () => {
+  it("defaults production wallet sign-in to mainnet without changing testnet preview", () => {
+    for (const connected of [undefined, 1, 56, 97]) expect(hiredWalletTargetChain(56, connected)).toBe(56);
+    expect(hiredWalletTargetChain(97, undefined)).toBe(97);
+    expect(hiredWalletTargetChain(97, 97)).toBe(97);
+    expect(hiredWalletTargetChain(97, 56)).toBe(56);
+  });
   it("rejects stale account responses and mixed-session pagination", () => {
     expect(buyerHistoryResponseCurrent(1, 2, "buyer-a-session", "buyer-a-session")).toBe(false);
     expect(buyerHistoryResponseCurrent(2, 2, "buyer-a-session", "buyer-b-session")).toBe(false);

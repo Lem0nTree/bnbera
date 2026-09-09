@@ -18,9 +18,9 @@ export function verifiedRating(agent: MarketplaceAgentReadModel) {
 export function heartbeatLabel(agent: MarketplaceAgentReadModel, now = Date.now()): string {
   if (agent.dataProvenance.mode === "fixture") return "Preview";
   const observed = agent.health.observedAt === null ? Number.NaN : Date.parse(agent.health.observedAt);
-  if (agent.dataProvenance.mode === "degraded" || agent.health.endpointStatus === "unhealthy") return "Degraded";
+  if (agent.dataProvenance.mode === "degraded") return "Degraded";
   if (!Number.isFinite(observed) || observed > now || now - observed > 120_000) return "Not recently checked";
-  return agent.health.endpointStatus === "healthy" ? "Online" : "Status unknown";
+  return agent.health.endpointStatus === "healthy" ? "Interface verified" : agent.health.endpointStatus === "unhealthy" ? "Probe failed" : "Status unknown";
 }
 
 export function agentExplorerUrl(agent: MarketplaceAgentReadModel): string | null {

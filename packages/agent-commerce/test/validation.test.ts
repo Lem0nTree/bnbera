@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   CommerceError,
+  assertBudgetMatchesPin,
+  Erc8183CommerceService,
+  ERC8183_EOA_MAINNET_CONTRACTS,
+  assertDeploymentPinSnapshot,
   assertErc8183Transition,
   createErc8183JobEvent,
   erc8183DeploymentPinDigest,
@@ -63,6 +67,30 @@ const JOB: Erc8183JobRecord = erc8183JobRecordSchema.parse({
 });
 
 describe("ERC-8183 boundary validation", () => {
+  it("accepts uncapped mainnet prices through both the canonical terms and browser hire-intent boundary", () => {
+    const contracts = ERC8183_EOA_MAINNET_CONTRACTS;
+    const mainnet = { ...PIN, chainId: 56 as const, commerceContract: contracts.commerceContract, paymentToken: contracts.paymentToken, maxBudgetAtomic: ((1n << 256n) - 2n).toString() };
+    expect(() => assertBudgetMatchesPin("500000000000000000", mainnet)).not.toThrow();
+    expect(() => assertBudgetMatchesPin("500000000000000000", PIN)).toThrow();
+    expect(() => assertBudgetMatchesPin(((1n << 256n) - 1n).toString(), mainnet)).toThrow();
+    const service = new Erc8183CommerceService({ adapter: { pin: mainnet, ...contracts }, operations: {} } as never);
+    const prepared = service.prepareHireIntent({ idempotencyKey: "mainnet-exact-price", commerceJobId: "00000000-0000-4000-8000-000000000001", requesterAddress: TERMS.clientAddress, providerAddress: TERMS.providerAddress, budgetAtomic: "500000000000000000", task: "exact signed task", expiredAtUnix: 2000000000,
+      providerBinding: { identity: { namespace: "eip155", chainId: 56, identityRegistry: "0x8004a169fb4a3325136eb29fa0ceb6d2e539a432", agentId: "269223" }, agentVersionId: "00000000-0000-4000-8000-000000000002", agentVersion: 1 } });
+    expect(prepared.context?.parameters?.budgetAtomic).toBe("500000000000000000");
+    expect(prepared.kind).toBe("create");
+    expect(prepared.to?.toLowerCase()).toBe(contracts.commerceContract.toLowerCase());
+  });
+  it("preserves exactly the reviewed old mainnet price-policy snapshot without accepting deployment drift", () => {
+    const old = { ...PIN, chainId: 56 as const, maxBudgetAtomic: "10000000000000000" };
+    const current = { ...old, maxBudgetAtomic: ((1n << 256n) - 2n).toString() };
+    const digest = erc8183DeploymentPinDigest(old);
+    expect(() => assertDeploymentPinSnapshot(old, digest, current)).not.toThrow();
+    expect(() => assertDeploymentPinSnapshot(old, "0".repeat(64), current)).toThrow();
+    for (const drift of [{ paymentDecimals: 6 }, { paymentToken: TERMS.providerAddress! }, { commerceContract: TERMS.clientAddress }, { maxExpiryHorizonSeconds: 90000 }]) {
+      expect(() => assertDeploymentPinSnapshot(old, digest, { ...current, ...drift })).toThrow();
+    }
+    expect(() => assertDeploymentPinSnapshot({ ...old, chainId: 97 }, erc8183DeploymentPinDigest({ ...old, chainId: 97 }), { ...current, chainId: 97 })).toThrow();
+  });
   it("rejects a disabled or incomplete standards pin", () => {
     expect(() => parseEnabledDeploymentPin({ enabled: false, chainId: 97, disabledReason: "address not verified" })).toThrowError(CommerceError);
     expect(() => parseEnabledDeploymentPin({ enabled: true, chainId: 97 })).toThrowError(CommerceError);

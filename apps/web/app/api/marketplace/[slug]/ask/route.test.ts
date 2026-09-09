@@ -23,7 +23,7 @@ describe("bounded read-only profile assistant",()=>{
     expect((await POST(request({question:"What can it do?"}),params)).status).toBe(503);
   });
   it("passes an allowlisted public profile and returns only answer attribution",async()=>{
-    read.mockResolvedValue({agent:{name:"Sample",description:"Advertised service",identity:{chainId:56},directory:{services:[],skills:[],scores:{overall:12},feedback:{count:0},cardCheck:{status:"unprobed"},registration:{status:"resolved"},sourceUrl:"https://8004scan.io/agents/bsc/1"},activation:{enabled:false},metrics:{completedJobs:{completedCount:0},reputation:{verifiedReviews:[]}},privateField:"must-not-leave-server"}});
+    read.mockResolvedValue({agent:{name:"Sample",description:"Advertised service",identity:{chainId:56,agentId:"1"},dataProvenance:{identityRead:{readConsistency:"finalized",observedBlock:123}},directory:{services:[],skills:[],scores:{overall:12},feedback:{count:0},cardCheck:{status:"unprobed"},registration:{status:"unavailable"},sourceUrl:"https://8004scan.io/agents/bsc/1"},activation:{enabled:false},metrics:{completedJobs:{completedCount:0},reputation:{verifiedReviews:[]}},privateField:"must-not-leave-server"}});
     const fetcher=vi.fn().mockResolvedValue(new Response(JSON.stringify({choices:[{message:{content:"The profile advertises a service. Execution is unverified."}}]}),{status:200}));vi.stubGlobal("fetch",fetcher);
     const response=await POST(request({question:"What can it do?"}),params);
     expect(response.status).toBe(200);
@@ -35,5 +35,9 @@ describe("bounded read-only profile assistant",()=>{
     expect(call?.[1].body).not.toContain("test-server-only");
     expect(JSON.parse(call?.[1].body).max_tokens).toBe(500);
     expect(JSON.parse(call?.[1].body).thinking).toEqual({type:"disabled"});
+    const context=JSON.parse(JSON.parse(call?.[1].body).messages[1].content).publicProfile;
+    expect(context.registryIdentity).toEqual({agentId:"1",consistency:"finalized",observedBlock:123});
+    expect(context.metadataResolution).toBe("unavailable");
+    expect(context.registration).toBeUndefined();
   });
 });

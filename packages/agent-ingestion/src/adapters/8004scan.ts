@@ -38,6 +38,8 @@ export type EightHundredFourScanQuery = {
   readonly cursor?: string;
   readonly limit?: number;
   readonly isTestnet?: boolean;
+  /** Discovery only; inactive identities must still pass finalized/protocol checks. */
+  readonly isActive?: "true" | "false" | "any";
   readonly supportedProtocol?: string;
   readonly search?: string;
   readonly sortBy?: "created_at" | "total_score" | "quality_score" | "activity_score" | "total_feedbacks";
@@ -303,6 +305,8 @@ export class EightHundredFourScanHttpClient implements ExtendedEightHundredFourS
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     this.appendParam(params, "chain_id", queryNumber(query.chainId, "chain ID", 2_147_483_647));
     this.appendParam(params, "is_testnet", queryBoolean(query.isTestnet));
+    if (query.isActive !== undefined && !["true", "false", "any"].includes(query.isActive)) throw ingestionError("SCAN_CONFIG_INVALID", "Invalid availability filter.", "fix_scan_query");
+    this.appendParam(params, "is_active", query.isActive);
     this.appendParam(params, "supported_protocol", this.boundedText(query.supportedProtocol, 128, "supported protocol"));
     this.appendParam(params, "search", this.boundedText(query.search, 200, "search"));
     this.appendParam(params, "sort_by", query.sortBy);
@@ -467,7 +471,16 @@ export class EightHundredFourScanHttpClient implements ExtendedEightHundredFourS
       }
       if (!contractDocument) {
         try {
-          assertSafePublicValue(value, "8004scanResponse");
+          // A page contains up to 100 independently bounded public profiles.
+          // Applying one profile's 2,048-node budget to the entire envelope
+          // incorrectly rejects valid full pages and trips the source circuit.
+          const page = typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+          if (page && Array.isArray(page.items)) {
+            if (page.items.length > officialEightHundredFourScanContract.maxPageSize) throw new Error("SCAN_PAGE_TOO_LARGE");
+            const { items, ...envelope } = page;
+            assertSafePublicValue(envelope, "8004scanResponse");
+            for (const item of items as unknown[]) assertSafePublicValue(item, "8004scanResponse.item");
+          } else assertSafePublicValue(value, "8004scanResponse");
         } catch (cause) {
           throw { status: response.status, retryAfterMs: null, timeout: false, network: false, contract: true, cause } satisfies HttpFailure;
         }

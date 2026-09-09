@@ -697,6 +697,19 @@ describe("MarketplaceReadService", () => {
       "VERIFICATION_PENDING"
     ]);
 
+    // A probe arriving during a long read is not future-dated at projection
+    // time. The old pre-read clock incorrectly made this healthy MCP unknown.
+    const originalListProbes = repository.listProbeResults.bind(repository);
+    sourceNow = observedAt;
+    repository.listProbeResults = async (identityKey) => {
+      sourceNow = now;
+      return originalListProbes(identityKey);
+    };
+    expect((await source.read()).records[0]?.health.endpointStatus).toBe("healthy");
+    repository.listProbeResults = originalListProbes;
+    sourceNow = observedAt;
+    expect((await source.read()).records[0]?.health.endpointStatus).toBe("unknown");
+
     sourceNow = new Date("2026-09-02T12:02:36.000Z");
     const staleSnapshot = await source.read();
     expect(staleSnapshot.records[0]?.health).toMatchObject({

@@ -1,3 +1,4 @@
+import { testnetCommercePreviewEnabled } from "@bnbera/config";
 import { Buffer } from "node:buffer";
 import {
   encodeErc8183Manifest,
@@ -86,7 +87,7 @@ export function referenceProviderIdempotencyKey(jobKey: Erc8183JobKey): string {
 const referenceProviderConfigBaseSchema = z.object({
   /** Defaults off. Enabling requires every local testnet guard below. */
   enabled: z.boolean().default(false),
-  runtimeEnvironment: z.enum(["development", "test", "production"]).default("production"),
+  runtimeEnvironment: z.enum(["development", "test", "preview", "production"]).default("production"),
   developmentCanaryEnabled: z.boolean().default(false),
   /** Release remains disabled for this bounded reference worker. */
   releaseEnabled: z.literal(false).default(false),
@@ -191,7 +192,7 @@ function referenceProviderEnvironmentFields(
   const authoritySecretReference = requiredReferenceProviderEnvironment(env, "T5_REFERENCE_PROVIDER_SECRET_REFERENCE");
   return {
     enabled: true,
-    runtimeEnvironment: env.NODE_ENV === "test" ? "test" : env.NODE_ENV === "development" ? "development" : "production",
+    runtimeEnvironment: testnetCommercePreviewEnabled(env) ? "preview" : env.NODE_ENV === "test" ? "test" : env.NODE_ENV === "development" ? "development" : "production",
     developmentCanaryEnabled: env.T5_REFERENCE_PROVIDER_LOCAL_TESTNET === "true",
     releaseEnabled: false,
     chainId,
@@ -326,7 +327,9 @@ export function createReferenceHealthFactorProviderClient(input: {
         response = await fetcher(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body
+          body,
+          redirect: "error",
+          signal: AbortSignal.timeout(10_000)
         });
       } catch (cause) {
         throw new CommerceError({ code: "CHAIN_PROVIDER_INVALID", message: "The reference health-factor provider could not be reached.", retriable: true, nextAction: "retry_provider", cause });
@@ -345,7 +348,13 @@ export function createReferenceHealthFactorProviderClient(input: {
       }
       let bytes: Uint8Array;
       try {
-        bytes = new Uint8Array(await response.arrayBuffer());
+        const reader=response.body?.getReader();
+        if(!reader)throw new Error("EMPTY_PROVIDER_BODY");
+        const chunks:Uint8Array[]=[];let size=0;
+        try {
+          while(true){const next=await reader.read();if(next.done)break;size+=next.value.byteLength;if(size>maxResponseBytes)throw new CommerceError({code:"INVALID_JOB",message:"The reference provider response exceeds the bounded result size."});chunks.push(next.value);}
+          bytes=new Uint8Array(size);let at=0;for(const chunk of chunks){bytes.set(chunk,at);at+=chunk.byteLength;}
+        }finally{void reader.cancel();}
       } catch (cause) {
         throw new CommerceError({ code: "CHAIN_PROVIDER_INVALID", message: "The reference provider response could not be read.", retriable: true, nextAction: "retry_provider", cause });
       }

@@ -89,8 +89,11 @@ function normalizeExpectedDigest(value: string | null): string | null {
   return normalized.toLowerCase();
 }
 
-function normalizedContentType(value: string | null): string {
-  return value?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+export function normalizedContentType(value: string | null | undefined): string {
+  // Some CDNs duplicate an identical Content-Type header. Accept only
+  // identical declarations; conflicting MIME types remain invalid.
+  const types = (value ?? "").split(",").map(part=>part.split(";",1)[0]?.trim().toLowerCase()??"");
+  return types.length > 0 && types.every(type=>type===types[0]) ? types[0]! : "";
 }
 
 function parseHost(hostname: string): string {

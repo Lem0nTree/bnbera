@@ -1,3 +1,4 @@
+import { testnetCommercePreviewEnabled } from "@bnbera/config";
 import { AppError, errorEnvelopeSchema, type ErrorEnvelope } from "@bnbera/config";
 import {
   InMemoryMarketplaceSource,
@@ -255,6 +256,9 @@ const authoritySummarySchema = z.object({
 });
 
 const activationSummarySchema = z.object({
+  chainId: z.union([z.literal(56), z.literal(97)]).optional(),
+  boundedCapacity: z.object({remaining:z.number().int().min(0).max(3),admitted:z.number().int().min(0).max(3),submitted:z.number().int().min(0),completed:z.number().int().min(0),checkedAt:z.string().nullable(),reason:z.string()}).optional(),
+  taskKind: z.literal("health_factor_monitor").optional(),
   enabled: z.boolean(),
   availability: z.enum(["available", "unavailable", "degraded"]),
   method: z.enum(["erc8183", "x402_b402", "creator", "external", "none"]),
@@ -594,7 +598,7 @@ function mapPricing(card: CoreMarketplaceAgentCard): MarketplaceAgentReadModel["
     amountAtomic,
     explanation: card.fixture !== null
       ? "This price is a labelled development fixture. It is not a quote and cannot be used to trigger payment."
-      : "This is an observed marketplace price field. Activation and payment remain separately disabled."
+      : "This is the published price. A current server quote and explicit wallet approvals are required before any payment."
   };
 }
 
@@ -660,11 +664,21 @@ function mapEvidence(card: CoreMarketplaceAgentCard): MarketplaceAgentReadModel[
 
 function mapActivation(card: CoreMarketplaceAgentCard): MarketplaceAgentReadModel["activation"] {
   const method = card.activation.method === "manual" ? "external" : card.activation.method;
-  const localCanary = process.env.NODE_ENV !== "production" &&
-    process.env.BNBERA_ENV !== "production" &&
+  const configuredReference=card.identity.namespace==="eip155" && card.identity.chainId===97 && card.identity.agentId===process.env.T5_REFERENCE_PROVIDER_AGENT_ID &&
+    card.identity.identityRegistry.toLowerCase()===process.env.T5_REFERENCE_PROVIDER_IDENTITY_REGISTRY?.toLowerCase();
+  if(configuredReference && process.env.T5_REFERENCE_PROVIDER_ADMISSION_ENABLED!=="true")return {
+    enabled:false,availability:"unavailable",method,taskKind:"health_factor_monitor",
+    title:"Testnet reference · new tasks paused",
+    reason:"This reference provider has an operator-controlled execution adapter. New paid tasks are paused until an operator authorizes the next bounded worker run. Existing jobs, results and receipts remain available in My hires. Mainnet payments are disabled.",
+    nextAction:"view_existing_hires"
+  };
+  const localCanary = (testnetCommercePreviewEnabled() || (process.env.NODE_ENV !== "production" && process.env.BNBERA_ENV !== "production")) &&
+    configuredReference &&
     process.env.T5_WALLETCONNECT_AUTH_ENABLED === "true" &&
     process.env.T5_COMMERCE_LOCAL_ACTIVATION === "true" &&
     process.env.T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED === "true" &&
+    card.health.endpointStatus === "healthy" &&
+    card.health.observedAt !== null && Date.now()-Date.parse(card.health.observedAt) >= 0 && Date.now()-Date.parse(card.health.observedAt) <= 120_000 &&
     method === "erc8183" &&
     card.fixture === null &&
     card.activationOffer.erc8183 !== undefined &&
@@ -677,8 +691,9 @@ function mapActivation(card: CoreMarketplaceAgentCard): MarketplaceAgentReadMode
       enabled: true,
       availability: "available",
       method,
-      title: "Local ERC-8183 WalletConnect canary",
-      reason: "Browser EOA activation is enabled only for this local WalletConnect development canary; the standards-lock release gate remains closed.",
+      ...(card.identity.chainId === 97 && card.identity.agentId === process.env.T5_REFERENCE_PROVIDER_AGENT_ID ? { taskKind: "health_factor_monitor" as const } : {}),
+      title: "Hire on BNB testnet",
+      reason: "Explicit WalletConnect payments on the verified testnet contracts. This reference provider computes risk from your supplied values, not a live lending position. Mainnet payments remain disabled.",
       nextAction: "review_activation_terms"
     };
   }
@@ -858,6 +873,7 @@ export function selectionMatches(agent: MarketplaceAgentReadModel, input: Market
 export function sortAgents(agents: MarketplaceAgentReadModel[], input: MarketplaceSearchInput): MarketplaceAgentReadModel[] {
   const sorted = [...agents];
   sorted.sort((left, right) => {
+    if (input.sort === "relevance" && left.activation.enabled !== right.activation.enabled) return Number(right.activation.enabled) - Number(left.activation.enabled);
     if (input.sort === "freshness") {
       const freshnessRank = { fresh: 3, stale: 2, unknown: 1 } as const;
       const difference = freshnessRank[right.freshness.status] - freshnessRank[left.freshness.status];

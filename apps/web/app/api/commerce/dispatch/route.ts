@@ -17,7 +17,7 @@ export const runtime = "nodejs";
 export async function POST(request: Request): Promise<Response> {
   try {
     const input = await parseCommerceJson(request, commerceExternalDispatchRequestSchema);
-    const composition = await getCommerceComposition();
+    const composition = await getCommerceComposition(request);
     const result = input.claim === true
       ? await composition.claimExternalDispatch(request, input.operationId)
       : input.walletRejected === true

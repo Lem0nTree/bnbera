@@ -3,6 +3,7 @@ import { decodeFunctionData, encodeAbiParameters, encodeEventTopics, type Abi, t
 import {
   Erc8183AltanaAdapter,
   ERC8183_EOA_CONTRACTS,
+  ERC8183_EOA_MAINNET_CONTRACTS,
   ERC8183_COMMERCE_EVENTS_ABI,
   ERC8183_ROUTER_EVENTS_ABI,
   ERC20_APPROVAL_EVENTS_ABI,
@@ -121,10 +122,32 @@ describe("WalletConnect EOA ERC-8183 calls", () => {
   });
 
   it("rejects a non-pinned deployment, wrong network, and missing actual job ID", () => {
-    expect(() => buildErc8183EoaCall({ chainId: 56, contracts: ERC8183_EOA_CONTRACTS, step: "create", providerAddress: PROVIDER, task: "task", expiredAtUnix: EXPIRY })).toThrow(/pinned|97/i);
+    expect(() => buildErc8183EoaCall({ chainId: 56, contracts: ERC8183_EOA_CONTRACTS, step: "create", providerAddress: PROVIDER, task: "task", expiredAtUnix: EXPIRY })).toThrow(/deployment|standards/i);
     expect(() => buildErc8183EoaCall({ chainId: 97, contracts: { ...ERC8183_EOA_CONTRACTS, commerceContract: CLIENT }, step: "approve", budgetAtomic: BUDGET })).toThrow(/standards|deployment/i);
     expect(() => buildErc8183EoaCall({ chainId: 97, contracts: ERC8183_EOA_CONTRACTS, step: "fund", budgetAtomic: BUDGET })).toThrow(/job ID/i);
     expect(() => buildErc8183EoaCall({ chainId: 97, contracts: ERC8183_EOA_CONTRACTS, step: "create", providerAddress: PROVIDER, task: "task", expiredAtUnix: EXPIRY, jobId: JOB_ID })).toThrow(/predicted|job ID/i);
+  });
+
+  it("encodes every mainnet step against only the reviewed contracts with zero native value", () => {
+    for (const step of ["create", "register", "set_budget", "approve", "fund", "settle", "dispute", "claim_refund"] as const) {
+      const built = buildErc8183EoaCall({ chainId: 56, contracts: ERC8183_EOA_MAINNET_CONTRACTS, step,
+        ...(step === "create" ? { providerAddress: PROVIDER, task: "task", expiredAtUnix: EXPIRY } : { jobId: JOB_ID }), budgetAtomic: BUDGET });
+      expect(built.valueAtomic).toBe("0");
+      expect(Object.values(ERC8183_EOA_MAINNET_CONTRACTS).map((value) => value.toLowerCase())).toContain(built.to.toLowerCase());
+      if (step === "approve") {
+        const decoded = decodeFunctionData({ abi: TOKEN_ABI, data: built.data });
+        expect(decoded.args[0].toLowerCase()).toBe(ERC8183_EOA_MAINNET_CONTRACTS.commerceContract.toLowerCase());
+        expect(decoded.args[1]).toBe(BigInt(BUDGET));
+      }
+    }
+  });
+
+  it("keeps mainnet approvals bounded and rejects cross-chain and unsupported deployments", () => {
+    for (const chainId of [97, 1]) expect(() => buildErc8183EoaCall({ chainId, contracts: ERC8183_EOA_MAINNET_CONTRACTS, step: "approve", budgetAtomic: BUDGET })).toThrow();
+    for (const budgetAtomic of ["0", (2n ** 256n - 1n).toString(), (2n ** 256n).toString()]) {
+      expect(() => buildErc8183EoaCall({ chainId: 56, contracts: ERC8183_EOA_MAINNET_CONTRACTS, step: "approve", budgetAtomic })).toThrow(/uint256/i);
+    }
+    expect(() => buildErc8183EoaCall({ chainId: 56, contracts: ERC8183_EOA_MAINNET_CONTRACTS, step: "approve", budgetAtomic: "500000000000000000" })).not.toThrow();
   });
 
   it("derives and persists the actual JobCreated ID, including after reload", async () => {

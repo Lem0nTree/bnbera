@@ -1,5 +1,5 @@
 import { randomBytes, createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readCheckedInStandardsLock } from "./checked-in-lock";
 import pg from "pg";
 import { verifyMessage, type Address, type Hex } from "viem";
 import { BNB_TESTNET } from "@altananetwork/sdk";
@@ -18,7 +18,9 @@ import {
   type VerifiedSiweProof,
   verifyAltanaPasskeyAssertion
 } from "@bnbera/auth";
-import { AppError, loadRuntimeConfig } from "@bnbera/config";
+import { AppError, loadRuntimeConfig, testnetCommercePreviewEnabled, mainnetBrowserCommerceEnabled } from "@bnbera/config";
+import { assertSameOriginJsonMutation } from "./same-origin-json";
+import { boundedJsonBody } from "./bounded-json-body";
 import { chainIdSchema, evmAddressSchema, normalizeEvmAddress } from "@bnbera/domain";
 import type { Pool as PgPool } from "pg";
 import type { AltanaReadNetwork } from "@bnbera/auth";
@@ -57,9 +59,9 @@ type AuthRuntime = {
   readonly databaseSsl: boolean;
   readonly appOrigin: string;
   readonly rpId: string;
-  readonly chainId: 97;
-  readonly network: typeof BNB_TESTNET;
+  readonly chainId: 56 | 97;
 };
+type AltanaAuthRuntime = AuthRuntime & { readonly chainId: 97; readonly network: typeof BNB_TESTNET };
 
 type CreatedSession = {
   readonly token: string;
@@ -138,7 +140,7 @@ export function assertAltanaAuthStandardsLock(lock: unknown, network: typeof BNB
 
 export function readAltanaAuthStandardsLock(): unknown {
   try {
-    return JSON.parse(readFileSync(new URL("../../../../config/standards.lock.json", import.meta.url), "utf8")) as unknown;
+    return readCheckedInStandardsLock();
   } catch (cause) {
     return failClosedConfiguration(cause);
   }
@@ -192,6 +194,11 @@ export function digestSessionToken(token: string): string {
   return digest(token);
 }
 
+/** Compatibility name retained for callers; production has its own explicit mainnet gate. */
+export function externalMainnetEoaPreviewEnabled(env: StringEnvironment = process.env): boolean {
+  return mainnetBrowserCommerceEnabled(env);
+}
+
 function runtimeFromEnvironment(env: StringEnvironment = process.env): AuthRuntime {
   let runtime;
   try {
@@ -209,7 +216,7 @@ function runtimeFromEnvironment(env: StringEnvironment = process.env): AuthRunti
     throw authError("AUTH_CONFIGURATION_INVALID", "Authentication is temporarily unavailable.", "try_again", true);
   }
 
-  if (runtime.bscChainId !== BNB_TESTNET.chainId) {
+  if (runtime.bscChainId !== BNB_TESTNET.chainId && !externalMainnetEoaPreviewEnabled(env)) {
     throw authError(
       "AUTH_CONFIGURATION_BLOCKED",
       "Wallet authentication is enabled only for the reviewed BNB testnet runtime.",
@@ -226,13 +233,12 @@ function runtimeFromEnvironment(env: StringEnvironment = process.env): AuthRunti
     databaseSsl: runtime.databaseSsl,
     appOrigin: appUrl.origin,
     rpId: appUrl.hostname.toLowerCase(),
-    chainId: 97,
-    network: BNB_TESTNET
+    chainId: runtime.bscChainId
   };
 }
 
 /** Altana passkey auth remains available only to the future Creator path. */
-function altanaRuntimeFromEnvironment(env: StringEnvironment = process.env): AuthRuntime {
+function altanaRuntimeFromEnvironment(env: StringEnvironment = process.env): AltanaAuthRuntime {
   const runtime = runtimeFromEnvironment(env);
   if (env.T5_ALTANA_AUTH_ENABLED !== "true") {
     throw authError(
@@ -241,8 +247,9 @@ function altanaRuntimeFromEnvironment(env: StringEnvironment = process.env): Aut
       "configure_auth_boundary"
     );
   }
+  if (runtime.chainId !== 97) throw authError("AUTH_CHAIN_MISMATCH", "Creator authentication remains on BNB testnet.", "switch_network");
   assertAltanaAuthStandardsLock(readAltanaAuthStandardsLock(), BNB_TESTNET);
-  return runtime;
+  return { ...runtime, chainId: 97, network: BNB_TESTNET };
 }
 
 /**
@@ -250,15 +257,25 @@ function altanaRuntimeFromEnvironment(env: StringEnvironment = process.env): Aut
  * future Creator/Altana passkey flag, and production stays closed even when a
  * development flag is accidentally carried into the process environment.
  */
-function walletConnectRuntimeFromEnvironment(env: StringEnvironment = process.env): AuthRuntime {
-  if (env.NODE_ENV === "production" || env.BNBERA_ENV === "production" || env.T5_WALLETCONNECT_AUTH_ENABLED !== "true") {
+export function resolveEoaAuthChain(requestedChainId: number, env: StringEnvironment = process.env): 56 | 97 {
+  if (requestedChainId === 56) {
+    if (!externalMainnetEoaPreviewEnabled(env)) throw authError("AUTH_CONFIGURATION_BLOCKED", "Mainnet wallet sign-in is not enabled for this preview.", "switch_network");
+    return 56;
+  }
+  if (requestedChainId !== 97) throw authError("AUTH_CHAIN_MISMATCH", "Wallet authentication is for an unsupported network.", "switch_network");
+  if (((env.NODE_ENV === "production" || env.BNBERA_ENV === "production") && !testnetCommercePreviewEnabled(env)) || env.T5_WALLETCONNECT_AUTH_ENABLED !== "true") {
     throw authError(
       "AUTH_CONFIGURATION_BLOCKED",
       "WalletConnect EOA authentication is not enabled for this local canary.",
       "enable_walletconnect_auth"
     );
   }
-  return runtimeFromEnvironment(env);
+  return 97;
+}
+
+function walletConnectRuntimeFromEnvironment(requestedChainId: number, env: StringEnvironment = process.env): AuthRuntime {
+  const chainId = resolveEoaAuthChain(requestedChainId, env);
+  return { ...runtimeFromEnvironment(env), chainId };
 }
 
 function getPool(runtime: AuthRuntime): PgPool {
@@ -441,8 +458,9 @@ export function authSessionCookie(token: string, expiresAt: Date): string {
 }
 
 export async function parseAuthJson(request: Request): Promise<unknown> {
+  assertSameOriginJsonMutation(request);
   try {
-    return await request.json();
+    return await boundedJsonBody(request);
   } catch (cause) {
     throw authError("AUTH_REQUEST_INVALID", "The wallet authentication request is invalid.", "check_request", false, cause);
   }
@@ -474,7 +492,7 @@ export function parsePasskeyAssertionRequest(input: unknown): {
 
 export type EoaSiweChallenge = {
   readonly address: string;
-  readonly chainId: 97;
+  readonly chainId: 56 | 97;
   readonly domain: string;
   readonly uri: string;
   readonly nonce: string;
@@ -569,7 +587,7 @@ export async function verifyEoaSiweRequest(
 
 export async function createEoaSiweChallenge(input: unknown): Promise<EoaSiweChallenge> {
   const request = parseEoaSiweChallengeRequest(input);
-  const runtime = walletConnectRuntimeFromEnvironment();
+  const runtime = walletConnectRuntimeFromEnvironment(request.chainId);
   if (request.chainId !== runtime.chainId) {
     throw authError("AUTH_CHAIN_MISMATCH", "Wallet authentication is for a different network.", "switch_network");
   }
@@ -602,7 +620,7 @@ export async function authenticateEoa(input: unknown, options?: {
   readonly now?: Date;
 }): Promise<{ readonly session: AuthenticatedSession; readonly setCookie: string }> {
   const request = parseEoaSiweAuthenticationRequest(input);
-  const runtime = walletConnectRuntimeFromEnvironment();
+  const runtime = walletConnectRuntimeFromEnvironment(request.chainId);
   if (request.chainId !== runtime.chainId) {
     throw authError("AUTH_CHAIN_MISMATCH", "Wallet authentication is for a different network.", "switch_network");
   }
@@ -640,7 +658,7 @@ export async function createPasskeyChallenge(input: unknown): Promise<{
   return { ...challenge, expiresAt: challenge.expiresAt.toISOString() };
 }
 
-function defaultAdminKeyReader(runtime: AuthRuntime): AltanaAdminKeyReader {
+function defaultAdminKeyReader(runtime: AltanaAuthRuntime): AltanaAdminKeyReader {
   // The web app and auth package may resolve viem through different pinned
   // TypeScript peer variants; the runtime NetworkConfig is the same readonly
   // SDK shape, so cross the package boundary explicitly after validation.
@@ -687,9 +705,9 @@ export async function getAuthenticatedSession(request: Request): Promise<Authent
         AND revoked_at IS NULL
         AND expires_at > NOW()
         AND wallet_address IS NOT NULL
-        AND chain_id = $2
+        AND chain_id = ANY($2::integer[])
       LIMIT 1`,
-    [digestSessionToken(token), runtime.chainId]
+    [digestSessionToken(token), externalMainnetEoaPreviewEnabled() ? [97, 56] : [97]]
   );
   const row = result.rows[0];
   if (row === undefined || row.wallet_address === null || row.chain_id === null) return null;
@@ -740,7 +758,8 @@ export function authHttpError(error: unknown, requestId = "req_web_auth"): Respo
   const safeError = error instanceof AppError
     ? error
     : authError("AUTH_UNAVAILABLE", "Authentication is temporarily unavailable.", "try_again", true, error);
-  const status = safeError.code === "AUTH_REQUIRED" || safeError.code === "SESSION_COOKIE_INVALID" ? 401
+  const status = safeError.code === "REQUEST_ORIGIN_INVALID" ? 403
+    : safeError.code === "AUTH_REQUIRED" || safeError.code === "SESSION_COOKIE_INVALID" ? 401
     : safeError.code === "AUTH_REQUEST_INVALID" || safeError.code === "AUTH_CHAIN_MISMATCH" ? 400
       : safeError.code === "AUTH_CONFIGURATION_BLOCKED" ? 503
         : safeError.retriable ? 503 : 401;

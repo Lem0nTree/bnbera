@@ -1,6 +1,9 @@
 import { erc8004IdentityKey } from "@bnbera/domain";
 import type { BuyerJobSummary } from "./commerce-job-list";
 import type { CommerceOperationStatusResponse } from "./commerce-contract";
+export function hiredWalletTargetChain(defaultChainId: 56 | 97, connectedChainId: number | undefined): 56 | 97 {
+  return defaultChainId === 56 || connectedChainId === 56 ? 56 : 97;
+}
 export function buyerSessionKey(session: { authenticated?: boolean; walletAddress?: string; chainId?: number; expiresAt?: string }, walletAddress: string | undefined, chainId: number | undefined, now = Date.now()): string | null {
   if (!session.authenticated || !walletAddress || !session.walletAddress || session.walletAddress.toLowerCase() !== walletAddress.toLowerCase() || session.chainId !== chainId || !session.expiresAt || Date.parse(session.expiresAt) <= now || !Number.isFinite(Date.parse(session.expiresAt))) return null;
   return `${session.walletAddress.toLowerCase()}:${session.chainId}:${session.expiresAt}`;

@@ -106,6 +106,7 @@ async function main(): Promise<void> {
     const result = await withAdvisoryLock(pool, "bnbera:marketplace:health", async () => {
       const identities = (await repository.listIdentities({ chainId: runtime.bscChainId }))
         .filter((identity) => identity.state.listingStatus === "published")
+        .filter((identity) => process.env.ERC8004_HEALTH_REFERENCE_ONLY !== "true" || (identity.identity.chainId === 97 && identity.identity.identityRegistry === process.env.T5_REFERENCE_PROVIDER_IDENTITY_REGISTRY?.toLowerCase() && identity.identity.agentId === process.env.T5_REFERENCE_PROVIDER_AGENT_ID))
         .sort((left, right) => left.updatedAt.getTime() - right.updatedAt.getTime() || erc8004IdentityKey(left.identity).localeCompare(erc8004IdentityKey(right.identity)))
       const totalIdentities = identities.length;
       const rotation = rotateMarketplaceBatch(identities, healthCursor.nextOffset, maxAgents);

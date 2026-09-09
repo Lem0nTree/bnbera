@@ -206,7 +206,6 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
     let skipped = 0;
     let reputationReadFailures = 0;
     let commerceReadFailures = 0;
-    const now = this.options.now?.() ?? new Date();
     const recognizedReviewerAddresses = this.recognizedReviewerAddresses();
 
     for (const identityRecord of identities) {
@@ -255,7 +254,11 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
 
       try {
         const parsedServices = services.map((service) => advertisedServiceSchema.parse(service));
-        const probeProjection = projectionFromProbes(probes, now);
+        // A concurrent health job can append a probe while the directory's
+        // sequential reads are running. Sample after this identity's reads:
+        // a valid new observation must not look future-dated against a clock
+        // captured before those reads. Genuinely future probes still fail closed.
+        const probeProjection = projectionFromProbes(probes, this.options.now?.() ?? new Date());
         const metrics = marketplaceMetricsSchema.parse({
           ...(presentation.metrics ?? unknownMetrics()),
           uptime: probeProjection.uptime,
@@ -331,7 +334,7 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
       status: this.options.status === "degraded" || skipped > 0 || reputationReadFailures > 0 || commerceReadFailures > 0 ? "degraded" : "healthy",
       sourceName: this.options.sourceName ?? "ingestion-read-model",
       warning,
-      refreshedAt: now.toISOString()
+      refreshedAt: (this.options.now?.() ?? new Date()).toISOString()
     });
   }
 }

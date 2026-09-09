@@ -177,6 +177,17 @@ function eoaOperation(step: "create" | "register" | "set_budget" | "approve" | "
 }
 
 describe("T5 commerce server composition", () => {
+  it("reports the conservative dispute deadline and fails closed on policy failure", async () => {
+    const observedAtUnix=Math.floor(Date.now()/1000);
+    const read={job:{state:"submitted"},submission:{observedAtUnix}};
+    const readDisputeWindow=vi.fn(async()=>900);
+    const composition=testComposition({adapter:{pin:PIN,readDisputeWindow},reads:{get:async()=>read}});
+    await expect(composition.readWithoutActor("7")).resolves.toMatchObject({settlementGate:{status:"waiting",notBeforeUnix:observedAtUnix+900,windowSeconds:900}});
+    readDisputeWindow.mockRejectedValueOnce(new Error("RPC unavailable"));
+    await expect(composition.readWithoutActor("7")).resolves.toMatchObject({settlementGate:{status:"unavailable",notBeforeUnix:null}});
+    read.submission.observedAtUnix=observedAtUnix-901;
+    await expect(composition.readWithoutActor("7")).resolves.toMatchObject({settlementGate:{status:"ready"}});
+  });
   it("exposes the local-canary blocker without requiring Altana buyer authority", async () => {
     vi.stubEnv("T5_ALTANA_AUTH_ENABLED", "false");
     vi.stubEnv("T5_WALLETCONNECT_AUTH_ENABLED", "true");
@@ -444,8 +455,9 @@ describe("T5 commerce server composition", () => {
     expect(claimExternalDispatch).not.toHaveBeenCalled();
   });
 
-  it("reuses the persisted EOA intent and expiry on repeated prepare", async () => {
+  it.each(["walletConnect", "eip1193"])("reuses the persisted %s EOA intent and expiry on repeated prepare", async (connector) => {
     const existing = eoaOperation("create", "awaiting_signature", null);
+    (existing.context as { parameters: { connector: string } }).parameters.connector = connector;
     const getByIdempotencyKey = vi.fn(async () => existing as never);
     const prepareHireIntent = vi.fn(() => { throw new Error("must not rebuild calldata"); });
     const reserveExternal = vi.fn(() => { throw new Error("must not reserve a new intent"); });

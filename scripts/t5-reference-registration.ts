@@ -565,6 +565,7 @@ async function confirmedReceipt(chain: RegistrationChain, transactionHash: Hex, 
 }
 
 async function boundedSend(chain: RegistrationChain, input: Omit<RegistrationWriteInput, "gas" | "gasPrice">, operation: string): Promise<{ readonly transactionHash: Hex; readonly receipt: RegistrationReceipt }> {
+  if (await chain.getChainId() !== CHAIN_ID) throw new RegistrationError("CHAIN_ID_MISMATCH");
   const estimated = await chain.estimateGas(input);
   if (estimated <= 0n || estimated > MAX_GAS_LIMIT) throw new RegistrationError(`${operation}_GAS_ESTIMATE_EXCEEDS_CAP`);
   const gas = estimated + estimated / 5n + 1n;
@@ -572,6 +573,7 @@ async function boundedSend(chain: RegistrationChain, input: Omit<RegistrationWri
   const gasPrice = await chain.gasPrice();
   if (gasPrice <= 0n || gasPrice > MAX_GAS_PRICE_WEI || gas * gasPrice > MAX_NATIVE_EXPOSURE_WEI) throw new RegistrationError(`${operation}_NATIVE_EXPOSURE_EXCEEDS_CAP`);
   let transactionHash: Hex;
+  if (await chain.getChainId() !== CHAIN_ID) throw new RegistrationError("CHAIN_ID_MISMATCH");
   try { transactionHash = normalizeHash(await chain.send({ ...input, gas, gasPrice }), `${operation}_TX_HASH_INVALID`); } catch { throw new RegistrationError(`${operation}_BROADCAST_UNKNOWN`); }
   const receipt = await confirmedReceipt(chain, transactionHash, operation);
   return { transactionHash, receipt };

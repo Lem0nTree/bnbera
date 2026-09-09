@@ -20,7 +20,7 @@ export async function GET(
   try {
     const { operationId: rawOperationId } = await params;
     const operationId = parseCommerceOperationId(rawOperationId);
-    const composition = await getCommerceComposition();
+    const composition = await getCommerceComposition(request);
     const result = await composition.operationStatus(request, operationId);
     return commerceHttpJson(commerceOperationStatusResponse({
       operation: toErc8183PublicOperation(result.operation),
