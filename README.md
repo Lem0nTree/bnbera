@@ -2,6 +2,8 @@
 
 An ERC-8004 agent marketplace for BNB Chain. MVP delivery order: persistent enriched listings, paid ERC-8183 hiring, one no-code Altana Creator, then Greenfield profile/result storage.
 
+See [execution and Greenfield proof](proof.md) for real testnet/mainnet transaction tables, published storage artifacts, and the distinction between delivery, buyer approval and settlement.
+
 Start with the [master plan](docs/MVP-MASTER-PLAN.md), [nine tasks](docs/MVP-TASKS.md), and [runbook](docs/MVP-RUNBOOK.md). Superseded plans are archived and excluded from ordinary agent reading/search. The new plans describe intended behavior; consult their baseline and gate criteria before making feature claims.
 
 Node 22, pnpm 10.15.1, Next.js, PostgreSQL/pgvector. Reuse the existing Docker database.
