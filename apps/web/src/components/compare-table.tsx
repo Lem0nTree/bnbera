@@ -17,10 +17,13 @@ export function CompareTable({ agents }: { readonly agents: readonly Marketplace
   }
 
   return (
+    <section aria-label="Compare agents">
+      <p className="compare-scroll-hint">{agents.length} {agents.length === 1 ? "agent" : "agents"} selected. Scroll sideways to compare; scroll down for evidence. Keyboard: focus the comparison, then use arrow keys.</p>
     <div className="compare-table-wrap" role="region" aria-label="Agent comparison; scroll horizontally to inspect all agents" tabIndex={0}>
       <div className="compare-grid" style={{ "--compare-columns": agents.length } as CSSProperties}>
         {agents.map((agent) => (
           <article className="compare-column" key={agent.id}>
+            <div className="compare-column__identity"><strong>{agent.name}</strong><span>Chain {agent.identity.chainId} · #{agent.identity.agentId}</span></div>
             <div className="compare-column__header">
               <DataModeBadge mode={agent.dataProvenance.mode} label={agent.dataProvenance.label} />
               <p className="eyebrow">{categoryLabel(agent.category)}</p>
@@ -77,5 +80,6 @@ export function CompareTable({ agents }: { readonly agents: readonly Marketplace
         ))}
       </div>
     </div>
+    </section>
   );
 }

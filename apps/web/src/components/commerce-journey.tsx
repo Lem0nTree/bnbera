@@ -25,6 +25,7 @@ import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
 import { isEoaDispatchGenerationCurrent, shouldInvalidateEoaAuthority, EOA_BUYER_CHAIN_ID, type EoaWalletSnapshot } from "@/lib/eoa-wallet";
 import { formatSiweMessage } from "@/lib/siwe-message";
 import { EoaWalletProvider, walletConnectProjectConfigured } from "./eoa-wallet-provider";
+import { CommerceResultSummary } from "./commerce-result-summary";
 
 type BrowserAuthority = { readonly address: string; readonly chainId: number; readonly walletClient: WalletClient };
 type JourneyProps = {
@@ -699,6 +700,7 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
         <button className="button button--ghost button--small" type="button" disabled={busy || transactionHashDraft.trim() === ""} onClick={() => void attachTransactionHash()}>Attach and reconcile</button>
       </div>}
       {submission !== null && <div className="commerce-journey__result">
+        {submission.result !== null && <CommerceResultSummary result={submission.result} />}
         <p className="eyebrow">Exact result evidence</p>
         <div className="detail-kv"><span>Protocol job</span><code>{job?.job.jobKey.jobId ?? "Not observed"}</code></div>
         <div className="detail-kv"><span>Local SHA-256</span><code>{submission.localSha256}</code></div>
@@ -706,7 +708,7 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
         <div className="detail-kv"><span>Submission receipt</span><code>{submission.transactionHash}</code></div>
         {job?.job.completionTransactionHash !== null && job?.job.completionTransactionHash !== undefined && <div className="detail-kv"><span>Settlement receipt</span><code>{job.job.completionTransactionHash}</code></div>}
         {currentRunBundle !== null && <div className="detail-kv"><span>Greenfield run_bundle</span><span><StatusBadge value={statusLabel(currentRunBundle.status)} tone={currentRunBundle.status === "verified" ? "success" : currentRunBundle.status === "failed" ? "danger" : currentRunBundle.status === "pending" ? "warning" : "neutral"} />{currentRunBundle.status === "verified" && safeVerifiedEvidenceLink(currentRunBundle.readUrl) !== null ? <a href={safeVerifiedEvidenceLink(currentRunBundle.readUrl) ?? undefined} target="_blank" rel="noreferrer">Open verified JSON</a> : currentRunBundle.reason ?? "No verified Greenfield publication is available."}</span></div>}
-        {submission.result !== null && <pre className="commerce-journey__manifest">{JSON.stringify(submission.result, null, 2)}</pre>}
+        {submission.result !== null && <details><summary>Raw result evidence</summary><pre className="commerce-journey__manifest">{JSON.stringify(submission.result, null, 2)}</pre></details>}
         {submission.manifestText !== null && <details><summary>Exact result manifest</summary><pre className="commerce-journey__manifest">{submission.manifestText}</pre></details>}
       </div>}
       {submitted && <div className="commerce-journey__decision">
