@@ -3,6 +3,7 @@
 import { Callout, StatusBadge } from "@bnbera/ui";
 import { formatUnits, parseUnits, type WalletClient } from "viem";
 import { resumedOperationMatches } from "@/lib/hired-presentation";
+import { priceDisplayLabel } from "@/lib/presentation";
 import { useToast } from "./toast-provider";
 import { bsc, bscTestnet } from "viem/chains";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -38,6 +39,7 @@ type JourneyProps = {
   readonly resumeOperationId?: string | null;
   readonly expectedProtocolJobId?: string | null;
   readonly walletOnly?: boolean;
+  readonly compact?: boolean;
   readonly onAuthenticated?: () => void;
   /** A server-created parent quote/reservation. Never generated client-side. */
   readonly commerceJobId?: string | null;
@@ -120,7 +122,7 @@ function ExternalSellerResult({ text }: { text: string }) {
   } catch { return null; }
 }
 
-function CommerceJourneyInner({ activation, targetChainId, identityKey, commerceJobId = null, runBundle = undefined, resumeOperationId = null, expectedProtocolJobId = null, walletOnly = false, onAuthenticated }: JourneyProps) {
+function CommerceJourneyInner({ activation, targetChainId, identityKey, commerceJobId = null, runBundle = undefined, resumeOperationId = null, expectedProtocolJobId = null, walletOnly = false, compact = false, onAuthenticated }: JourneyProps) {
   const buyerChainId = targetChainId ?? activation.chainId ?? EOA_BUYER_CHAIN_ID;
   const buyerChain = buyerChainId === 56 ? bsc : bscTestnet;
   const buyerChainLabel = buyerChainId === 56 ? "BNB mainnet" : "BNB testnet";
@@ -688,11 +690,13 @@ function CommerceJourneyInner({ activation, targetChainId, identityKey, commerce
     : null;
 
   return (
-    <div className="commerce-journey" data-testid="commerce-journey">
-      <div className="commerce-journey__header"><strong>{walletOnly ? "Buyer wallet" : "Hire this agent"}</strong><StatusBadge value={`${buyerChainLabel} · ${buyerChainId}`} tone="info" />{operation !== null && <StatusBadge value={statusLabel(operation.status)} tone={operationStatusTone(operation.status)} />}</div>
+    <div className={`commerce-journey${compact ? " commerce-journey--compact" : ""}${compact && operationId === null && quote === null ? " commerce-journey--compose" : ""}`} data-testid="commerce-journey">
+      {!compact && <div className="commerce-journey__header"><strong>{walletOnly ? "Buyer wallet" : "Hire this agent"}</strong><StatusBadge value={`${buyerChainLabel} · ${buyerChainId}`} tone="info" />{operation !== null && <StatusBadge value={statusLabel(operation.status)} tone={operationStatusTone(operation.status)} />}</div>}
+      {compact && operation !== null && <p className="commerce-journey__operation" role="status">{statusLabel(operation.status)}</p>}
       {!walletOnly && <ol className="journey-steps">{["Task", "Quote", "Fund escrow", "Review result", "Complete"].map((label, index) => <li key={label} aria-current={index === (completed ? 4 : submitted ? 3 : operationId ? 2 : quote ? 1 : 0) ? "step" : undefined}>{index + 1}. {label}</li>)}</ol>}
       <div className="commerce-journey__authority">
-        <p className="detail-section__lede">Choose a browser wallet or WalletConnect, then sign in to prove wallet ownership. Sign-in is gasless and does not approve a payment.</p>
+        {compact && <h3>Buyer wallet</h3>}
+        <p className="detail-section__lede">{compact ? "Connect and sign in. Sign-in is gasless; payments need your approval." : "Choose a browser wallet or WalletConnect, then sign in to prove wallet ownership. Sign-in is gasless and does not approve a payment."}</p>
         {!isConnected && <WalletConnectorChoices chainId={buyerChainId} disabled={busy} />}
         {isConnected && chainId !== buyerChainId && <>
           <p className="muted-label">Connected on chain {chainId ?? "unknown"}. This hire requires {buyerChainLabel} ({buyerChainId}).</p>
@@ -727,18 +731,18 @@ function CommerceJourneyInner({ activation, targetChainId, identityKey, commerce
       {operationId === null && quote !== null && <div className="commerce-journey__quote">
         <CommerceQuoteDetails quote={quote} />
         {quote.externalSeller && <>
-          <label>Optional price warning ({quote.tokenSymbol ?? "tokens"})<input inputMode="decimal" value={warningThreshold} onChange={event => setWarningThreshold(event.target.value)} placeholder="Blank disables warnings" /></label>
+          <label>Optional price warning ({priceDisplayLabel(quote.tokenSymbol ?? "tokens")})<input inputMode="decimal" value={warningThreshold} onChange={event => setWarningThreshold(event.target.value)} placeholder="Blank disables warnings" /></label>
           {(() => { try { return warningThreshold.trim() && BigInt(quote.priceAtomic) > parseUnits(warningThreshold, quote.paymentDecimals) ? <p role="status">This offer exceeds your warning threshold. It is still available at the exact displayed price.</p> : null; } catch { return <p role="status">Enter a decimal warning threshold or leave it blank. This setting never changes or rejects the seller price.</p>; } })()}
           <label><input type="checkbox" checked={riskConfirmed} onChange={event => setRiskConfirmed(event.target.checked)} /> I accept this seller's delivery risk, the seven-day permissionless settlement policy and token issuer controls.</label>
         </>}
-        <label className="detail-actions"><input type="checkbox" checked={quoteConfirmed} onChange={(event) => setQuoteConfirmed(event.target.checked)} /> I confirm {formatUnits(BigInt(quote.priceAtomic), quote.paymentDecimals)} {quote.tokenSymbol ?? "tokens"}, {quote.paymentDecimals} decimals, token {quote.paymentToken}, chain {quote.chainId}, and this exact task. Gas is additional.</label>
+        <label className="detail-actions"><input type="checkbox" checked={quoteConfirmed} onChange={(event) => setQuoteConfirmed(event.target.checked)} /> I confirm {formatUnits(BigInt(quote.priceAtomic), quote.paymentDecimals)} {priceDisplayLabel(quote.tokenSymbol ?? "tokens")}, {quote.paymentDecimals} decimals, token {quote.paymentToken}, chain {quote.chainId}, and this exact task. Gas is additional.</label>
         <button className="button button--primary" type="button" disabled={busy || !quoteConfirmed || (!!quote.externalSeller && !riskConfirmed)} onClick={() => void prepareHire()}>Prepare explicit funding</button>
         <button className="button button--ghost button--small" type="button" disabled={busy} onClick={() => { setQuote(null); setQuoteConfirmed(false); window.localStorage.removeItem(quoteKey); }}>Request a fresh quote</button>
       </div>}
       {operationId && <><p>Funding uses five separate wallet confirmations. Each confirmed step is retained.</p><ol className="funding-steps">{["create", "register", "set_budget", "approve", "fund"].map((step) => { const record = job?.operations.findLast((entry) => entry.kind === step); return <li key={step}>{statusLabel(step)} · {record ? statusLabel(record.status) : dispatch?.step === step ? "Awaiting wallet" : "Not observed"}{record?.transactionHash && <details><summary>Transaction receipt</summary><code>{record.transactionHash}</code></details>}</li>; })}</ol></>}
       {canDispatch && <><div className="detail-kv"><span>Next wallet call</span><strong>{statusLabel(dispatch.step ?? dispatch.action)}</strong></div><p>Recipient: <code>{dispatch.to}</code> · value {dispatch.valueAtomic} wei · chain {dispatch.chainId}</p><details><summary>Exact transaction data</summary><code>{dispatch.data}</code></details><button className="button button--primary" type="button" disabled={busy || authority === null || !walletAuthenticated || chainId !== buyerChainId} onClick={() => void dispatchBrowser(dispatch)}>Review and sign {statusLabel(dispatch.step ?? dispatch.action)}</button></>}
       {operationId && <button className="button button--ghost" type="button" onClick={() => void loadOperation(operationId).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "Status unavailable"))}>Reload status</button>}
-      {buyerChainId === 56 && operationId && (!job || !["funded", "submitted", "completed", "rejected", "expired"].includes(job.job.state)) && <p className="directory-footnote">Allowance safety: approval is for the exact offer, never unlimited. Funding consumes it. If you stop after approving, closing this page does not revoke it; use your wallet's token-permissions controls to set the chain-56 U allowance for the displayed Commerce contract to zero. Do not approve a different spender or token.</p>}
+      {buyerChainId === 56 && operationId && (!job || !["funded", "submitted", "completed", "rejected", "expired"].includes(job.job.state)) && <p className="directory-footnote">Allowance safety: approval is for the exact offer, never unlimited. Funding consumes it. If you stop after approving, closing this page does not revoke it; use your wallet's token-permissions controls to set the chain-56 United Dollars allowance for the displayed Commerce contract to zero. Do not approve a different spender or token.</p>}
       {buyerChainId === 56 && job && !completed && ["funded", "submitted"].includes(job.job.state) && <div className="commerce-journey__delivery">
         <p className="eyebrow">Provider delivery</p><p>Once escrow is funded, ask the agent to begin. Its result is verified against the submission receipt before you can approve it.</p>
         {job.job.state === "funded" && <button className="button button--primary" type="button" disabled={busy || !walletAuthenticated || chainId !== 56} onClick={() => void externalDelivery("deliver")}>Request delivery</button>}

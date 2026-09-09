@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Suspense } from "react";
+import { cache, Suspense } from "react";
 import { notFound } from "next/navigation";
 import { Callout, EmptyState } from "@bnbera/ui";
 import { AgentDetailView } from "@/components/agent-detail-view";
@@ -13,9 +13,15 @@ export const dynamic = "force-dynamic";
 type PageParams = Promise<{ slug: string }>;
 type PageSearchParams = Promise<Readonly<Record<string, string | string[] | undefined>>>;
 
-export async function generateMetadata({ params }: { readonly params: PageParams }): Promise<Metadata> {
+// Primitive arguments let metadata and the page share the same request-scoped
+// read, including optional evidence queries. Never cache across visitors here.
+const readAgent = cache((slug: string, preview: ReturnType<typeof parseMarketplacePageParams>["preview"]) =>
+  readMarketplaceAgentForPage(slug, { preview }));
+
+export async function generateMetadata({ params, searchParams }: { readonly params: PageParams; readonly searchParams: PageSearchParams }): Promise<Metadata> {
   const { slug } = await params;
-  const response = await readMarketplaceAgentForPage(slug);
+  const input = parseMarketplacePageParams(await searchParams);
+  const response = await readAgent(slug, input.preview);
   return {
     title: response.agent?.name ?? "Agent detail",
     description: response.agent?.tagline ?? "Marketplace agent detail and state axes."
@@ -31,7 +37,7 @@ export default async function AgentPage({
 }) {
   const { slug } = await params;
   const input = parseMarketplacePageParams(await searchParams);
-  const response = await readMarketplaceAgentForPage(slug, { preview: input.preview });
+  const response = await readAgent(slug, input.preview);
 
   if ((response.status === "ready" || response.status === "degraded") && response.agent) {
     return (

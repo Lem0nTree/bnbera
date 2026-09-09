@@ -1,6 +1,11 @@
 import type { StatusTone } from "@bnbera/ui";
 import type { AgentCategory } from "@bnbera/domain";
 
+/** Display wording only; signed token symbols and amounts remain unchanged. */
+export function priceDisplayLabel(value: string): string {
+  return value.replace(/\bU\b/g, "United Dollars");
+}
+
 export function titleCase(value: string): string {
   return value.replaceAll("_", " ").replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
 }

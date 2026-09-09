@@ -3,6 +3,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAccount } from "wagmi";
 import { formatUnits } from "viem";
+import { priceDisplayLabel } from "@/lib/presentation";
 import { erc8004IdentityKey } from "@bnbera/domain";
 import { Callout, EmptyState, LoadingState, StatusBadge } from "@bnbera/ui";
 import type { BuyerJobSummary, CommerceJobsResponse } from "@/lib/commerce-job-list";
@@ -94,7 +95,7 @@ function HiredDashboardInner({ defaultChainId }: { defaultChainId: 56 | 97 }) {
       {jobs.length === 0 ? <EmptyState title="No hired jobs yet">Your signed-in buyer account has no jobs. <Link href="/marketplace">Explore agents →</Link></EmptyState> : <ul className="hired-list">{jobs.filter((job) => hiredJobMatches(job, filter)).map((job) => <li className="hired-card" key={job.commerceJobId}>
         <div className="detail-actions"><h2>{job.agent.name ?? `Agent ${job.agent.identity.agentId}`}</h2><StatusBadge value={job.lifecycle.canonicalState ?? job.lifecycle.status} tone={job.lifecycle.canonicalState === "completed" ? "success" : "neutral"} /></div>
         <p>Job {job.protocolJobId ?? "awaiting creation"} · version {job.agent.version} · {job.price.chainId === 97 ? "BNB testnet" : job.price.chainId === 56 ? "BNB mainnet" : "Network unavailable"}</p>
-        <p>{job.price.decimals === null ? `${job.price.amountAtomic} atomic units` : formatUnits(BigInt(job.price.amountAtomic), job.price.decimals)} {job.price.tokenSymbol ?? "tokens"} · updated {new Date(job.updatedAt).toLocaleString()}</p>
+        <p>{job.price.decimals === null ? `${job.price.amountAtomic} atomic units` : formatUnits(BigInt(job.price.amountAtomic), job.price.decimals)} {priceDisplayLabel(job.price.tokenSymbol ?? "tokens")} · updated {new Date(job.updatedAt).toLocaleString()}</p>
         <p>Next: {job.nextAction.replaceAll("_", " ")}</p>
         {job.latestOperation && <p>{job.latestOperation.step.replaceAll("_", " ")} · {job.latestOperation.status.replaceAll("_", " ")}</p>}
         <div className="detail-actions">{job.latestOperation && <button className="button button--primary" type="button" onClick={() => setSelected(job)}>Open job</button>}{job.agent.slug && <Link className="button button--ghost" href={`/agents/${encodeURIComponent(job.agent.slug)}#hire`}>View current agent</Link>}</div>

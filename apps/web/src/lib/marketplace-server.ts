@@ -1205,8 +1205,9 @@ async function loadRegisteredDirectory() {
   const referenceId=process.env.T5_REFERENCE_PROVIDER_AGENT_ID;
   if(referenceId && /^[1-9][0-9]*$/u.test(referenceId)) {
     try {
-    const {service}=await createLiveReadService();
-    const identifier=`eip155:97:${process.env.T5_REFERENCE_PROVIDER_IDENTITY_REGISTRY}:${referenceId}`;
+    const identity = erc8004IdentitySchema.parse({namespace:"eip155",chainId:97,identityRegistry:process.env.T5_REFERENCE_PROVIDER_IDENTITY_REGISTRY,agentId:referenceId});
+    const {service}=await createLiveReadService(identity);
+    const identifier=erc8004IdentityKey(identity);
     const read=await service.readAgent(identifier);
     if(read.agent) {
       const mapped=mapMarketplaceDetailResponse(read.agent.agent,"live",new Date().toISOString());
@@ -1230,7 +1231,7 @@ async function readRegisteredDirectorySearch(input: MarketplaceSearchInput) {
     directoryStats:{registered:agents.length,mainnet:agents.filter(a=>a.identity.chainId===56).length,testnet:agents.filter(a=>a.identity.chainId===97).length,hireEligible:agents.filter(a=>a.activation.enabled).length,recentlyChecked:agents.filter(a=>a.directory?.serviceVerifications.some(s=>serviceVerificationState(s)==="verified")).length,cap:100}});
 }
 
-async function createLiveReadService(): Promise<LiveReadContext> {
+async function createLiveReadService(identity?: Erc8004Identity): Promise<LiveReadContext> {
   let runtime;
   try {
     runtime = loadRuntimeConfig(process.env);
@@ -1249,6 +1250,7 @@ async function createLiveReadService(): Promise<LiveReadContext> {
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
   const source = new IngestionMarketplaceSource(repository, metadataSource, {
+    ...(identity === undefined ? {} : { identity }),
     sourceName: "postgres-ingestion-read-model",
     recognizedReviewerAddresses,
     commerceProjection,

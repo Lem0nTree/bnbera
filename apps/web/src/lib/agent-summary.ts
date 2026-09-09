@@ -1,7 +1,8 @@
 import type { MarketplaceAgentReadModel } from "./marketplace-contract";
+import { priceDisplayLabel } from "./presentation";
 
 export function agentPriceLabel(agent: MarketplaceAgentReadModel): string {
-  return agent.pricing.availability === "available" ? agent.pricing.label : "Price unavailable";
+  return agent.pricing.availability === "available" ? priceDisplayLabel(agent.pricing.label) : "Price unavailable";
 }
 
 /** Only the explicitly five-point, active verified-purchase records form stars.

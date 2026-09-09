@@ -6,6 +6,7 @@ import { CommerceJourney } from "./commerce-journey";
 export function ActivationPanel({
   activation,
   detail = false,
+  compact = false,
   identityKey = "agent",
   targetChainId,
   commerceJobId = null,
@@ -13,6 +14,7 @@ export function ActivationPanel({
 }: {
   readonly activation: MarketplaceAgentReadModel["activation"];
   readonly detail?: boolean;
+  readonly compact?: boolean;
   /** Canonical ERC-8004 identity key; slugs are presentation-only. */
   readonly identityKey?: string;
   readonly targetChainId?: 56 | 97;
@@ -21,8 +23,8 @@ export function ActivationPanel({
 }) {
   const reasonId = `activation-reason-${identityKey}`;
   const content = (
-    <div className={`activation-panel${detail ? " activation-panel--detail" : ""}`}>
-      <div className="activation-panel__header">
+    <div className={`activation-panel${detail ? " activation-panel--detail" : ""}${compact ? " activation-panel--compact" : ""}`}>
+      {!compact && <><div className="activation-panel__header">
         <div>
           <p className="eyebrow">Next action</p>
           <h3>{activation.title}</h3>
@@ -32,8 +34,9 @@ export function ActivationPanel({
       <p className="activation-panel__reason" id={reasonId}>{activation.reason}</p>
       <p className="activation-panel__footnote">
         {activation.nextAction} · Browser signing is user-controlled; the server stores only public operation evidence.
-      </p>
-      {detail && <CommerceJourney activation={activation} {...(targetChainId === undefined ? {} : { targetChainId })} identityKey={identityKey} commerceJobId={commerceJobId} runBundle={runBundle} />}
+      </p></>}
+      {compact && !activation.enabled && <p className="activation-panel__reason" id={reasonId}>{activation.reason}</p>}
+      {detail && <CommerceJourney activation={activation} compact={compact} {...(targetChainId === undefined ? {} : { targetChainId })} identityKey={identityKey} commerceJobId={commerceJobId} runBundle={runBundle} />}
     </div>
   );
 
