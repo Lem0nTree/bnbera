@@ -177,6 +177,30 @@ function eoaOperation(step: "create" | "register" | "set_budget" | "approve" | "
 }
 
 describe("T5 commerce server composition", () => {
+  it("reads mainnet recovery receipts through the operator RPC instead of the SDK default", async () => {
+    vi.stubEnv("EXTERNAL_ERC8183_MAINNET_ENABLED", "true");
+    const fetchRpc = vi.fn(async () => new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: null }), { headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchRpc);
+    try {
+      const composition = createProductionCommerceComposition({
+        standardsLock: STANDARDS_LOCK,
+        pin: { ...PIN, chainId: 56, commerceContract: "0xEa4DAa3100A767e86FDed867729ae7446476EBA6", paymentToken: "0xcE24439F2D9C6a2289F741120FE202248B666666", maxExpiryHorizonSeconds: 691_200 },
+        pool: PERSISTENT_POOL as never,
+        identityResolver,
+        externalMainnetBrowserEnabled: true,
+        runtimeEnvironment: "production",
+        publicRpcUrl: "https://operator-rpc.example/56"
+      });
+      await expect(composition.adapter.getTransactionReceipt(`0x${"a".repeat(64)}`)).resolves.toBeNull();
+      expect(fetchRpc).toHaveBeenCalledOnce();
+      const [url, request] = fetchRpc.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe("https://operator-rpc.example/56");
+      expect(JSON.parse(request.body as string)).toMatchObject({ method: "eth_getTransactionReceipt", params: [`0x${"a".repeat(64)}`] });
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
   it("reports the conservative dispute deadline and fails closed on policy failure", async () => {
     const observedAtUnix=Math.floor(Date.now()/1000);
     const read={job:{state:"submitted"},submission:{observedAtUnix}};
@@ -212,9 +236,12 @@ describe("T5 commerce server composition", () => {
     vi.stubEnv("T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED", "true");
     vi.stubEnv("T5_REFERENCE_PROVIDER_WORKER_ENABLED", "false");
     vi.stubEnv("DATABASE_URL", "postgresql://localhost/bnbera");
+    vi.stubEnv("BSC_TESTNET_RPC_URL", "https://operator-rpc.example/97");
     try {
       const composition = await getCommerceComposition();
       expect(composition).toBeInstanceOf(Erc8183CommerceComposition);
+      expect(composition.adapter.network.publicRpcUrl).toBe("https://operator-rpc.example/97");
+      expect(composition.adapter.network.chainId).toBe(97);
       expect((composition as unknown as { readonly providerReadinessResolver?: CommerceProviderReadinessResolver }).providerReadinessResolver).toBeUndefined();
     } finally {
       await closeCommerceAuthDatabaseForTests();
