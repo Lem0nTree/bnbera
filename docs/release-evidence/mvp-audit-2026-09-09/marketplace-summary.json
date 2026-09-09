@@ -1,0 +1,264 @@
+{
+  "observedAt": "2026-09-09T20:24:32.122Z",
+  "status": "ready",
+  "mode": "live",
+  "total": 100,
+  "stats": {
+    "registered": 100,
+    "mainnet": 80,
+    "testnet": 20,
+    "hireEligible": 10,
+    "recentlyChecked": 36,
+    "cap": 100
+  },
+  "categoryCounts": {
+    "uncategorized": {
+      "total": 88,
+      "mainnet": 75,
+      "activationEnabled": 8
+    },
+    "grid-trading": {
+      "total": 2,
+      "mainnet": 1,
+      "activationEnabled": 1
+    },
+    "health-factor": {
+      "total": 4,
+      "mainnet": 1,
+      "activationEnabled": 1
+    },
+    "yield-optimisation": {
+      "total": 2,
+      "mainnet": 2,
+      "activationEnabled": 0
+    },
+    "rebalancing": {
+      "total": 4,
+      "mainnet": 1,
+      "activationEnabled": 0
+    }
+  },
+  "sellers": [
+    {
+      "id": "eip155:56:0x8004a169fb4a3325136eb29fa0ceb6d2e539a432:265375",
+      "slug": "bnb-lp-range-rebalancer-56-265375",
+      "category": "uncategorized",
+      "activation": {
+        "chainId": 56,
+        "enabled": true,
+        "availability": "available",
+        "method": "erc8183",
+        "title": "Request a signed mainnet offer",
+        "reason": "Useful historical result verified; new delivery is not guaranteed. Fresh signed terms and explicit buyer risk acceptance are required. Seven-day permissionless settlement; no trading authority is granted.",
+        "nextAction": "review_signed_offer"
+      },
+      "hasCurrentData": "unavailable",
+      "completed": {
+        "status": "available",
+        "completedCount": 0,
+        "source": "bnbera-erc8183-settled",
+        "observedAt": null
+      },
+      "reviewCount": 0
+    },
+    {
+      "id": "eip155:56:0x8004a169fb4a3325136eb29fa0ceb6d2e539a432:269233",
+      "slug": "bnb-grid-trader-test-56-269233",
+      "category": "uncategorized",
+      "activation": {
+        "chainId": 56,
+        "enabled": true,
+        "availability": "available",
+        "method": "erc8183",
+        "title": "Request a signed mainnet offer",
+        "reason": "Useful historical result verified; new delivery is not guaranteed. Fresh signed terms and explicit buyer risk acceptance are required. Seven-day permissionless settlement; no trading authority is granted.",
+        "nextAction": "review_signed_offer"
+      },
+      "hasCurrentData": "unavailable",
+      "completed": {
+        "status": "available",
+        "completedCount": 0,
+        "source": "bnbera-erc8183-settled",
+        "observedAt": null
+      },
+      "reviewCount": 0
+    },
+    {
+      "id": "eip155:56:0x8004a169fb4a3325136eb29fa0ceb6d2e539a432:269224",
+      "slug": "grid-trader-56-269224",
+      "category": "uncategorized",
+      "activation": {
+        "chainId": 56,
+        "enabled": true,
+        "availability": "available",
+        "method": "erc8183",
+        "title": "Request a signed mainnet offer",
+        "reason": "Useful historical result verified; new delivery is not guaranteed. Fresh signed terms and explicit buyer risk acceptance are required. Seven-day permissionless settlement; no trading authority is granted.",
+        "nextAction": "review_signed_offer"
+      },
+      "hasCurrentData": "unavailable",
+      "completed": {
+        "status": "available",
+        "completedCount": 0,
+        "source": "bnbera-erc8183-settled",
+        "observedAt": null
+      },
+      "reviewCount": 0
+    },
+    {
+      "id": "eip155:56:0x8004a169fb4a3325136eb29fa0ceb6d2e539a432:269228",
+      "slug": "health-factor-monitor-56-269228",
+      "category": "uncategorized",
+      "activation": {
+        "chainId": 56,
+        "enabled": true,
+        "availability": "available",
+        "method": "erc8183",
+        "title": "Request a signed mainnet offer",
+        "reason": "Useful historical result verified; new delivery is not guaranteed. Fresh signed terms and explicit buyer risk acceptance are required. Seven-day permissionless settlement; no trading authority is granted.",
+        "nextAction": "review_signed_offer"
+      },
+      "hasCurrentData": "unavailable",
+      "completed": {
+        "status": "available",
+        "completedCount": 0,
+        "source": "bnbera-erc8183-settled",
+        "observedAt": null
+      },
+      "reviewCount": 0
+    },
+    {
+      "id": "eip155:56:0x8004a169fb4a3325136eb29fa0ceb6d2e539a432:269223",
+      "slug": "portfolio-rebalancer-56-269223",
+      "category": "uncategorized",
+      "activation": {
+        "chainId": 56,
+        "enabled": true,
+        "availability": "available",
+        "method": "erc8183",
+        "title": "Request a signed mainnet offer",
+        "reason": "Useful historical result verified; new delivery is not guaranteed. Fresh signed terms and explicit buyer risk acceptance are required. Seven-day permissionless settlement; no trading authority is granted.",
+        "nextAction": "review_signed_offer"
+      },
+      "hasCurrentData": "unavailable",
+      "completed": {
+        "status": "available",
+        "completedCount": 0,
+        "source": "bnbera-erc8183-settled",
+        "observedAt": null
+      },
+      "reviewCount": 0
+    },
+    {
+      "id": "eip155:56:0x8004a169fb4a3325136eb29fa0ceb6d2e539a432:269226",
+      "slug": "yield-allocator-56-269226",
+      "category": "uncategorized",
+      "activation": {
+        "chainId": 56,
+        "enabled": true,
+        "availability": "available",
+        "method": "erc8183",
+        "title": "Request a signed mainnet offer",
+        "reason": "Protocol-ready seller; useful delivery history is unverified. Fresh signed terms and explicit buyer risk acceptance are required. Seven-day permissionless settlement; no trading authority is granted.",
+        "nextAction": "review_signed_offer"
+      },
+      "hasCurrentData": "unavailable",
+      "completed": {
+        "status": "available",
+        "completedCount": 0,
+        "source": "bnbera-erc8183-settled",
+        "observedAt": null
+      },
+      "reviewCount": 0
+    },
+    {
+      "id": "eip155:56:0x8004a169fb4a3325136eb29fa0ceb6d2e539a432:303779",
+      "slug": "marketplace-operated-grid-planner-56-303779",
+      "category": "grid-trading",
+      "activation": {
+        "chainId": 56,
+        "enabled": true,
+        "availability": "available",
+        "method": "erc8183",
+        "title": "Request a signed mainnet offer",
+        "reason": "Useful historical result verified; new delivery is not guaranteed. Fresh signed terms and explicit buyer risk acceptance are required. Seven-day permissionless settlement; no trading authority is granted.",
+        "nextAction": "review_signed_offer"
+      },
+      "hasCurrentData": "unavailable",
+      "completed": {
+        "status": "available",
+        "completedCount": 0,
+        "source": "bnbera-erc8183-settled",
+        "observedAt": null
+      },
+      "reviewCount": 0
+    },
+    {
+      "id": "eip155:56:0x8004a169fb4a3325136eb29fa0ceb6d2e539a432:341565",
+      "slug": "marketplace-operated-loan-health-check-56-341565",
+      "category": "health-factor",
+      "activation": {
+        "chainId": 56,
+        "enabled": true,
+        "availability": "available",
+        "method": "erc8183",
+        "title": "Request a signed mainnet offer",
+        "reason": "Useful historical result verified; new delivery is not guaranteed. Fresh signed terms and explicit buyer risk acceptance are required. Seven-day permissionless settlement; no trading authority is granted.",
+        "nextAction": "review_signed_offer"
+      },
+      "hasCurrentData": "unavailable",
+      "completed": {
+        "status": "available",
+        "completedCount": 0,
+        "source": "bnbera-erc8183-settled",
+        "observedAt": null
+      },
+      "reviewCount": 0
+    },
+    {
+      "id": "eip155:56:0x8004a169fb4a3325136eb29fa0ceb6d2e539a432:341225",
+      "slug": "yieldrouter-capacity-aware-yield-optimisation-56-341225",
+      "category": "uncategorized",
+      "activation": {
+        "chainId": 56,
+        "enabled": true,
+        "availability": "available",
+        "method": "erc8183",
+        "title": "Request a signed mainnet offer",
+        "reason": "Protocol-ready seller; useful delivery history is unverified. Fresh signed terms and explicit buyer risk acceptance are required. Seven-day permissionless settlement; no trading authority is granted.",
+        "nextAction": "review_signed_offer"
+      },
+      "hasCurrentData": "unavailable",
+      "completed": {
+        "status": "available",
+        "completedCount": 0,
+        "source": "bnbera-erc8183-settled",
+        "observedAt": null
+      },
+      "reviewCount": 0
+    },
+    {
+      "id": "eip155:56:0x8004a169fb4a3325136eb29fa0ceb6d2e539a432:270213",
+      "slug": "termix-advantage-report-explainer-56-270213",
+      "category": "uncategorized",
+      "activation": {
+        "chainId": 56,
+        "enabled": true,
+        "availability": "available",
+        "method": "erc8183",
+        "title": "Request a signed mainnet offer",
+        "reason": "Useful historical result verified; new delivery is not guaranteed. Fresh signed terms and explicit buyer risk acceptance are required. Seven-day permissionless settlement; no trading authority is granted.",
+        "nextAction": "review_signed_offer"
+      },
+      "hasCurrentData": "unavailable",
+      "completed": {
+        "status": "available",
+        "completedCount": 0,
+        "source": "bnbera-erc8183-settled",
+        "observedAt": null
+      },
+      "reviewCount": 0
+    }
+  ],
+  "evidenceProfiles": []
+}

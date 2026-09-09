@@ -1,0 +1,11 @@
+{
+  "observedAt": "2026-09-09T20:32:06.888408+00:00",
+  "source": "Read-only host metadata; no environment files or credentials read",
+  "deployed": {
+    "sha": "4a753bb33e43570feb72f21eecb2160ef98751ba",
+    "build_id": "b45Ojq23qo-nzNZW2q7-H",
+    "release": "/home/ubuntu/.local/state/bnbera-deploy/releases/4a753bb33e43570feb72f21eecb2160ef98751ba",
+    "deployed_at": 1788984671
+  },
+  "userCrontab": "# BNBEra persistent marketplace jobs (accepted github/main)\n* * * * * ERC8004_HEALTH_PROBE_CONCURRENCY=1 ERC8004_HEALTH_MAX_SERVICES=8 /home/ubuntu/bnbera-w0-w1/ops/marketplace-cron/health.sh\n# BNBEra protocol/reference health only; no wallet signing or provider execution.\n* * * * * /bin/bash /home/ubuntu/bnbera-ui-light/ops/marketplace-cron/protocol-services.sh\n* * * * * /bin/bash /home/ubuntu/bnbera-ui-light/ops/marketplace-cron/reference-health.sh\n# BNBEra mainnet seller identity/card refresh only; no negotiation, invocation, signing or chain writes.\n* * * * * /bin/bash /home/ubuntu/bnbera-ui-light/ops/marketplace-cron/mainnet-sellers.sh\n"
+}

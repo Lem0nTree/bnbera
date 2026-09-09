@@ -1,0 +1,452 @@
+{
+  "observedAt": "2026-09-09T20:26:43.731Z",
+  "out": [
+    {
+      "path": "/api/marketplace?category=rebalancing",
+      "status": 200,
+      "total": 4,
+      "agents": [
+        {
+          "id": "341628",
+          "category": "rebalancing",
+          "enabled": false
+        },
+        {
+          "id": "2017",
+          "category": "rebalancing",
+          "enabled": false
+        },
+        {
+          "id": "1856",
+          "category": "rebalancing",
+          "enabled": false
+        },
+        {
+          "id": "2283",
+          "category": "rebalancing",
+          "enabled": false
+        }
+      ],
+      "detail": [
+        "contractVersion",
+        "status",
+        "mode",
+        "dataLabel",
+        "notice",
+        "agents",
+        "excluded",
+        "total",
+        "directoryStats",
+        "selection",
+        "meta",
+        "error"
+      ]
+    },
+    {
+      "path": "/api/marketplace?category=yield-optimisation",
+      "status": 200,
+      "total": 2,
+      "agents": [
+        {
+          "id": "2468",
+          "category": "yield-optimisation",
+          "enabled": false
+        },
+        {
+          "id": "117823",
+          "category": "yield-optimisation",
+          "enabled": false
+        }
+      ],
+      "detail": [
+        "contractVersion",
+        "status",
+        "mode",
+        "dataLabel",
+        "notice",
+        "agents",
+        "excluded",
+        "total",
+        "directoryStats",
+        "selection",
+        "meta",
+        "error"
+      ]
+    },
+    {
+      "path": "/api/marketplace?category=grid-trading",
+      "status": 200,
+      "total": 2,
+      "agents": [
+        {
+          "id": "303779",
+          "category": "grid-trading",
+          "enabled": true
+        },
+        {
+          "id": "2161",
+          "category": "grid-trading",
+          "enabled": false
+        }
+      ],
+      "detail": [
+        "contractVersion",
+        "status",
+        "mode",
+        "dataLabel",
+        "notice",
+        "agents",
+        "excluded",
+        "total",
+        "directoryStats",
+        "selection",
+        "meta",
+        "error"
+      ]
+    },
+    {
+      "path": "/api/marketplace?category=health-factor",
+      "status": 200,
+      "total": 4,
+      "agents": [
+        {
+          "id": "341565",
+          "category": "health-factor",
+          "enabled": true
+        },
+        {
+          "id": "1775",
+          "category": "health-factor",
+          "enabled": false
+        },
+        {
+          "id": "1828",
+          "category": "health-factor",
+          "enabled": false
+        },
+        {
+          "id": "2293",
+          "category": "health-factor",
+          "enabled": false
+        }
+      ],
+      "detail": [
+        "contractVersion",
+        "status",
+        "mode",
+        "dataLabel",
+        "notice",
+        "agents",
+        "excluded",
+        "total",
+        "directoryStats",
+        "selection",
+        "meta",
+        "error"
+      ]
+    },
+    {
+      "path": "/api/marketplace/studio-agent-2a6e16a7e8",
+      "status": 200,
+      "detail": {
+        "identity": {
+          "namespace": "eip155",
+          "chainId": 97,
+          "identityRegistry": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+          "agentId": "2206"
+        },
+        "evidence": {
+          "status": "unavailable",
+          "summary": "No verified Greenfield publication is available in this read model.",
+          "ipfsUri": null,
+          "greenfieldUri": null,
+          "greenfieldLocator": null,
+          "lastVerifiedAt": null,
+          "currentVersion": 14,
+          "profile": {
+            "artifactType": "agent_profile",
+            "artifactId": "agent-2206",
+            "jobId": null,
+            "version": 11,
+            "status": "unavailable",
+            "summary": "No verified Greenfield publication is available; browsing and hiring remain available.",
+            "provider": null,
+            "readUrl": null,
+            "locator": null,
+            "sha256Digest": null,
+            "keccak256Digest": null,
+            "sizeBytes": null,
+            "sealTransactionHash": null,
+            "verifiedAt": null,
+            "reason": "GREENFIELD_READ_URL_UNAVAILABLE"
+          },
+          "runBundle": {
+            "artifactType": "run_bundle",
+            "artifactId": "run-b5a033ff-f4a9-5622-97c6-d0594a501db8",
+            "jobId": "695c1be6-a6bb-4deb-b9b8-9eabd60b0ae7",
+            "version": 11,
+            "status": "unavailable",
+            "summary": "No verified Greenfield publication is available; browsing and hiring remain available.",
+            "provider": null,
+            "readUrl": null,
+            "locator": null,
+            "sha256Digest": null,
+            "keccak256Digest": null,
+            "sizeBytes": null,
+            "sealTransactionHash": null,
+            "verifiedAt": null,
+            "reason": "GREENFIELD_READ_URL_UNAVAILABLE"
+          }
+        },
+        "metrics": {
+          "uptime": {
+            "status": "unknown",
+            "windowSeconds": null,
+            "monitoringWindowSeconds": null,
+            "coverageSeconds": null,
+            "coverageRatio": null,
+            "observedFrom": null,
+            "observedTo": null,
+            "attemptedChecks": 0,
+            "successfulChecks": 0,
+            "successRatio": null,
+            "source": null
+          },
+          "reviews": {
+            "status": "unavailable",
+            "count": null,
+            "averageScore": null,
+            "source": null,
+            "observedAt": null
+          },
+          "reputation": {
+            "rawPermissionless": {
+              "status": "unknown",
+              "count": null,
+              "feedback": [],
+              "source": null,
+              "observedAt": null,
+              "reason": "No canonical ERC-8004 feedback has been observed."
+            },
+            "recognizedReviewers": {
+              "status": "unavailable",
+              "count": null,
+              "feedback": [],
+              "source": null,
+              "observedAt": null,
+              "reason": "No recognized reviewer or validator allowlist is configured."
+            },
+            "verifiedPurchases": {
+              "status": "available",
+              "count": 1,
+              "feedback": [],
+              "source": "bnbera-erc8183-verified-purchase",
+              "observedAt": "2026-09-07T23:13:10.000Z",
+              "reason": null
+            },
+            "verifiedReviews": [
+              {
+                "reviewId": "cb986137-2454-4090-812f-95eaf04eee45",
+                "commerceJobId": "695c1be6-a6bb-4deb-b9b8-9eabd60b0ae7",
+                "reviewerAddress": "0x230072625f8090d5271c5f882748ce11134ac2ba",
+                "identity": {
+                  "namespace": "eip155",
+                  "chainId": 97,
+                  "identityRegistry": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+                  "agentId": "2206"
+                },
+                "agentVersionId": "be822771-38ed-5349-887c-f5735b7ee700",
+                "agentVersion": 11,
+                "resultSha256": "3d73b7286e9207de2c76906e1eaf216850ad20aafb3b32026cfe1a25d780b42d",
+                "resultKeccak": "0xe3064c53a95081f9c882ff611944ba9bdd768b24c47cd783bea4f804db590c65",
+                "settlementTransactionHash": "0x8f580a37cb22ec2f5c19c78cb9f3371caee02426e60c499bd9b18064ede3f26f",
+                "score": 5,
+                "comment": "Verified live 2206 health-factor result.",
+                "observedAt": "2026-09-07T23:13:10.000Z"
+              }
+            ]
+          },
+          "completedJobs": {
+            "status": "available",
+            "completedCount": 1,
+            "source": "bnbera-erc8183-settled",
+            "observedAt": "2026-09-07T23:13:05.000Z"
+          },
+          "lastResult": {
+            "status": "available",
+            "summary": "Settled BNBEra result (SHA-256 3d73b7286e9207de2c76906e1eaf216850ad20aafb3b32026cfe1a25d780b42d).",
+            "reference": "0x8f580a37cb22ec2f5c19c78cb9f3371caee02426e60c499bd9b18064ede3f26f",
+            "source": "bnbera-erc8183-settled",
+            "observedAt": "2026-09-07T23:13:05.000Z"
+          },
+          "currentData": {
+            "status": "unavailable",
+            "summary": "No current data observation is available.",
+            "items": []
+          }
+        }
+      }
+    },
+    {
+      "path": "/api/marketplace/bnbera-reference-health-factor-provider",
+      "status": 200,
+      "detail": {
+        "identity": {
+          "namespace": "eip155",
+          "chainId": 97,
+          "identityRegistry": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+          "agentId": "2293"
+        },
+        "evidence": {
+          "status": "unavailable",
+          "summary": "No verified Greenfield publication is available.",
+          "ipfsUri": null,
+          "greenfieldUri": null,
+          "greenfieldLocator": null,
+          "lastVerifiedAt": null,
+          "currentVersion": 4,
+          "profile": {
+            "artifactType": "agent_profile",
+            "artifactId": null,
+            "jobId": null,
+            "version": null,
+            "status": "unavailable",
+            "summary": "No verified Greenfield publication is available.",
+            "provider": null,
+            "readUrl": null,
+            "locator": null,
+            "sha256Digest": null,
+            "keccak256Digest": null,
+            "sizeBytes": null,
+            "sealTransactionHash": null,
+            "verifiedAt": null,
+            "reason": "AGENT_PROFILE_UNAVAILABLE"
+          },
+          "runBundle": {
+            "artifactType": "run_bundle",
+            "artifactId": null,
+            "jobId": null,
+            "version": null,
+            "status": "unavailable",
+            "summary": "No verified Greenfield publication is available.",
+            "provider": null,
+            "readUrl": null,
+            "locator": null,
+            "sha256Digest": null,
+            "keccak256Digest": null,
+            "sizeBytes": null,
+            "sealTransactionHash": null,
+            "verifiedAt": null,
+            "reason": "RUN_BUNDLE_UNAVAILABLE"
+          }
+        },
+        "metrics": {
+          "uptime": {
+            "status": "unknown",
+            "windowSeconds": null,
+            "monitoringWindowSeconds": null,
+            "coverageSeconds": null,
+            "coverageRatio": null,
+            "observedFrom": null,
+            "observedTo": null,
+            "attemptedChecks": 0,
+            "successfulChecks": 0,
+            "successRatio": null,
+            "source": null
+          },
+          "reviews": {
+            "status": "unavailable",
+            "count": null,
+            "averageScore": null,
+            "source": null,
+            "observedAt": null
+          },
+          "reputation": {
+            "rawPermissionless": {
+              "status": "unknown",
+              "count": null,
+              "feedback": [],
+              "source": null,
+              "observedAt": null,
+              "reason": "No canonical ERC-8004 feedback has been observed."
+            },
+            "recognizedReviewers": {
+              "status": "unavailable",
+              "count": null,
+              "feedback": [],
+              "source": null,
+              "observedAt": null,
+              "reason": "No recognized reviewer or validator allowlist is configured."
+            },
+            "verifiedPurchases": {
+              "status": "available",
+              "count": 2,
+              "feedback": [],
+              "source": "bnbera-erc8183-verified-purchase",
+              "observedAt": "2026-09-09T09:04:33.000Z",
+              "reason": null
+            },
+            "verifiedReviews": [
+              {
+                "reviewId": "edaf10e0-aaf8-4f75-b7f4-912a010b1ffd",
+                "commerceJobId": "35e9e4a9-5062-4515-b894-f7d89c734cf6",
+                "reviewerAddress": "0x230072625f8090d5271c5f882748ce11134ac2ba",
+                "identity": {
+                  "namespace": "eip155",
+                  "chainId": 97,
+                  "identityRegistry": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+                  "agentId": "2293"
+                },
+                "agentVersionId": "0c656a70-700b-59b8-96b8-1377c0a0086a",
+                "agentVersion": 2,
+                "resultSha256": "3b67ee07056176c60e8fc66e40ae9c308eec0c276326afbc57019eb971e5ddef",
+                "resultKeccak": "0x7ea2e69fd23d482852a771f3f753243d5f55507721f6186c5d3ecc89f76e91b1",
+                "settlementTransactionHash": "0xa833c0a88f94a14e0b21bdde7dc1d1b2681059fc9eb2e4151e29fee8e927a188",
+                "score": 5,
+                "comment": "BNBEra operator acceptance test on BNB testnet, not an independent customer endorsement. Job 1177 was picked up automatically by the bounded provider and correctly calculated 2.4 from the buyer-attested 3000 USD / 1000 USD / 80% snapshot. Exact result hashes, the real 900-second review window and the 0.001 U escrow settlement were verified.",
+                "observedAt": "2026-09-09T09:04:33.000Z"
+              },
+              {
+                "reviewId": "832c84c3-3ec4-4923-bec9-428039e12d92",
+                "commerceJobId": "3233d673-38ac-4f9a-a516-89c2e7cc330b",
+                "reviewerAddress": "0x230072625f8090d5271c5f882748ce11134ac2ba",
+                "identity": {
+                  "namespace": "eip155",
+                  "chainId": 97,
+                  "identityRegistry": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+                  "agentId": "2293"
+                },
+                "agentVersionId": "0c656a70-700b-59b8-96b8-1377c0a0086a",
+                "agentVersion": 2,
+                "resultSha256": "fe9a7eb2d2c50b14b91a2a13d55b4b72b3ce09c71055a9e7dd1a28da12148f31",
+                "resultKeccak": "0x8cf0667e0244313a6b24e55eb2f32679161365767a0485c7b69a06ac3a7c0c14",
+                "settlementTransactionHash": "0x248f0794c44dff4567d1c3692f5caebcacb8fe9df83e0218ded16caac65e78f1",
+                "score": 5,
+                "comment": "BNBEra operator acceptance test on BNB testnet, not an independent customer endorsement. Job 1171 correctly calculated 1.6 from buyer-attested inputs; exact result hashes and the 0.001 U escrow settlement were verified.",
+                "observedAt": "2026-09-09T07:47:05.000Z"
+              }
+            ]
+          },
+          "completedJobs": {
+            "status": "available",
+            "completedCount": 2,
+            "source": "bnbera-erc8183-settled",
+            "observedAt": "2026-09-09T09:04:00.000Z"
+          },
+          "lastResult": {
+            "status": "available",
+            "summary": "Settled BNBEra result (SHA-256 3b67ee07056176c60e8fc66e40ae9c308eec0c276326afbc57019eb971e5ddef).",
+            "reference": "0xa833c0a88f94a14e0b21bdde7dc1d1b2681059fc9eb2e4151e29fee8e927a188",
+            "source": "bnbera-erc8183-settled",
+            "observedAt": "2026-09-09T09:04:00.000Z"
+          },
+          "currentData": {
+            "status": "unavailable",
+            "summary": "No current data observation is available.",
+            "items": []
+          }
+        }
+      }
+    }
+  ]
+}

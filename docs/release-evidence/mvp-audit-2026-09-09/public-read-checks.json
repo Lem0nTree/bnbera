@@ -1,0 +1,22 @@
+{
+  "scope": "Read-only observations manually transcribed from successful audit commands; no signed or broadcast transactions",
+  "rpc": "https://bsc-rpc.publicnode.com",
+  "chainId": 56,
+  "blockTag": "latest",
+  "atomicSnapshot": false,
+  "policy": "0x9C01845705b3078Aa2e8cfF7520a6376FD766dE5",
+  "policyReads": [
+    { "observedAt": "2026-09-09T20:27:39.835Z", "function": "disputeWindow()", "value": "604800" },
+    { "observedAt": "2026-09-09T20:27:40.139Z", "function": "submittedAt(56765)", "value": "1788976407" },
+    { "observedAt": "2026-09-09T20:27:40.215Z", "function": "check(56765,0x)", "value": "0", "verdict": "Pending" }
+  ],
+  "jobReads": [
+    { "observedAt": "2026-09-09T20:28:11.831Z", "jobId": "56763", "status": "OPEN", "submittedAt": "0", "deliverable": "0x0000000000000000000000000000000000000000000000000000000000000000", "budgetAtomic": "0" },
+    { "observedAt": "2026-09-09T20:28:11.979Z", "jobId": "56764", "status": "FUNDED", "submittedAt": "0", "deliverable": "0x0000000000000000000000000000000000000000000000000000000000000000", "budgetAtomic": "10000000000000000" },
+    { "observedAt": "2026-09-09T20:28:12.059Z", "jobId": "56765", "status": "SUBMITTED", "submittedAt": "1788976407", "deliverable": "0x3184a55488c862c06aa2feb8c58646604b88c89b7218c960b38502fed29ce7b4", "budgetAtomic": "10000000000000000" }
+  ],
+  "greenfieldReadbacks": [
+    { "observedAt": "2026-09-09T20:27:07.165180Z", "url": "https://gnfd-testnet-sp1.bnbchain.org/view/bnbera-t8-230072625f8090d5271c5f882748ce11134ac2ba/evidence/hackathon/agent_profile/agent-2206/versions/11/agent_profile.json", "httpStatus": 200, "bytes": 1989, "sha256": "69e0294f83908f355a1a883c98768b52786a3f88439cf6f02fcd5b63e70279d8" },
+    { "observedAt": "2026-09-09T20:27:07.756752Z", "url": "https://gnfd-testnet-sp1.bnbchain.org/view/bnbera-t8-230072625f8090d5271c5f882748ce11134ac2ba/evidence/hackathon/run_bundle/run-b5a033ff-f4a9-5622-97c6-d0594a501db8/versions/11/run_bundle.json", "httpStatus": 200, "bytes": 1186, "sha256": "12cba7d6a989d2603a525bb4965d84fe5bff4569f106a0ce3decb84d56e24446" }
+  ]
+}
