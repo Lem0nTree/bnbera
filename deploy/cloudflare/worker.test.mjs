@@ -17,11 +17,15 @@ test("forwards cookies and public origin, replaces spoofed headers, rewrites red
       assert.equal(options.headers.get("CF-Access-Client-Secret"), "installed-secret");
       assert.equal(options.headers.get("Forwarded"), null);
       assert.equal(options.redirect, "manual");
-      return new Response(null, { status: 302, headers: { Location: "https://stable-origin.example/my-hires", "Set-Cookie": "session=opaque; Secure; HttpOnly; Path=/" } });
+      const headers = new Headers({ Location: "https://stable-origin.example/my-hires" });
+      headers.append("Set-Cookie", "session=opaque; Secure; HttpOnly; Path=/");
+      headers.append("Set-Cookie", "CF_Authorization=origin-assertion; Secure; HttpOnly; Path=/");
+      return new Response(null, { status: 302, headers });
     };
     const response = await worker.fetch(new Request("https://bnbera.ritarda.to/api/commerce?x=1", { headers: { Cookie: "session=opaque", Origin: "https://bnbera.ritarda.to", "X-Forwarded-Host": "evil.example", "CF-Access-Client-Secret": "attacker", Forwarded: "host=evil.example" } }), { UPSTREAM_ORIGIN: "https://stable-origin.example", ORIGIN_ACCESS_CLIENT_ID: "installed-id", ORIGIN_ACCESS_CLIENT_SECRET: "installed-secret" });
     assert.equal(response.headers.get("Location"), "https://bnbera.ritarda.to/my-hires");
     assert.equal(response.headers.get("Cache-Control"), "private, no-store");
     assert.match(response.headers.get("Set-Cookie"), /HttpOnly/);
+    assert.doesNotMatch(response.headers.get("Set-Cookie"), /CF_Authorization/);
   } finally { globalThis.fetch = original; }
 });
