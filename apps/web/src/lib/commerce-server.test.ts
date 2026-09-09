@@ -133,7 +133,7 @@ function testComposition(overrides: Record<string, unknown> = {}): Erc8183Commer
   return composition;
 }
 
-function eoaOperation(step: "create" | "register" | "set_budget" | "approve" | "fund", status: "awaiting_signature" | "confirmed", jobId: string | null): Record<string, unknown> {
+function eoaOperation(step: "create" | "register" | "set_budget" | "approve" | "fund", status: "awaiting_signature" | "confirmed" | "reconciled", jobId: string | null): Record<string, unknown> {
   const expiry = 2_000_600;
   const parameters = {
     eoaStep: step,
@@ -534,7 +534,7 @@ describe("T5 commerce server composition", () => {
     expect(prepareEoaStep).toHaveBeenCalledTimes(4);
   });
 
-  it.each(["confirmed", "reconciled"])("preserves %s funding evidence when a later RPC read fails", async (status) => {
+  it.each(["confirmed", "reconciled"] as const)("preserves %s funding evidence when a later RPC read fails", async (status) => {
     const persisted = eoaOperation("fund", status, "7");
     const markManualReview = vi.fn();
     const persistEoaFunding = vi.fn();
