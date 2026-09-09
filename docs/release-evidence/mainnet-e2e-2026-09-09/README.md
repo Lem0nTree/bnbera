@@ -39,7 +39,16 @@ The loan task uses hypothetical collateral/debt inputs. Its expected determinist
 2. Browser receipt polling used the chain library default endpoint, which failed CORS. Wagmi now uses an explicit public BSC endpoint with a public environment override. The actual five-step funding flow passed after deployment.
 3. A later provider receipt-read failure downgraded previously confirmed funding to manual review. Preserve verified evidence on provider unavailability; continue to reject contradictory receipts. The live attempt's manual-review record and failed same-hash recovery are retained as evidence, not rewritten directly in the database. At 16:42 UTC the service was found pointing to a concurrently deployed checkout at `8655953`, whose source lacks the RPC fixes. The later production regression therefore does not establish failure of the configured-RPC patch.
 
-Provider delivery failure has not been diagnosed: the durable record deliberately treats a timeout, failed response or interrupted verification as unknown. Current FUNDED state alone cannot authorize a repeat POST. No unsupported provider status URL was guessed.
+### Provider protocol investigation, 16:45 UTC
+
+The provider homepage links its [source repository](https://github.com/gilbertsahumada/bnb-agent-marketplace). Revision `cc9bd3a79756e6bc8bfda2e48b6ea364eddaaf85` exposes two integration mismatches:
+
+- [Request parser](https://github.com/gilbertsahumada/bnb-agent-marketplace/blob/cc9bd3a79756e6bc8bfda2e48b6ea364eddaaf85/src/presentation/http/hosted-seller-http.ts) requires `job_id` to be a positive safe integer JSON number. BNBEra sent a string. The adapter now sends an exact number and refuses IDs beyond the safe integer range before notification.
+- [Submission repository](https://github.com/gilbertsahumada/bnb-agent-marketplace/blob/cc9bd3a79756e6bc8bfda2e48b6ea364eddaaf85/src/mainnet/hosted-seller-repository.ts) replies with `acknowledged: true`, not `status: "accepted"`. The adapter now accepts either exact-job acknowledgement while rejecting contradictory fields, false acknowledgements and mismatched job IDs. Acknowledgement still does not prove delivered work.
+
+All 21 seller boundary tests and the commerce TypeScript build pass. These are concrete compatibility bugs and a likely explanation for the failed request, but public source alone does not establish the deployed revision or the original lost HTTP response. The durable unknown claim is therefore retained; no delivery POST was repeated.
+
+The source-defined read-only [result route](https://bnb-agent-marketplace-ruby.vercel.app/api/sellers/loan-health/job/56764/response) returned HTTP 400, JSON-RPC error `-32602`, `The loan-health deliverable is not available`. Raw public response is saved in `provider-result-unavailable.json`. This and the refreshed FUNDED chain state establish missing output, not absence of every possible pending provider execution. Recover authoritative rejection/pending evidence before any corrected repeat notification. No unsupported provider status URL was guessed.
 
 ## Validation and continuation
 

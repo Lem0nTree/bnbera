@@ -66,17 +66,25 @@ describe("external ERC-8183 seller boundary", () => {
     fixture.setJob({ ...job, state: "FUNDED" }); fixture.transport.request.mockRejectedValue(new Error("timeout"));
     await expect(fixture.adapter.notifyFunded({ quote, jobId: "123", buyerAddress })).rejects.toMatchObject({ code: "RECONCILIATION_REQUIRED" });
   });
-  it.each([{status:"rejected",job_id:123},{status:"accepted",job_id:124},{}])("does not call a generic or rejected response delivery acknowledgement: %j", async reply => {
+  it.each([{status:"rejected",job_id:123},{status:"accepted",job_id:124},{acknowledged:false,job_id:123},{acknowledged:true,job_id:124},{acknowledged:true,status:"rejected",job_id:123},{acknowledged:false,status:"accepted",job_id:123},{}])("does not call a generic or rejected response delivery acknowledgement: %j", async reply => {
     const fixture = await setup(); const quote = await fixture.adapter.negotiate(task);
     fixture.setJob({jobId:"123",chainId:56,commerceContract:binding.commerceContract,client:buyerAddress,provider:account.address,paymentToken:binding.paymentToken,budgetAtomic:quote.priceAtomic,description:quote.signedDescription,state:"FUNDED",deliverable:null});
     fixture.transport.request.mockResolvedValue({jsonrpc:"2.0",id:"request-1",result:{parts:[{kind:"data",data:reply}]}} as never);
     await expect(fixture.adapter.notifyFunded({quote,jobId:"123",buyerAddress})).rejects.toMatchObject({code:"RECONCILIATION_REQUIRED"});
   });
-  it("accepts acknowledgement only for the exact funded job", async () => {
+  it.each([{status:"accepted",job_id:123},{acknowledged:true,already_submitted:false,job_id:123}])("accepts acknowledgement only for the exact funded job: %j", async reply => {
     const fixture = await setup(); const quote = await fixture.adapter.negotiate(task);
     fixture.setJob({jobId:"123",chainId:56,commerceContract:binding.commerceContract,client:buyerAddress,provider:account.address,paymentToken:binding.paymentToken,budgetAtomic:quote.priceAtomic,description:quote.signedDescription,state:"FUNDED",deliverable:null});
-    fixture.transport.request.mockResolvedValue({jsonrpc:"2.0",id:"request-1",result:{parts:[{kind:"data",data:{status:"accepted",job_id:123}}]}} as never);
+    fixture.transport.request.mockResolvedValue({jsonrpc:"2.0",id:"request-1",result:{parts:[{kind:"data",data:reply}]}} as never);
     await expect(fixture.adapter.notifyFunded({quote,jobId:"123",buyerAddress})).resolves.toMatchObject({status:"notified"});
+    expect(fixture.transport.request).toHaveBeenLastCalledWith(binding.endpoint, expect.objectContaining({params:{message:{messageId:"request-1",role:"user",parts:[{kind:"data",data:{skill:"notify_funded",job_id:123}}]}}}));
+  });
+  it("never rounds a uint256 job ID into a different seller job", async () => {
+    const fixture = await setup(); const quote = await fixture.adapter.negotiate(task);
+    const jobId = "9007199254740993";
+    fixture.setJob({jobId,chainId:56,commerceContract:binding.commerceContract,client:buyerAddress,provider:account.address,paymentToken:binding.paymentToken,budgetAtomic:quote.priceAtomic,description:quote.signedDescription,state:"FUNDED",deliverable:null});
+    await expect(fixture.adapter.notifyFunded({quote,jobId,buyerAddress})).rejects.toThrow(/represent this job ID exactly/u);
+    expect(fixture.transport.request).toHaveBeenCalledOnce();
   });
   it("returns only a manifest matching the exact job and committed digest", async () => {
     const fixture = await setup(); const quote = await fixture.adapter.negotiate(task);
