@@ -30,7 +30,7 @@ function modeTone(response: MarketplaceSearchResponse): "info" | "warning" | "da
 function paramsForCategory(searchString: string, category: string): string {
   const params = new URLSearchParams();
   const search = new URLSearchParams(searchString);
-  for (const key of ["q", "chainId", "origin", "verification", "runtime", "protocol", "freshness", "sort"]) {
+  for (const key of ["q", "chainId", "origin", "verification", "runtime", "protocol", "freshness", "sort", "agents"]) {
     const value = search.get(key);
     if (value) {
       params.set(key, value);
@@ -43,7 +43,6 @@ function paramsForCategory(searchString: string, category: string): string {
 function paramsForAllSupply(searchString: string): string {
   const params = new URLSearchParams(searchString);
   params.delete("category");
-  params.delete("agents");
   const query = params.toString();
   return `/marketplace${query ? `?${query}` : ""}`;
 }
@@ -68,6 +67,7 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
     if (currentCategory) {
       next.set("category", currentCategory);
     }
+    if (selectedCompare) next.set("agents", selectedCompare);
     router.push(`${pathname}${next.toString() ? `?${next.toString()}` : ""}`);
   }
 
@@ -88,7 +88,6 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
           <span>
             {response.total} eligible record{response.total === 1 ? "" : "s"}
             {response.excluded.length > 0 ? ` · ${response.excluded.length} excluded before ranking` : ""}
-            {` · contract ${response.contractVersion}`}
           </span>
         </div>
         {selectedCompare ? (
@@ -108,7 +107,7 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
           className={!currentCategory ? "category-tab category-tab--active" : "category-tab"}
           href={paramsForAllSupply(searchString)}
         >
-          All supply <span>⌁</span>
+          All agents <span>⌁</span>
         </Link>
         {categories.map((category) => (
           <Link
@@ -134,7 +133,7 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
         <label className="search-field filter-panel__query">
           <span className="sr-only">Search agents</span>
           <span className="search-field__icon" aria-hidden="true">⌕</span>
-          <input type="search" name="q" defaultValue={query} placeholder="Search capabilities, protocols, or agent names" />
+          <input type="search" name="q" maxLength={120} defaultValue={query} placeholder="Search capabilities, protocols, or agent names" />
         </label>
         <label className="select-field">
           <span>Network</span>
@@ -144,6 +143,7 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
             <option value="97">BSC testnet · 97</option>
           </select>
         </label>
+        <details className="more-filters" open={Boolean(selectedOrigin || selectedVerification || selectedRuntime || selectedFreshness || selectedProtocol)}><summary>More filters</summary><div className="more-filters__grid">
         <label className="select-field">
           <span>Origin</span>
           <select name="origin" defaultValue={selectedOrigin}>
@@ -194,6 +194,7 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
             <option value="x402">X402</option>
           </select>
         </label>
+        </div></details>
         <label className="select-field">
           <span>Sort</span>
           <select name="sort" defaultValue={selectedSort}>
@@ -204,6 +205,7 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
         </label>
         <button className="button button--primary filter-panel__submit" type="submit">Apply filters</button>
       </form>
+      <div className="applied-filters">{["q", "chainId", "origin", "verification", "runtime", "protocol", "freshness"].filter((key) => searchParams.has(key)).map((key) => { const params = new URLSearchParams(searchString); params.delete(key); return <Link key={key} href={`${pathname}?${params}`} aria-label={`Remove ${key} filter`}>{titleCase(key)}: {searchParams.get(key)} ×</Link>; })}<Link href={`${pathname}${selectedCompare ? `?agents=${encodeURIComponent(selectedCompare)}` : ""}`}>Clear filters</Link></div>
 
       {response.status === "loading" ? <LoadingState label={response.notice} /> : null}
       {response.status === "error" && response.error ? (
@@ -229,7 +231,7 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
       ) : null}
 
       {response.excluded.length > 0 ? (
-        <section className="excluded-panel" aria-labelledby="excluded-heading">
+        <details className="excluded-panel"><summary>Excluded candidates ({response.excluded.length})</summary><section aria-labelledby="excluded-heading">
           <div className="excluded-panel__heading">
             <div>
               <p className="eyebrow">Eligibility boundary</p>
@@ -259,7 +261,7 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
               </article>
             ))}
           </div>
-        </section>
+        </section></details>
       ) : null}
 
       {response.mode !== "live" ? (

@@ -7,7 +7,7 @@ import { ActivationPanel } from "./activation-panel";
 import { CompareToggle } from "./compare-toggle";
 
 function SchemaPreview({ value }: { readonly value: Record<string, unknown> }) {
-  return <pre>{JSON.stringify(value, null, 2)}</pre>;
+  return <details><summary>Inspect schema</summary><pre>{JSON.stringify(value, null, 2)}</pre></details>;
 }
 
 function reputationViewSummary(view: MarketplaceAgentReadModel["metrics"]["reputation"]["rawPermissionless"]): string {
@@ -94,6 +94,7 @@ function EvidenceArtifactRow({
       <div className="detail-kv"><span>Greenfield read URL</span><span>{readUrl === null ? "Unavailable" : <a href={readUrl} target="_blank" rel="noreferrer">Open verified JSON</a>}</span></div>
       <div className="detail-kv"><span>Internal locator</span><span><code>{artifact.locator ?? "Unavailable"}</code></span></div>
       <div className="detail-kv"><span>Last verified</span><span>{formatObservedAt(artifact.verifiedAt)}</span></div>
+      <details><summary>Artifact integrity details</summary><p>SHA-256: <code>{artifact.sha256Digest ?? "Unavailable"}</code></p><p>Keccak: <code>{artifact.keccak256Digest ?? "Unavailable"}</code></p><p>{artifact.sizeBytes ?? "Unknown"} bytes · provider {artifact.provider ?? "Unavailable"}</p></details>
       {artifact.reason !== null && <p className="muted-label">{artifact.reason}</p>}
     </div>
   );
@@ -198,6 +199,7 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
           </div>
           <h1>{agent.name}</h1>
           <p className="detail-hero__tagline">{agent.tagline}</p>
+          <p>{agent.description}</p>
           <div className="detail-hero__meta">
             <DataModeBadge mode={agent.dataProvenance.mode} label={agent.dataProvenance.label} />
             <StatusBadge value={agent.stateAxes.verificationStatus} tone={statusTone(agent.stateAxes.verificationStatus)} />
@@ -206,11 +208,12 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
             <StatusBadge value={`BSC ${agent.identity.chainId}`} tone="info" />
           </div>
           <div className="detail-hero__actions">
+            <a className="button button--primary" href="#hire">{agent.activation.enabled ? "Hire agent" : "View pricing & availability"}</a>
             <CompareToggle slug={agent.slug} />
             <Link className="button button--ghost button--small" href={`/compare?agents=${agent.slug}`}>Open comparison</Link>
           </div>
         </div>
-        <div className="detail-hero__identity">
+        <details className="detail-hero__identity"><summary>Identity details · agent #{agent.identity.agentId}</summary>
           <div>
             <p className="eyebrow">Full ERC-8004 identity</p>
             <h2>Identity is the tuple</h2>
@@ -219,9 +222,9 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
           <div className="identity-line"><span>Chain ID</span><span>{agent.identity.chainId}</span></div>
           <div className="identity-line"><span>Identity registry</span><span>{agent.identity.identityRegistry}</span></div>
           <div className="identity-line"><span>Agent ID</span><span>{agent.identity.agentId}</span></div>
-          <div className="identity-line"><span>Owner observed</span><span>{compactAddress(agent.ownerAddress)}</span></div>
-          <div className="identity-line"><span>Agent wallet observed</span><span>{compactAddress(agent.agentWallet)}</span></div>
-        </div>
+          <div className="identity-line"><span>Owner observed</span><span>{agent.ownerAddress ?? "Not observed"}</span></div>
+          <div className="identity-line"><span>Agent wallet observed</span><span>{agent.agentWallet ?? "Not observed"}</span></div>
+        </details>
       </section>
 
       <section className="section-block section-block--flush">
@@ -230,10 +233,11 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
         </Callout>
       </section>
 
+      <nav className="category-chips" aria-label="Agent detail sections"><a href="#overview">Overview</a><a href="#capabilities">Capabilities</a><a href="#current-data">Live data</a><a href="#track-record">Track record</a><a href="#public-evidence">Public evidence</a></nav>
       <div className="detail-sections">
-        <section className="detail-section detail-section--wide">
+        <section className="detail-section detail-section--wide" id="overview">
           <p className="eyebrow">Observed boundaries</p>
-          <h2>Database connectivity is not endpoint health</h2>
+          <h2>Availability & observations</h2>
           <p className="detail-section__lede">The connected read model preserves the exact ERC-8004 chain observation and the independent service probe. Neither observation grants authority or guarantees a future response.</p>
           <div className="detail-section__body detail-section__body--split">
             <div className="detail-kv"><span>Endpoint health</span><span><StatusBadge value={titleCase(agent.health.endpointStatus)} tone={statusTone(agent.health.endpointStatus)} /></span></div>
@@ -245,16 +249,16 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
           </div>
         </section>
 
-        <section className="detail-section detail-section--wide">
+        <details className="detail-section detail-section--wide"><summary>Independent listing states</summary>
           <p className="eyebrow">Independent state model</p>
-          <h2>Six axes, no overloaded status field</h2>
+          <h2>Listing status</h2>
           <p className="detail-section__lede">Origin, claim, verification, runtime, authority, and listing can change independently. A claim never implies liveness or publication.</p>
           <StateAxisGrid axes={agent.stateAxes} />
-        </section>
+        </details>
 
-        <section className="detail-section">
+        <section className="detail-section" id="capabilities">
           <p className="eyebrow">Capability manifest</p>
-          <h2>What this agent advertises</h2>
+          <h2>Capabilities</h2>
           <p className="detail-section__lede">Structured inputs and outputs remain separate from live financial data and execution controls.</p>
           <div className="detail-section__body">
             {agent.capabilityManifest.capabilities.map((capability) => (
@@ -293,6 +297,7 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
                   <div className="detail-kv"><span>Advertised skills</span><span>{evidence.advertisedSkills.map((skill) => skill.id).join(", ") || "Not observed"}</span></div>
                   <div className="detail-kv"><span>Tested skills</span><span>{evidence.testedSkills.length > 0 ? evidence.testedSkills.map((skill) => skill.id).join(", ") : "None — transport/card check only"}</span></div>
                   <StatusBadge value={titleCase(evidence.testStatus)} tone={evidence.testStatus === "verified" ? "success" : "neutral"} />
+                  <p className="muted-label">Test observed: {formatObservedAt(evidence.testedAt)}</p>
                 </div>
               ))}
             </div>
@@ -303,9 +308,9 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
           </div>
         </section>
 
-        <section className="detail-section">
+        <section className="detail-section" id="current-data">
           <p className="eyebrow">Current data</p>
-          <h2>Freshness before interpretation</h2>
+          <h2>Live data & freshness</h2>
           <p className="detail-section__lede">Live DeFi values remain structured and timestamped. They never enter semantic ranking text.</p>
           {agent.currentData.status === "unavailable" ? (
             <Callout title="Current data unavailable" tone="warning" icon="!">{agent.currentData.summary} Execution must fail closed when freshness cannot be verified.</Callout>
@@ -319,9 +324,9 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
           <div className="detail-actions"><StatusBadge value={agent.freshness.label} tone={statusTone(agent.freshness.status)} /><span className="muted-label">{agent.freshness.source}</span></div>
         </section>
 
-        <section className="detail-section">
+        <section className="detail-section" id="track-record">
           <p className="eyebrow">Observed marketplace metrics</p>
-          <h2>Counts require provenance</h2>
+          <h2>Track record & reputation</h2>
           <p className="detail-section__lede">These fields are persisted observations, not estimates. Missing external feedback, jobs, results, or uptime samples stay explicitly unavailable.</p>
           <div className="detail-section__body">
             <div className="detail-kv"><span>Observed probe samples</span><span>{agent.metrics.uptime.status === "observed" ? `${agent.metrics.uptime.successfulChecks}/${agent.metrics.uptime.attemptedChecks} successful · ${Math.round((agent.metrics.uptime.successRatio ?? 0) * 100)}%` : "Not observed"}</span></div>
@@ -352,7 +357,7 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
         <section className="detail-section">
           <p className="eyebrow">Authority summary</p>
           <h2>Who can execute, and when</h2>
-          <p className="detail-section__lede">Discovery and claim never grant BNBEra execution authority. The current web slice does not create or sign sessions.</p>
+          <p className="detail-section__lede">Discovery and ownership do not grant execution permission. Authority below describes this agent's observed permissions.</p>
           <div className="detail-section__body">
             <div className="detail-kv"><span>Status</span><span><StatusBadge value={agent.authority.status} tone={statusTone(agent.authority.status)} /></span></div>
             <div className="detail-kv"><span>Provider</span><span>{titleCase(agent.authority.provider)}</span></div>
@@ -363,10 +368,10 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
           </div>
         </section>
 
-        <section className="detail-section">
+        <section className="detail-section detail-section--wide" id="hire">
           <p className="eyebrow">Pricing & activation</p>
-          <h2>Next action is explicit</h2>
-          <p className="detail-section__lede">A price or activation method is shown only when the read model supplies one. This record has no enabled rail.</p>
+          <h2>Pricing & hiring</h2>
+          <p className="detail-section__lede">Review a server quote before funding. Unknown pricing does not mean free.</p>
           <div className="detail-section__body">
             <div className="detail-kv"><span>Pricing</span><span>{agent.pricing.label}</span></div>
             <div className="detail-kv"><span>Method</span><span>{titleCase(agent.pricing.activationMethod)}</span></div>
@@ -375,11 +380,12 @@ export function AgentDetailView({ agent }: { readonly agent: MarketplaceAgentRea
           </div>
         </section>
 
-        <section className="detail-section">
+        <section className="detail-section detail-section--wide" id="public-evidence">
           <p className="eyebrow">Evidence availability</p>
-          <h2>Integrity is a separate gate</h2>
+          <h2>Public evidence</h2>
           <p className="detail-section__lede">Greenfield is linked only after seal and read-back hash verification; IPFS and Greenfield states remain independent.</p>
           <div className="detail-section__body">
+            <details><summary>Identity & source provenance</summary>{agent.dataProvenance.sources.map((source) => <div className="capability-card" key={`${source.source}:${source.sourceReference}`}><strong>{source.source}</strong><p>{source.sourceReference}</p><p>First seen {formatObservedAt(source.firstObservedAt)} · last seen {formatObservedAt(source.lastObservedAt)}</p><p>Ingestion version {source.normalizedIngestionVersion}</p><code>{source.rawResponseDigest ?? "Digest unavailable"}</code></div>)}</details>
             <StatusBadge value={agent.evidence.status} tone={statusTone(agent.evidence.status)} />
             <p className="detail-section__lede">{agent.evidence.summary}</p>
             <div className="detail-kv"><span>IPFS</span><span>{agent.evidence.ipfsUri ?? "Unavailable"}</span></div>

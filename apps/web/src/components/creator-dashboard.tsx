@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   registerCreatorErc8004Agent,
+  authenticateCreatorPasskey,
   recoverCreatorPasskeyWallet,
   revokeCreatorSession,
 } from "@/lib/creator-browser-grant";
@@ -162,14 +163,14 @@ export function CreatorDashboard() {
     }
   }
 
-  if (error !== null) return <p role="alert">{error}</p>;
+  if (error !== null) return <div><p role="alert">{error}</p><button className="button button--primary" type="button" onClick={() => { void recoverCreatorPasskeyWallet().then(async (wallet) => { await authenticateCreatorPasskey(wallet.address, wallet.signer); setError(null); await loadDrafts(); }).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "Creator sign-in failed.")); }}>Sign in with Creator passkey</button></div>;
   if (drafts === null) return <p>Loading persisted Creator drafts…</p>;
-  if (drafts.length === 0) return <p>No Creator drafts yet.</p>;
+  if (drafts.length === 0) return <p>No agents created yet. <a href="/create">Create your first agent →</a></p>;
   return <>
-    <ul>{drafts.map((draft) => {
+    <ul className="creator-list">{drafts.map((draft) => {
       const busy = busyId !== null && (busyId === draft.authorityId || busyId === draft.id);
       return <li key={draft.id}>
-        <strong>{draft.name}</strong> · {draft.status} · {draft.deploymentState ?? "not queued"}{draft.currentStep === null ? "" : ` (${draft.currentStep})`}<br />
+        <h2>{draft.name}</h2><div className="detail-kv"><span>Draft</span><span>{draft.status}</span></div><div className="detail-kv"><span>Deployment</span><span>{draft.deploymentState ?? "Not queued"}{draft.currentStep === null ? "" : ` · ${draft.currentStep}`}</span></div><div className="detail-kv"><span>Registration & listing</span><span>Separate verification steps; use registration below to read or reconcile its status.</span></div>
         {draft.configuration === undefined ? null : <small>Bounded configuration: {pairLabel(draft.configuration.tradingPair)} · {amountLabel(draft.configuration.inputAmountWei)} · {draft.configuration.slippageBps ?? "unknown"} bps max slippage · quote ≤ {draft.configuration.quoteMaxAgeSeconds ?? "unknown"} seconds · deadline {draft.configuration.deadlineSeconds ?? "unknown"} seconds.</small>}<br />
         {draft.configurationDigest === undefined ? null : <small>Runtime configuration digest: <code>{draft.configurationDigest}</code></small>}<br />
         {draft.authorityId === null ? <small>No delegated authority is recorded.</small> : <>
@@ -177,7 +178,7 @@ export function CreatorDashboard() {
           {draft.authorityPolicyDigest === null || draft.authorityPolicyDigest === undefined ? null : <small>Authority policy digest: <code>{draft.authorityPolicyDigest}</code></small>}<br />
           <button type="button" disabled={busy} onClick={() => void authorityStatus(draft)}>Authority status</button>{draft.authorityStatus === "revoked" ? null : <button type="button" disabled={busy} onClick={() => void revokeAuthority(draft)}>Revoke with passkey</button>}<button type="button" disabled={busy || draft.deploymentState !== null || draft.authorityStatus !== "active"} onClick={() => void queueDeployment(draft)}>Queue deployment</button>{draft.deploymentId === null ? null : <button type="button" disabled={busy} onClick={() => void registerIdentity(draft)}>Register ERC-8004 identity</button>}
         </>}<br />
-        <small>Only public grant metadata is displayed. Runtime secret material and handoff responses are never shown here; persisted deployment state is the source of truth.</small>
+        <small>Revoking authority stops future delegated writes. It does not delete the identity or undo transactions already submitted.</small>
       </li>;
     })}</ul>
     {message === null ? null : <p role="status">{message}</p>}

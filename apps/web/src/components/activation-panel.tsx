@@ -28,20 +28,10 @@ export function ActivationPanel({
         <StatusBadge value={activation.availability} tone={statusTone(activation.availability)} />
       </div>
       <p className="activation-panel__reason" id={reasonId}>{activation.reason}</p>
-      <button
-        className={`button ${activation.enabled ? "button--primary" : "button--disabled"}`}
-        type="button"
-        disabled={!activation.enabled}
-        aria-disabled={!activation.enabled}
-        aria-describedby={reasonId}
-        title={activation.enabled ? "Activation is enabled by its feature gate." : activation.reason}
-      >
-        {activation.enabled ? "Continue to activation" : "Activation unavailable"}
-      </button>
       <p className="activation-panel__footnote">
         {activation.nextAction} · Browser signing is user-controlled; the server stores only public operation evidence.
       </p>
-      <CommerceJourney activation={activation} identityKey={identityKey} commerceJobId={commerceJobId} runBundle={runBundle} />
+      {detail && <CommerceJourney activation={activation} identityKey={identityKey} commerceJobId={commerceJobId} runBundle={runBundle} />}
     </div>
   );
 

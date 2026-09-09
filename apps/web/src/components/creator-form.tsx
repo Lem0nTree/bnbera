@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useToast } from "./toast-provider";
 import type { GrantSessionResult, Signer } from "@altananetwork/sdk";
 import type { CreatorDraftRequest } from "@/lib/creator-contract";
 import {
@@ -67,6 +68,8 @@ function errorMessage(cause: unknown): string {
 }
 
 export function CreatorForm() {
+  const { notify } = useToast();
+  const [step, setStep] = useState(0);
   const formRef = useRef<HTMLFormElement | null>(null);
   const walletRef = useRef<CreatorBrowserWallet | null>(null);
   const sessionSignerRef = useRef<Signer | null>(null);
@@ -81,6 +84,10 @@ export function CreatorForm() {
   const [grant, setGrant] = useState<CreatorPublicGrant | null>(null);
   const [handoffFailed, setHandoffFailed] = useState(false);
   const [completion, setCompletion] = useState<{ readonly draftId: string; readonly authorityId: string; readonly deployment: string } | null>(null);
+  useEffect(() => {
+    const heading = formRef.current?.querySelector<HTMLElement>(`[data-step-heading="${step}"]`);
+    heading?.focus();
+  }, [step]);
 
   async function prepareAuthority(recover: boolean): Promise<void> {
     if (handoffAttemptedRef.current) {
@@ -118,6 +125,7 @@ export function CreatorForm() {
       authorityIdRef.current = null;
       setApproved(false);
       setPending({ values, options, walletAddress: wallet.address });
+      notify({ id: "creator", tone: "info", title: "Creator passkey ready", description: "Review the exact permissions before approving." });
       setMessage("Passkey wallet ready. Review the exact authority below before approving the on-chain grant.");
     } catch (cause) {
       walletRef.current = null;
@@ -142,6 +150,7 @@ export function CreatorForm() {
       if (session.walletAddress.toLowerCase() !== wallet.address.toLowerCase() || session.publicKey.toLowerCase() !== sessionSigner.publicKey.toLowerCase()) throw new Error("The Altana SDK returned a session key that does not match the reviewed public key.");
       sessionRef.current = session;
       setGrant(creatorPublicGrantFromSession(wallet.address, session, authorityIdRef.current));
+      notify({ id: "creator", tone: "success", title: "Creator authority granted" });
 
       await authenticateCreatorPasskey(wallet.address, wallet.signer);
       let draftId = draftIdRef.current;
@@ -210,6 +219,8 @@ export function CreatorForm() {
         deployment = `not queued: ${deployData.error?.safeMessage ?? deployData.reason ?? "runtime handoff is unavailable"}`;
       }
       setCompletion({ draftId, authorityId, deployment });
+      setStep(3);
+      notify({ id: "creator", tone: deployment === "queued" ? "info" : "warning", title: deployment === "queued" ? "Deployment queued" : "Deployment needs attention", description: "Check My agents for persisted progress." });
       setPending(null);
       setMessage(deployment === "queued" ? "Authority persisted and deployment queued." : `Authority persisted. Deployment ${deployment}.`);
     } catch (cause) {
@@ -258,7 +269,8 @@ export function CreatorForm() {
       handoffAttemptedRef.current = false;
       setHandoffFailed(false);
       setGrant(null);
-      setMessage("The passkey-confirmed Altana session was revoked. No deployment was started by this browser grant.");
+      setMessage("Execution authority revoked. Previously submitted transactions and agent history remain unchanged.");
+      notify({ id: "creator", tone: "success", title: "Execution authority revoked" });
     } catch (cause) {
       setMessage(errorMessage(cause));
     } finally {
@@ -268,24 +280,39 @@ export function CreatorForm() {
 
   function submitForReview(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
-    void prepareAuthority(false);
+    if (step < 2) advance(); else void prepareAuthority(false);
+  }
+
+  function advance(): void {
+    const fields = formRef.current?.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`fieldset[data-step="${step}"] input, fieldset[data-step="${step}"] textarea, fieldset[data-step="${step}"] select`);
+    for (const field of fields ?? []) if (!field.reportValidity()) return;
+    setStep((current) => Math.min(2, current + 1));
   }
 
   const controlsDisabled = busy || pending !== null || completion !== null;
-  return <form ref={formRef} onSubmit={submitForReview} className="activation-panel">
+  return <form ref={formRef} onSubmit={submitForReview} className="activation-panel creator-wizard" noValidate>
+    <ol className="journey-steps">{["Describe", "Configure", "Review permissions", "Deploy & publish"].map((label, index) => <li key={label} aria-current={step === index ? "step" : undefined}>{index + 1}. {label}</li>)}</ol>
+    <fieldset data-step="0" hidden={step !== 0}><legend data-step-heading="0" tabIndex={-1}>Describe your agent</legend><p>This name and description become public. Keep private information out.</p>
     <label>Name<input name="name" required minLength={3} maxLength={80} disabled={controlsDisabled} /></label>
     <label>Public slug<input name="slug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" minLength={3} maxLength={80} disabled={controlsDisabled} /></label>
     <label>Description<textarea name="description" required minLength={20} maxLength={500} disabled={controlsDisabled} /></label>
+    <label><input name="publicationConsent" type="checkbox" required disabled={controlsDisabled} /> I consent to publish this fixed-template agent after verification.</label>
+    </fieldset><fieldset data-step="1" hidden={step !== 1}><legend data-step-heading="1" tabIndex={-1}>Configure one-shot swap</legend><p>BNB Smart Chain testnet · Choose the pair and maximum size for one bounded swap.</p>
     <label>Trading pair<select name="tradingPair" defaultValue="tbnb-cake" disabled={controlsDisabled}><option value="tbnb-cake">tBNB → CAKE</option><option value="tbnb-busd">tBNB → BUSD</option></select></label>
     <label>Input amount<select name="inputAmountWei" defaultValue="1000000000000000" disabled={controlsDisabled}><option value="100000000000000">0.0001 tBNB</option><option value="500000000000000">0.0005 tBNB</option><option value="1000000000000000">0.001 tBNB (maximum)</option></select></label>
     <label>Maximum slippage<select name="slippageBps" defaultValue="50" disabled={controlsDisabled}><option value="10">0.10%</option><option value="25">0.25%</option><option value="50">0.50% (maximum)</option></select></label>
-    <label>Quote freshness<select name="quoteMaxAgeSeconds" defaultValue="60" disabled={controlsDisabled}><option value="30">30 seconds</option><option value="60">60 seconds</option></select></label>
+    <details><summary>Advanced timing</summary><label>Quote freshness<select name="quoteMaxAgeSeconds" defaultValue="60" disabled={controlsDisabled}><option value="30">30 seconds</option><option value="60">60 seconds</option></select></label>
     <label>Swap deadline<select name="deadlineSeconds" defaultValue="120" disabled={controlsDisabled}><option value="60">60 seconds</option><option value="120">120 seconds</option></select></label>
-    <label><input name="publicationConsent" type="checkbox" required disabled={controlsDisabled} /> I consent to publish this fixed-template agent after verification.</label>
+    </details></fieldset>
+    {step < 2 && <div className="detail-actions">{step > 0 && <button type="button" onClick={() => setStep(step - 1)}>Back</button>}<button type="button" onClick={advance}>Continue</button></div>}
+    <div hidden={step !== 2}>
+    <h2 data-step-heading="2" tabIndex={-1}>Review execution permissions</h2><p>Create or recover your Creator passkey to see the exact allowed calls, spend limit, and expiry before granting authority.</p>
     <p><small>Only the reviewed pairs and bounded values above are available. Router, token addresses, recipient, selectors, and calldata are derived server-side and cannot be supplied here.</small></p>
     <div className="detail-actions">
+      <button type="button" disabled={controlsDisabled} onClick={() => setStep(1)}>Back to configuration</button>
       <button type="submit" disabled={controlsDisabled}>Prepare with a new passkey</button>
       <button type="button" disabled={controlsDisabled} onClick={() => void prepareAuthority(true)}>Recover an existing passkey</button>
+    </div>
     </div>
 
     {pending === null ? null : <fieldset>

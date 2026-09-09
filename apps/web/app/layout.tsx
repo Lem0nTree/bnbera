@@ -1,16 +1,18 @@
 import type { Metadata, Viewport } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { BrandMark, StatusBadge } from "@bnbera/ui";
+import { BrandMark } from "@bnbera/ui";
+import { AppNavigation } from "@/components/app-navigation";
+import { ToastProvider } from "@/components/toast-provider";
 import "@bnbera/ui/styles.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: {
-    default: "BNBEra · Read the agent market",
+    default: "BNBEra · BNB Chain agent marketplace",
     template: "%s · BNBEra"
   },
-  description: "A read-only first marketplace for discovering, comparing, and understanding BNB Chain agents.",
+  description: "Discover BNB Chain agents, inspect their capabilities and evidence, and hire when available.",
   applicationName: "BNBEra"
 };
 
@@ -25,29 +27,21 @@ export default function RootLayout({ children }: { readonly children: ReactNode 
   return (
     <html lang="en">
       <body>
-        <div className="app-frame">
+        <ToastProvider><div className="app-frame">
           <a className="skip-link" href="#main-content">Skip to marketplace content</a>
           <header className="topbar">
             <div className="topbar__inner">
               <Link href="/" aria-label="BNBEra home">
                 <BrandMark />
               </Link>
-              <nav className="main-nav" aria-label="Primary navigation">
-                <Link href="/marketplace">Marketplace</Link>
-                <Link href="/compare">Compare</Link>
-              </nav>
-              <div className="topbar__network">
-                <span className="network-dot" aria-hidden="true" />
-                BSC read-only preview
-                <StatusBadge value="Core gate" tone="purple" />
-              </div>
+              <AppNavigation />
             </div>
           </header>
           <main id="main-content">{children}</main>
           <footer className="footer">
-            <BrandMark compact /> <span aria-hidden="true"><strong>BNBEra</strong></span> · public discovery with provenance in view · activation rails disabled until verified
+            <BrandMark compact /> <span>BNB Chain agent marketplace · Capabilities, evidence, and user-controlled actions.</span>
           </footer>
-        </div>
+        </div></ToastProvider>
       </body>
     </html>
   );
