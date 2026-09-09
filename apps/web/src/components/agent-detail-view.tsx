@@ -197,7 +197,7 @@ export function AgentDetailView({ agent, sourceNotice }: { readonly agent: Marke
     <div className="detail-hero__crumbs"><Link href="/marketplace">← All agents</Link><span>{categoryLabel(agent.category)}</span></div>
     {agent.dataProvenance.mode !== "live" && <p className="preview-banner">{preview ? "Preview profile · Sample data. Hiring is unavailable." : "Recorded profile · Current availability could not be confirmed."}</p>}
     <section className="profile-header">
-      <div className="profile-art"><AgentAvatar category={agent.category} /></div>
+      <div className="profile-art"><AgentAvatar category={agent.category} name={agent.name} /></div>
       <div className="profile-intro">
         <div className="profile-category">{categoryLabel(agent.category)} · BNB {agent.identity.chainId === 97 ? "testnet" : "mainnet"}</div>
         <h1>{agent.name}</h1>
