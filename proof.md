@@ -47,9 +47,9 @@ For mainnet job **56765**, the recorded on-chain `submittedAt` is `1788976407`. 
 
 The estimate is conservative for payout, but it is **not safe to use as the last time to dispute**. Neither timestamp means funds move automatically: settlement still requires a successful transaction.
 
-“Policy verdicts still need integration” means the panel does not yet read and display the policy's actual **Pending / Approve / Reject** decision for the job. The selected contract can reject before seven days when a buyer dispute receives enough authorized rejection votes. A dispute alone does not permanently block approval. A timer reaching zero cannot establish the current verdict.
+The original “policy verdicts still need integration” gap meant the panel did not read the policy's actual **Pending / Approve / Reject** decision. This change adds a direct `check(jobId, "0x")` read for submitted jobs and displays that verdict on each status refresh. RPC failures display **Unavailable**, never inferred approval. The selected contract can reject before seven days when a buyer dispute receives enough authorized rejection votes. A dispute alone does not permanently block approval. A timer reaching zero cannot establish the current verdict.
 
-The needed integration is to read the job's exact policy submission time, dispute window, dispute state, rejection votes/quorum and current verdict alongside its chain state and block time, then use those facts for the displayed deadline and available actions. Missing policy reads must not be treated as approval. This is a remaining application integration task; the contract already enforces its rules.
+The remaining integration is to read the job's exact policy submission time, dispute window, dispute state and rejection votes/quorum alongside its chain state and block time, then use those facts and the verdict for the displayed deadline and available actions. The minimal verdict display does not replace the existing timing gate or change transaction authorization. Missing policy reads must not be treated as approval. This is a remaining application integration task; the contract already enforces its rules.
 
 ## Which rules belong to APEX, Altana and BNBEra?
 

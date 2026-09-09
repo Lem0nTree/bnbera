@@ -1028,6 +1028,28 @@ export class Erc8183AltanaAdapter {
     try { return await this.transactionReader.getTransaction({ hash }); } catch (cause) { throw sdkCallError("transaction read", cause); }
   }
 
+  /** Read the policy verdict directly; never infer it from a local timer. */
+  public async readPolicyVerdict(jobId: string): Promise<"pending" | "approve" | "reject"> {
+    this.assertMainnetBrowserReadAllowed();
+    if (!/^\d+$/.test(jobId)) throw new CommerceError({ code: "INVALID_JOB", message: "Invalid policy job ID." });
+    try {
+      const result = await this.deploymentReader.readContract({
+        address: this.policyContract,
+        abi: [{ type: "function", name: "check", stateMutability: "view", inputs: [{ name: "jobId", type: "uint256" }, { name: "evidence", type: "bytes" }], outputs: [{ name: "verdict", type: "uint8" }, { name: "reason", type: "bytes32" }] }] as unknown as Abi,
+        functionName: "check",
+        args: [BigInt(jobId), "0x"]
+      });
+      const verdict = Array.isArray(result) ? result[0] : undefined;
+      if (verdict === 0 || verdict === 0n) return "pending";
+      if (verdict === 1 || verdict === 1n) return "approve";
+      if (verdict === 2 || verdict === 2n) return "reject";
+      throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "Unknown policy verdict." });
+    } catch (cause) {
+      if (cause instanceof CommerceError) throw cause;
+      throw sdkCallError("policy verdict read", cause);
+    }
+  }
+
   /** Read the pinned policy window used to make a create expiry valid. */
   public async readDisputeWindow(): Promise<number> {
     this.assertMainnetBrowserReadAllowed();

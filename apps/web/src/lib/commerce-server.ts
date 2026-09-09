@@ -1153,7 +1153,12 @@ export class Erc8183CommerceComposition {
     const read=await this.reads.get(jobKeyFor(this.adapter, jobId));
     if (!read) return read;
     const settlementGate=await this.settlementGate(read);
-    return {...read,...(settlementGate?{settlementGate}:{})};
+    let policyVerdict: NonNullable<Erc8183JobRead>["policyVerdict"];
+    if (read.job.state === "submitted") {
+      try { policyVerdict = await this.adapter.readPolicyVerdict(jobId); }
+      catch { policyVerdict = "unavailable"; }
+    }
+    return {...read,...(settlementGate?{settlementGate}:{}),...(policyVerdict?{policyVerdict}:{})};
   }
 
   private async settlementGate(read:Erc8183JobRead):Promise<Erc8183JobRead["settlementGate"]> {
