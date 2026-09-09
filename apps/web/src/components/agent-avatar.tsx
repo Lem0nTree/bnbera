@@ -5,12 +5,12 @@ import type { AgentCategory } from "@bnbera/domain";
 /** Match 8004scan's name-seeded avatar when no publisher logo is available.
  * Generated avatars and category illustrations are never verification badges.
  */
-export function AgentAvatar({ category, imageUrl, name }: { readonly category: AgentCategory; readonly imageUrl?: string | null; readonly name?: string }) {
+export function AgentAvatar({ category, imageUrl, name }: { readonly category: AgentCategory; readonly imageUrl?: string | null | undefined; readonly name?: string | undefined }) {
   // Remount on source changes so a failed logo cannot suppress a later logo.
   return <AvatarImage key={JSON.stringify([imageUrl, name])} category={category} imageUrl={imageUrl} name={name} />;
 }
 
-function AvatarImage({ category, imageUrl, name }: { readonly category: AgentCategory; readonly imageUrl?: string | null; readonly name?: string }) {
+function AvatarImage({ category, imageUrl, name }: { readonly category: AgentCategory; readonly imageUrl?: string | null | undefined; readonly name?: string | undefined }) {
   const [failedUrls, setFailedUrls] = useState<readonly string[]>([]);
   const seed = name?.trim();
   const fallbackUrl = seed ? `https://api.dicebear.com/9.x/bottts/svg?seed=${encodeURIComponent(seed)}` : null;
