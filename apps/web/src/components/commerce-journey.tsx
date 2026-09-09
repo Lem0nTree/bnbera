@@ -696,8 +696,8 @@ function CommerceJourneyInner({ activation, targetChainId, identityKey, commerce
       {!walletOnly && <ol className="journey-steps">{["Task", "Quote", "Fund escrow", "Review result", "Complete"].map((label, index) => <li key={label} aria-current={index === (completed ? 4 : submitted ? 3 : operationId ? 2 : quote ? 1 : 0) ? "step" : undefined}>{index + 1}. {label}</li>)}</ol>}
       <div className="commerce-journey__authority">
         {compact && <h3>Buyer wallet</h3>}
-        <p className="detail-section__lede">{compact ? "Connect and sign in. Sign-in is gasless; payments need your approval." : "Choose a browser wallet or WalletConnect, then sign in to prove wallet ownership. Sign-in is gasless and does not approve a payment."}</p>
-        {!isConnected && <WalletConnectorChoices chainId={buyerChainId} disabled={busy} />}
+        {!walletAuthenticated && <p className="detail-section__lede">{isConnected ? "Your wallet is connected. Sign in to view your private hires and continue. This gasless signature does not approve a payment." : walletOnly ? "Connect your buyer wallet using the header, then sign in here to view your hires." : "Connect your wallet, then sign in. Sign-in is gasless and does not approve a payment."}</p>}
+        {!isConnected && !walletOnly && <WalletConnectorChoices chainId={buyerChainId} disabled={busy} />}
         {isConnected && chainId !== buyerChainId && <>
           <p className="muted-label">Connected on chain {chainId ?? "unknown"}. This hire requires {buyerChainLabel} ({buyerChainId}).</p>
           <button className="button button--primary" type="button" disabled={busy || switchPending} onClick={() => {
@@ -771,6 +771,7 @@ function CommerceJourneyInner({ activation, targetChainId, identityKey, commerce
         {submission.manifestText !== null && <details><summary>Exact result manifest</summary><pre className="commerce-journey__manifest">{submission.manifestText}</pre></details>}
       </div>}
       {submitted && <div className="commerce-journey__decision">
+        {job?.policyVerdict && <p className="commerce-policy-verdict" role="status"><strong>Policy verdict · {job.policyVerdict === "unavailable" ? "Unavailable" : job.policyVerdict === "pending" ? "Pending" : job.policyVerdict === "approve" ? "Approve" : "Reject"}</strong><span>{job.policyVerdict === "pending" ? "The policy has not authorized settlement yet." : job.policyVerdict === "approve" ? "The policy permits approval. Funds move only after successful settlement." : job.policyVerdict === "reject" ? "The policy returned rejection, not approval for provider payout." : "The on-chain verdict could not be read. Reload status to try again."} Snapshot from the latest status read.</span></p>}
         {job?.settlementGate?.status==="waiting"&&<p role="status">App settlement availability estimate · {new Date(job.settlementGate.notBeforeUnix!*1000).toLocaleString()}. {buyerChainId === 56 ? "This estimate uses when the app observed the submission and may be later than the on-chain deadline. Submit any dispute within seven days of the on-chain submission; do not use this estimate as the dispute deadline." : "Inspect the result now; this app does not automatically send wallet transactions."}</p>}
         {job?.settlementGate?.status==="unavailable"&&<p role="status">The settlement timing check is unavailable. Reload status before requesting settlement.</p>}
         <p className="detail-section__lede">Review the delivery now. BNBEra records your approval when you request settlement; checking this box alone does not save acceptance or release funds.</p>

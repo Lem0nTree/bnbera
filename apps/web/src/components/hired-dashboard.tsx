@@ -85,10 +85,10 @@ function HiredDashboardInner({ defaultChainId }: { defaultChainId: 56 | 97 }) {
   const authenticated = useCallback(() => { void load(); }, [load]);
   const visibleJobs = historyWalletKey === walletKey ? jobs : null;
   const visibleSelected = historyWalletKey === walletKey ? selected : null;
-  return <section className="section-block">
-    {authRequired && <Callout title="Sign in to view your hires" tone="info">Connect the buyer wallet you used to hire agents, then sign in to load your history.</Callout>}
-    <CommerceJourney activation={activation} targetChainId={hiredWalletTargetChain(defaultChainId, chainId)} identityKey="hired-wallet" walletOnly onAuthenticated={authenticated} />
-    <button className="button button--ghost" disabled={busy} onClick={() => void load()} type="button">{busy ? "Loading history…" : "Reload history"}</button>
+  return <section className="section-block hired-dashboard">
+    {authRequired && <div className="hired-signin">
+    <CommerceJourney activation={activation} targetChainId={hiredWalletTargetChain(defaultChainId, chainId)} identityKey="hired-wallet" walletOnly onAuthenticated={authenticated} /></div>}
+    {!authRequired && <div className="hired-toolbar"><span>Your hires · delivery and payment status</span><button className="button button--ghost" disabled={busy} onClick={() => void load()} type="button">{busy ? "Loading history…" : "Refresh"}</button></div>}
     {error && <Callout title="History unavailable" tone="warning">{error}</Callout>}
     {!jobs && busy && <LoadingState label="Loading your buyer-owned jobs" />}
     {jobs && visibleJobs && <>{buyerAddress && <p>Signed-in buyer: <code>{buyerAddress}</code></p>}<div className="hired-filters" aria-label="Filter hired jobs">{["All", "Needs attention", "In progress", "Completed"].map((label) => <button className="button button--ghost" key={label} type="button" aria-pressed={filter === label} onClick={() => setFilter(label)}>{label}</button>)}</div><p className="muted-label">{visibleJobs.length} loaded jobs · filters apply to loaded history.</p>

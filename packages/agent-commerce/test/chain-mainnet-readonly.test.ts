@@ -48,6 +48,27 @@ function options() { const f = fixture(); return { pin: PIN, standardsLock: f.lo
 afterEach(() => vi.unstubAllEnvs());
 
 describe("reviewed mainnet browser-only adapter", () => {
+  it.each([[0, "pending"], [1, "approve"], [2, "reject"]] as const)("reads policy verdict %s without inferring it from time", async (value, expected) => {
+    enable();
+    const config = options();
+    const readContract = vi.fn(async () => [value, `0x${"0".repeat(64)}`]);
+    config.deploymentReader.readContract = readContract;
+    const adapter = new Erc8183AltanaAdapter(config);
+    await expect(adapter.readPolicyVerdict("56765")).resolves.toBe(expected);
+    expect(readContract).toHaveBeenCalledWith(expect.objectContaining({ address: a.policyContract, functionName: "check", args: [56765n, "0x"] }));
+  });
+
+  it("does not turn unknown verdicts or RPC failures into approval", async () => {
+    enable();
+    const config = options();
+    const readContract = vi.fn(async (): Promise<unknown> => [3, `0x${"0".repeat(64)}`]);
+    config.deploymentReader.readContract = readContract;
+    const adapter = new Erc8183AltanaAdapter(config);
+    await expect(adapter.readPolicyVerdict("56765")).rejects.toMatchObject({ code: "ONCHAIN_MISMATCH" });
+    readContract.mockRejectedValueOnce(new Error("RPC unavailable"));
+    await expect(adapter.readPolicyVerdict("56765")).rejects.toThrow();
+  });
+
   it("requires every explicit gate and keeps the public Altana pin validator testnet-only", () => {
     vi.stubEnv("EXTERNAL_ERC8183_MAINNET_ENABLED", "false");
     expect(() => new Erc8183AltanaAdapter(options())).toThrow(/explicitly enabled/i);

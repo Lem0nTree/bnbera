@@ -3,5 +3,5 @@ import { SectionHeading } from "@bnbera/ui";
 import { mainnetBrowserCommerceEnabled } from "@bnbera/config";
 export const dynamic = "force-dynamic";
 export default function HiredPage() {
-  return <div className="page-shell"><SectionHeading headingLevel={1} eyebrow="Your workspace" title="Good work starts here." description="Your hired agents, open tasks, and completed results. All in one place." /><HiredDashboard defaultChainId={mainnetBrowserCommerceEnabled() ? 56 : 97} /></div>;
+  return <div className="page-shell"><SectionHeading headingLevel={1} eyebrow="Your workspace" title="Your hired agents" description="Track deliveries, review results, and follow your payments." /><HiredDashboard defaultChainId={mainnetBrowserCommerceEnabled() ? 56 : 97} /></div>;
 }

@@ -201,6 +201,19 @@ describe("T5 commerce server composition", () => {
       vi.unstubAllEnvs();
     }
   });
+  it("exposes the actual policy verdict and preserves job reads when RPC is unavailable", async () => {
+    const read = { job: { state: "submitted" }, submission: null };
+    const readPolicyVerdict = vi.fn(async () => "reject");
+    const composition = testComposition({ adapter: { pin: PIN, readPolicyVerdict }, reads: { get: async () => read } });
+    await expect(composition.readWithoutActor("56765")).resolves.toMatchObject({ policyVerdict: "reject" });
+    expect(readPolicyVerdict).toHaveBeenCalledWith("56765");
+    readPolicyVerdict.mockRejectedValueOnce(new Error("RPC unavailable"));
+    await expect(composition.readWithoutActor("56765")).resolves.toMatchObject({ job: { state: "submitted" }, policyVerdict: "unavailable" });
+    read.job.state = "completed";
+    readPolicyVerdict.mockClear();
+    expect((await composition.readWithoutActor("56765"))?.policyVerdict).toBeUndefined();
+    expect(readPolicyVerdict).not.toHaveBeenCalled();
+  });
   it("reports the conservative dispute deadline and fails closed on policy failure", async () => {
     const observedAtUnix=Math.floor(Date.now()/1000);
     const read={job:{state:"submitted"},submission:{observedAtUnix}};
