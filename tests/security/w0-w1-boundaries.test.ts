@@ -205,7 +205,7 @@ describe("read-only marketplace surface", () => {
     // the marketplace read seam.
     const commerceImport = sources[1]?.match(/^import\s*\{([^}]*)\}\s*from\s*["']@bnbera\/agent-commerce["']/mu);
     expect(commerceImport).not.toBeNull();
-    expect(commerceImport?.[1]?.replace(/\s+/gu, "")).toBe("PostgresErc8183MarketplaceProjection");
+    expect(commerceImport?.[1]?.replace(/\s+/gu, "")).toBe("PostgresErc8183MarketplaceProjection,readReferenceCapacity");
 
     for (const source of sources) {
       expect(source).not.toMatch(optionalRailImport);
@@ -214,7 +214,12 @@ describe("read-only marketplace surface", () => {
     expect(sources[4]).toContain("readOnlyRpcMethods");
     const serviceProbe = sources[5];
     expect(serviceProbe).toMatch(/method:\s*["']GET["']/iu);
-    expect(serviceProbe).not.toMatch(/method:\s*["'](?:POST|PUT|PATCH|DELETE)["']/iu);
+    // Streamable HTTP MCP uses POST even for initialization and read-only
+    // capability listing. Tool invocation and mutating HTTP verbs stay denied.
+    expect(serviceProbe).not.toMatch(/method:\s*["'](?:PUT|PATCH|DELETE)["']/iu);
+    expect(serviceProbe).not.toContain('"tools/call"');
+    expect(serviceProbe).toContain('"initialize"');
+    expect(serviceProbe).toContain('`${kind}/list`');
     expect(serviceProbe).not.toMatch(/payment(?:Authorization|Receipt)|facilitator|settlement/iu);
   });
 

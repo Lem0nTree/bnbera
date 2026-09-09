@@ -280,6 +280,7 @@ export function createReferenceProviderWorkerComposition(input: {
   readonly taskInput: ReferenceProviderTaskInput;
   readonly resolveAuthority: ReferenceProviderAuthorityResolver;
   readonly provider?: ReferenceHealthFactorProviderClient;
+  readonly sdk?: ConstructorParameters<typeof Erc8183AltanaAdapter>[0]["sdk"];
 }): ReferenceProviderWorkerComposition {
   if (!input.config.enabled) {
     throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The reference provider worker is disabled by default.", nextAction: "enable_local_testnet_worker" });
@@ -300,6 +301,7 @@ export function createReferenceProviderWorkerComposition(input: {
     network: BNB_TESTNET,
     developmentCanaryEnabled: enabledConfig.developmentCanaryEnabled,
     runtimeEnvironment: enabledConfig.runtimeEnvironment
+    ,...(input.sdk===undefined?{}:{sdk:input.sdk})
   });
   if (enabledConfig.routerContract.toLowerCase() !== adapter.routerContract.toLowerCase() || enabledConfig.policyContract.toLowerCase() !== adapter.policyContract.toLowerCase()) {
     throw new CommerceError({ code: "INVALID_CONTRACT", message: "The configured reference worker router/policy does not match the pinned Altana deployment.", nextAction: "verify_standards_lock" });

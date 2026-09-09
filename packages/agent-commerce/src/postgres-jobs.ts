@@ -571,7 +571,7 @@ export class PostgresErc8183JobRepository {
       } else if (event.eventType === "job_completed") {
         if (protocolRow.commerce_job_id === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted ERC-8183 job has no BNBEra commerce job binding." });
         await persistMarketplaceSettlementProjection(client, { jobRecordId: protocolRow.id, commerceJobId: protocolRow.commerce_job_id, job, event });
-      } else if (event.eventType === "job_expired") {
+      } else if (event.eventType === "job_expired" || event.eventType === "job_rejected") {
         if (protocolRow.commerce_job_id === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted ERC-8183 job has no BNBEra commerce job binding." });
         await persistMarketplaceRefundProjection(client, { jobRecordId: protocolRow.id, commerceJobId: protocolRow.commerce_job_id, job, event });
       }

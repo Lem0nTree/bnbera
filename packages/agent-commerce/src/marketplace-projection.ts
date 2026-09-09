@@ -500,9 +500,9 @@ export async function persistMarketplaceRefundProjection(client: QueryClient, in
   const job = input.job;
   const refundTransactionHash = job.refundTransactionHash;
   if (
-    event.eventType !== "job_expired" ||
+    !["job_expired", "job_rejected"].includes(event.eventType) ||
     (event.previousState !== "funded" && event.previousState !== "submitted") ||
-    event.nextState !== "expired" ||
+    event.nextState !== (event.eventType === "job_rejected" ? "rejected" : "expired") ||
     event.confirmationState !== "canonical" ||
     event.transactionHash === null ||
     event.blockNumber === null ||
@@ -516,7 +516,7 @@ export async function persistMarketplaceRefundProjection(client: QueryClient, in
     });
   }
   const eventTransactionHash = event.transactionHash as `0x${string}`;
-  if (job.state !== "expired" || refundTransactionHash === null) {
+  if (job.state !== event.nextState || refundTransactionHash === null) {
     throw new CommerceError({
       code: "ONCHAIN_MISMATCH",
       message: "The canonical expired job is missing its confirmed refund evidence.",

@@ -26,3 +26,19 @@ against the standards lock before merging.
 The connected EOA proves ownership for BNBEra account and claim actions. It is
 not automatically the ERC-8004 `agentWallet`, the Altana smart wallet, or a
 runtime signer; those are separate, explicitly verified concepts.
+
+## Mainnet marketplace application boundary — September 9, 2026
+
+The current web application now wires persistent nonce consumption and actual
+EOA message verification. Authenticated cookie tokens are retained only as
+one-way digests; the browser cookie is Secure, HttpOnly and SameSite=Strict.
+Chain-56 buyer login requires the explicit mainnet HTTPS runtime gate. It does
+not enable Creator authority, a server signer or arbitrary chain/token access.
+
+Auth and commerce JSON mutations also enforce request-origin checks, including
+same-site sibling subdomains, and bounded JSON bodies. SameSite alone is not
+the CSRF boundary. Logout checks origin without requiring a JSON body. A trusted
+production reverse proxy must preserve the public Host/protocol correctly;
+untrusted forwarding headers must not select the audience. Read-only RPC and
+existing-job dispute/refund reconciliation remain independent of the separate
+checked-in new-hire release flag.

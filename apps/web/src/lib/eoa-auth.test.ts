@@ -2,7 +2,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { describe, expect, it, vi } from "vitest";
 import type { NonceStore } from "@bnbera/auth";
 import { formatSiweMessage } from "./siwe-message";
-import { createEoaSiweChallenge, verifyEoaSiweRequest } from "./commerce-auth";
+import { createEoaSiweChallenge, resolveEoaAuthChain, verifyEoaSiweRequest } from "./commerce-auth";
 
 const account = privateKeyToAccount(`0x${"11".repeat(32)}`);
 const otherAccount = privateKeyToAccount(`0x${"22".repeat(32)}`);
@@ -42,6 +42,38 @@ async function signedRequest(overrides: Record<string, unknown> = {}) {
 }
 
 describe("EOA SIWE authentication", () => {
+  const mainnetPreview = { NODE_ENV: "production", BNBERA_ENV: "preview", APP_URL: "https://preview.example", BSC_CHAIN_ID: "97", EXTERNAL_ERC8183_MAINNET_ENABLED: "true", T5_WALLETCONNECT_AUTH_ENABLED: "true" };
+  it("allows mainnet sign-in only through the separate explicit HTTPS preview or production gate", () => {
+    expect(resolveEoaAuthChain(56, mainnetPreview)).toBe(56);
+    expect(resolveEoaAuthChain(56, { ...mainnetPreview, BNBERA_ENV: "production" })).toBe(56);
+    for (const override of [
+      { EXTERNAL_ERC8183_MAINNET_ENABLED: "false" },
+      { EXTERNAL_ERC8183_MAINNET_ENABLED: undefined },
+      { BNBERA_ENV: "development" },
+      { APP_URL: "http://preview.example" },
+      { APP_URL: "https://user:password@preview.example" },
+      { APP_URL: "https://preview.example/other-origin-path" },
+      { T5_WALLETCONNECT_AUTH_ENABLED: "false" }
+    ]) expect(() => resolveEoaAuthChain(56, { ...mainnetPreview, ...override })).toThrow(/not enabled/iu);
+  });
+
+  it("does not let the mainnet flag bypass testnet or unsupported-chain gates", () => {
+    expect(() => resolveEoaAuthChain(97, mainnetPreview)).toThrow(/not enabled/iu);
+    expect(resolveEoaAuthChain(97, { NODE_ENV: "test", T5_WALLETCONNECT_AUTH_ENABLED: "true" })).toBe(97);
+    expect(() => resolveEoaAuthChain(1, mainnetPreview)).toThrow(/unsupported/iu);
+  });
+
+  it("verifies a mainnet EOA proof against an independently chain-bound nonce", async () => {
+    const store = nonceStore();
+    const mainnetContext = { ...context, chainId: 56 };
+    const proof = await verifyEoaSiweRequest(await signedRequest({ chainId: 56 }), mainnetContext, store);
+    expect(proof.chainId).toBe(56);
+    expect(store.consume).toHaveBeenCalledWith({ domain: context.domain, chainId: 56, nonce: "nonce-123456", walletAddress: account.address.toLowerCase() });
+    const wrongStore = nonceStore();
+    await expect(verifyEoaSiweRequest(await signedRequest(), mainnetContext, wrongStore)).rejects.toThrow(/context|chain/iu);
+    expect(wrongStore.consume).not.toHaveBeenCalled();
+  });
+
   it("requires the explicit WalletConnect buyer flag, not the future Altana flag", async () => {
     vi.stubEnv("T5_ALTANA_AUTH_ENABLED", "true");
     vi.stubEnv("T5_WALLETCONNECT_AUTH_ENABLED", "false");

@@ -15,6 +15,57 @@ const service: ServiceObservation = {
 };
 
 describe("bounded advertised-service probes", () => {
+  it.each(["valid", "secret", "depth", "bytes"])("bounds A2A extension schemas (%s) without persisting them", async violation => {
+    let schema: unknown = { type: "number" };
+    for (let i = 0; i < (violation === "depth" ? 35 : 7); i++) schema = { type: "object", properties: { value: schema } };
+    const card = { name: "Grid planner", description: "Publishes a read-only grid.", version: "1.0", protocolVersion: "0.3.0", preferredTransport: "JSONRPC", url: "https://agent.example/",
+      capabilities: { streaming: false, extensions: [{ uri: "https://agent.example/schema/v1", params: { grid: schema }, ...(violation === "secret" ? { api_key: "must-not-persist" } : {}) }] },
+      skills: [{ id: "negotiate", name: "Negotiate", description: "Returns a quote.", tags: ["erc8183"] }],
+      ...(violation === "bytes" ? { extra: "x".repeat(5000) } : {}) };
+    const methods: string[] = [];
+    const transport = new HttpServiceProbeTransport({ lookup: async () => [{ address: "93.184.216.34", family: 4 }], fetch: async (_url, init) => { methods.push(init?.method ?? "GET"); return Response.json(card); } });
+    const pending = transport.probe({ kind: "a2a", url: "https://agent.example/.well-known/agent-card.json", timeoutMs: 2000, maxResponseBytes: 4096 });
+    if (violation === "valid") {
+      const result = await pending;
+      expect(result).toMatchObject({ contractStatus: "healthy", safeCapabilityProbe: { skillCount: 1, capabilityEvidence: "advertised-only", invocationUrls: ["https://agent.example/"] } });
+      expect(JSON.stringify(result)).not.toContain("extensions");
+      expect(JSON.stringify(result)).not.toContain("properties");
+    } else await expect(pending).rejects.toMatchObject({code: violation === "bytes" ? "SERVICE_RESPONSE_TOO_LARGE" : "SERVICE_A2A_AGENT_CARD_INVALID"});
+    expect(methods).toEqual(["GET"]);
+  });
+
+  it("accepts bounded nested MCP tool schemas without persisting their wire bodies", async () => {
+    const nested = (depth: number): unknown => depth ? { type: "object", properties: { data: nested(depth - 1) } } : { type: "string" };
+    const tools = Array.from({ length: 19 }, (_, index) => ({ name: `readVault${index}`, inputSchema: { type: "object" }, outputSchema: nested(7) }));
+    const methods: string[] = [];
+    const transport = new HttpServiceProbeTransport({ lookup: async () => [{ address: "93.184.216.34", family: 4 }], fetch: async (_url, init) => {
+      const request = JSON.parse(String(init?.body)); methods.push(request.method);
+      if (!request.id) return new Response(null, { status: 202 });
+      return Response.json({ jsonrpc: "2.0", id: request.id, result: request.method === "initialize"
+        ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "nested-schema-server", version: "1.0.0" } }
+        : { tools } });
+    } });
+    const result = await transport.probe({ kind: "mcp", url: service.url, timeoutMs: 2000, maxResponseBytes: 1024 * 1024 });
+    expect(result).toMatchObject({ contractStatus: "healthy", safeCapabilityProbe: { capabilityCount: 19, toolInvocationPerformed: false } });
+    expect(JSON.stringify(result)).not.toContain("outputSchema");
+    expect(methods).toEqual(["initialize", "notifications/initialized", "tools/list"]);
+  });
+
+  it.each(["secret", "depth", "bytes", "request-id"])("rejects MCP %s boundary violations", async (violation) => {
+    let output: unknown = { type: "string" };
+    for (let i = 0; i < (violation === "depth" ? 35 : 1); i++) output = { nested: output };
+    const transport = new HttpServiceProbeTransport({ lookup: async () => [{ address: "93.184.216.34", family: 4 }], fetch: async (_url, init) => {
+      const request = JSON.parse(String(init?.body));
+      if (!request.id) return new Response(null, { status: 202 });
+      return Response.json({ jsonrpc: "2.0", id: violation === "request-id" ? 999 : request.id, result: request.method === "initialize"
+        ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "test", version: "1" } }
+        : { tools: [{ name: "readVault", inputSchema: { type: "object" }, outputSchema: output, ...(violation === "secret" ? { access_token: "sensitive" } : {}), ...(violation === "bytes" ? { description: "x".repeat(5000) } : {}) }] } });
+    } });
+    const result = await transport.probe({ kind: "mcp", url: service.url, timeoutMs: 2000, maxResponseBytes: 4096 });
+    expect(result.contractStatus).toBe("unhealthy");
+    expect(result.safeCapabilityProbe).toBeUndefined();
+  });
+
   it("probes exactly the advertised URL and persists a safe result", async () => {
     const calls: string[] = [];
     const repository = new InMemoryIngestionRepository();
@@ -56,7 +107,7 @@ describe("bounded advertised-service probes", () => {
     expect(result.errorCode).toBe("SERVICE_STATUS_NOT_HEALTHY");
   });
 
-  it("uses a bounded safe GET transport and blocks private DNS targets", async () => {
+  it("does not mistake MCP HTTP405 for protocol verification and blocks private DNS targets", async () => {
     const calls: string[] = [];
     const transport = new HttpServiceProbeTransport({
       fetch: async (input) => {
@@ -66,7 +117,7 @@ describe("bounded advertised-service probes", () => {
       lookup: async () => [{ address: "93.184.216.34", family: 4 }]
     });
     const response = await transport.probe({ kind: service.kind, url: service.url, timeoutMs: 2_000, maxResponseBytes: 4_096 });
-    expect(response).toMatchObject({ statusCode: 405, safeCapabilityProbe: { protocol: "mcp" } });
+    expect(response).toMatchObject({ statusCode: 405, contractStatus: "unhealthy" });
     expect(calls).toEqual([service.url]);
     await expect(transport.probe({ url: "https://127.0.0.1/metadata", timeoutMs: 2_000, maxResponseBytes: 4_096 })).rejects.toThrow(/private|network/i);
   });
@@ -236,22 +287,22 @@ describe("bounded advertised-service probes", () => {
       .rejects.toMatchObject({ code: "SERVICE_A2A_AGENT_CARD_INVALID" });
   });
 
-  it("uses MCP GET semantics, validates readiness, and never guesses auth", async () => {
+  it("rejects transport-only MCP responses, validates readiness, and never guesses auth", async () => {
     const lookup = async () => [{ address: "93.184.216.34", family: 4 }] as const;
     const mcp405 = new HttpServiceProbeTransport({ fetch: async (_input, init) => {
-      expect(init?.method).toBe("GET");
+      expect(init?.method).toBe("POST");
       expect(new Headers(init?.headers).has("authorization")).toBe(false);
       return new Response(null, { status: 405 });
     }, lookup });
     await expect(mcp405.probe({ kind: "mcp", url: "https://agent.example/mcp", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
-      .resolves.toMatchObject({ contractStatus: "healthy", safeCapabilityProbe: { contract: "safe-get-405" } });
+      .resolves.toMatchObject({ contractStatus: "unhealthy" });
 
     const mcpSse = new HttpServiceProbeTransport({
       fetch: async () => new Response("event: ready\n\n", { status: 200, headers: { "content-type": "text/event-stream" } }),
       lookup
     });
     await expect(mcpSse.probe({ kind: "mcp", url: "https://agent.example/mcp", timeoutMs: 2_000, maxResponseBytes: 4_096 }))
-      .resolves.toMatchObject({ contractStatus: "healthy", safeCapabilityProbe: { contract: "safe-get-sse" } });
+      .resolves.toMatchObject({ contractStatus: "unhealthy", errorCode: "SERVICE_MCP_CONTRACT_INVALID" });
 
     const readiness = new HttpServiceProbeTransport({
       fetch: async () => new Response(JSON.stringify({ status: "not_ready" }), { status: 200, headers: { "content-type": "application/json" } }),

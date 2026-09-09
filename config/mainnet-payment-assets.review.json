@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "bnbera.payment-asset-review/v1",
+  "reviewedAt": "2026-09-09",
+  "chainId": 56,
+  "automaticAdmission": false,
+  "warning": "Asset review is not an executable payment rail. Every offer must match the exact currency of its independently pinned Commerce deployment. No substitution, swap, fee-on-transfer or unknown token is supported.",
+  "assets": [
+    {
+      "address": "0xcE24439F2D9C6a2289F741120FE202248B666666",
+      "symbol": "U", "decimals": 18, "exactTransfer": true,
+      "implementation": "0xbef21313C69c009fD7D9510A8d3A481a32473DFC",
+      "proxyAdmin": "0x36124fa57e049846e9dc181c8caa31a3c5da4e9c",
+      "runtimeSha256": "1076ca0b58e992bba671ddbde6a9d96685c712113eee50caa891c458fc2b48a9",
+      "implementationRuntimeSha256": "d6c77e5ad76d639516b22b00244bd0c94e2631f1940fc550b77e059f24fe75a3",
+      "source": "https://sourcify.dev/server/v2/contract/56/0xbef21313C69c009fD7D9510A8d3A481a32473DFC?fields=all",
+      "controls": ["upgradeable", "issuer pause", "issuer account freeze applies to transfers and approvals"],
+      "supportedCommerce": ["0xEa4DAa3100A767e86FDed867729ae7446476EBA6"]
+    },
+    {
+      "address": "0x55d398326f99059fF775485246999027B3197955",
+      "symbol": "USDT", "decimals": 18, "exactTransfer": true,
+      "implementation": null, "proxyAdmin": null,
+      "runtimeSha256": "a5a6d887c581c25cba4104e4281a530044ba59d718e62cdaa80ef89900299d50",
+      "source": "https://sourcify.dev/server/v2/contract/56/0x55d398326f99059fF775485246999027B3197955?fields=all",
+      "controls": ["BSC bridged asset and issuer/custody risk"],
+      "supportedCommerce": [],
+      "blocker": "The reviewed official chain-56 APEX Commerce has a fixed U paymentToken; no verified USDT Commerce deployment is configured. A USDT offer cannot fund that contract truthfully."
+    },
+    {
+      "address": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+      "symbol": "USDC", "decimals": 18, "exactTransfer": true,
+      "implementation": "0xba5fe23f8a3a24bed3236f05f2fcf35fd0bf0b5c",
+      "proxyAdmin": "0xd2f93484f2d319194cba95c5171b18c1d8cfd6c4",
+      "runtimeSha256": "94c7b756568b9fcb52b813d71bc266772eacaada41711b318618ffed571af6e3",
+      "implementationRuntimeSha256": "7f92760e3dee25dadcf64405a080deef0f62b3d7bd263a1f9fa22176e59d195c",
+      "source": "https://sourcify.dev/server/v2/contract/56/0xba5fe23f8a3a24bed3236f05f2fcf35fd0bf0b5c?fields=all",
+      "controls": ["upgradeable", "BSC bridged asset and issuer/custody risk"],
+      "supportedCommerce": [],
+      "blocker": "The reviewed official chain-56 APEX Commerce has a fixed U paymentToken; no verified USDC Commerce deployment is configured. BSC USDC has 18 decimals here, not Ethereum USDC's 6."
+    }
+  ]
+}

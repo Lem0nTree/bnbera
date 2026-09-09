@@ -6,15 +6,18 @@ import {
   commerceErrorResponse as makeCommerceErrorResponse
 } from "./commerce-contract";
 import { z } from "zod";
+import { boundedJsonBody } from "./bounded-json-body";
+import { assertSameOriginJsonMutation } from "./same-origin-json";
 
 const jobIdSchema = z.string().regex(/^(0|[1-9][0-9]*)$/);
 const operationIdSchema = z.string().uuid();
 const parentJobIdSchema = z.string().uuid();
 
 export async function parseCommerceJson<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
+  assertSameOriginJsonMutation(request);
   let body: unknown;
   try {
-    body = await request.json();
+    body = await boundedJsonBody(request, 512 * 1024);
   } catch (cause) {
     throw new AppError({
       code: "COMMERCE_REQUEST_INVALID",
@@ -81,6 +84,7 @@ export function parseCommerceParentJobId(value: string): string {
 
 function statusForCommerceError(error: CommerceError | AppError): number {
   if (error instanceof AppError) {
+    if (error.code === "REQUEST_ORIGIN_INVALID") return 403;
     if (error.code === "COMMERCE_JOB_INVALID" || error.code === "COMMERCE_OPERATION_INVALID" || error.code === "COMMERCE_REQUEST_INVALID") return 400;
     if (error.code === "AUTH_REQUIRED" || error.code === "SESSION_COOKIE_INVALID") return 401;
     return 503;

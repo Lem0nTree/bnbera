@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  BNB,
   BNB_TESTNET,
   buildClaimRefundCall,
   erc8183Addresses,
@@ -31,7 +32,7 @@ import { assertProviderResultMatchesTask } from "./provider.js";
 import type { Erc8183OperationKind, Erc8183OperationExpectation, Erc8183RpcLog, Erc8183RpcReceipt } from "./operations.js";
 import {
   buildErc8183EoaCall,
-  ERC8183_EOA_CONTRACTS,
+  ERC8183_EOA_MAINNET_CONTRACTS,
   type Erc8183EoaStep
 } from "./eoa.js";
 
@@ -87,6 +88,7 @@ export interface Erc8183DeploymentVerification {
   readonly commerceImplementation: Address;
   readonly routerImplementation: Address;
   readonly paymentTokenImplementation: Address;
+  readonly paymentTokenProxyAdmin?: Address;
   readonly commerceProxyRuntimeSha256: string;
   readonly routerProxyRuntimeSha256: string;
   readonly policyRuntimeSha256: string;
@@ -103,13 +105,13 @@ export interface Erc8183DeploymentVerification {
 }
 
 export interface Erc8183DeploymentLockConfig {
-  readonly chainId: 97;
+  readonly chainId: 56 | 97;
   readonly enabled: boolean;
   readonly releaseEnabled: boolean;
   readonly verification: Erc8183DeploymentVerification;
 }
 
-export type Erc8183RuntimeEnvironment = "development" | "test" | "production";
+export type Erc8183RuntimeEnvironment = "development" | "test" | "preview" | "production";
 
 function lockRecord(value: unknown, label: string): Readonly<Record<string, unknown>> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -154,7 +156,7 @@ function lockHash(value: unknown, label: string): string {
  * still read by `verifyNetwork` immediately before any SDK write.
  */
 export function resolveErc8183DeploymentVerification(lock: unknown, chainId = 97): Erc8183DeploymentLockConfig {
-  if (chainId !== 97) throw new CommerceError({ code: "INVALID_CHAIN", message: "The ERC-8183 standards lock only defines the BSC testnet deployment." });
+  if (chainId !== 56 && chainId !== 97) throw new CommerceError({ code: "INVALID_CHAIN", message: "The ERC-8183 standards lock only defines reviewed BSC deployments." });
   const root = lockRecord(lock, "root");
   const networks = lockRecord(root.networks, "networks");
   const network = lockRecord(networks[String(chainId)], `network ${chainId}`);
@@ -164,6 +166,9 @@ export function resolveErc8183DeploymentVerification(lock: unknown, chainId = 97
   const commerceAbi = lockString(abiHashes.commerce, "commerce ABI hash");
   if (!/^[0-9a-f]{64}$/iu.test(commerceAbi) || commerceAbi.toLowerCase() !== REVIEWED_APEX_COMMERCE_ABI_SHA256) {
     throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The standards-locked commerce ABI is not the reviewed APEX v1 ABI.", nextAction: "verify_standards_lock" });
+  }
+  if (chainId === 56 && (abiHashes.router !== "75194cd4777b17459108a69da2e65c15dc00b2b8c7fe340794d28dceeb3d3329" || abiHashes.policy !== "843d484a26c8a21271df31078347cdb5bcfad705cd69bed729c2773bb392cc62")) {
+    throw new CommerceError({ code: "COMMERCE_DISABLED", message: "Mainnet requires the reviewed router and policy ABIs.", nextAction: "verify_standards_lock" });
   }
   const verification: Erc8183DeploymentVerification = {
     commerceProxy: lockAddress(deployment.commerceProxy, "commerce proxy"),
@@ -178,17 +183,19 @@ export function resolveErc8183DeploymentVerification(lock: unknown, chainId = 97
     commerceImplementation: lockAddress(deployment.commerceImplementation, "commerce implementation"),
     routerImplementation: lockAddress(deployment.routerImplementation, "router implementation"),
     paymentTokenImplementation: lockAddress(deployment.paymentTokenImplementation, "payment token implementation"),
+    ...(chainId === 56 ? { paymentTokenProxyAdmin: lockAddress(deployment.paymentTokenProxyAdmin, "payment token proxy admin") } : {}),
     commerceProxyRuntimeSha256: lockHash(runtime.commerceProxy, "commerce proxy"),
     routerProxyRuntimeSha256: lockHash(runtime.routerProxy, "router proxy"),
     policyRuntimeSha256: lockHash(runtime.policy, "policy"),
     paymentTokenRuntimeSha256: lockHash(runtime.paymentToken, "payment token"),
     commerceImplementationRuntimeSha256: lockHash(runtime.commerceImplementation, "commerce implementation"),
     routerImplementationRuntimeSha256: lockHash(runtime.routerImplementation, "router implementation"),
+    ...(runtime.paymentTokenImplementation === undefined && chainId === 97 ? {} : { paymentTokenImplementationRuntimeSha256: lockHash(runtime.paymentTokenImplementation, "payment token implementation") }),
     ...(deployment.paymentTokenSymbol === undefined ? {} : { paymentTokenSymbol: lockString(deployment.paymentTokenSymbol, "payment token symbol") }),
     ...(deployment.paymentTokenName === undefined ? {} : { paymentTokenName: lockString(deployment.paymentTokenName, "payment token name") })
   };
   return {
-    chainId: 97,
+    chainId,
     enabled: lockBoolean(deployment.enabled, "enabled"),
     releaseEnabled: lockBoolean(deployment.releaseEnabled, "releaseEnabled"),
     verification
@@ -223,6 +230,9 @@ export interface Erc8183AltanaAdapterOptions {
   readonly deploymentVerification?: Erc8183DeploymentVerification;
   /** Explicit process-level canary opt-in; never accepted in a request. */
   readonly developmentCanaryEnabled?: boolean;
+  /** Browser-only chain-56 reads. Also requires preview and the process-level
+   * EXTERNAL_ERC8183_MAINNET_ENABLED gate; never enables an Altana writer. */
+  readonly externalMainnetBrowserEnabled?: boolean;
   /** The process configuration in which the canary is composed. */
   readonly runtimeEnvironment?: Erc8183RuntimeEnvironment;
   readonly sdk?: Partial<Erc8183AltanaSdk>;
@@ -246,7 +256,7 @@ export interface Erc8183OnchainJob {
 }
 
 export interface Erc8183NetworkEvidence {
-  readonly chainId: 97;
+  readonly chainId: 56 | 97;
   readonly commerceContract: Address;
   readonly routerContract: Address;
   readonly policyContract: Address;
@@ -380,6 +390,9 @@ export const ERC8183_COMMERCE_EVENTS_ABI = [{
   name: "JobExpired",
   anonymous: false,
   inputs: [{ indexed: true, name: "jobId", type: "uint256" }]
+}, {
+  type: "event", name: "JobRejected", anonymous: false,
+  inputs: [{ indexed: true, name: "jobId", type: "uint256" }, { indexed: true, name: "rejector", type: "address" }, { indexed: false, name: "reason", type: "bytes32" }]
 }, {
   type: "event",
   name: "Refunded",
@@ -571,7 +584,7 @@ type DecodedReceiptEvent = {
   readonly logIndex: number;
 };
 
-function eventFromReceipt(receipt: Erc8183RpcReceipt, abi: Abi, eventName: string, expectedAddress: Address): DecodedReceiptEvent | null {
+function eventFromReceipt(receipt: Erc8183RpcReceipt, abi: Abi, eventName: string, expectedAddress: Address, jobId?: string): DecodedReceiptEvent | null {
   for (const [position, log] of (receipt.logs ?? []).entries()) {
     if (log.address.toLowerCase() !== expectedAddress.toLowerCase()) continue;
     if (log.transactionHash !== undefined && log.transactionHash.toLowerCase() !== receipt.transactionHash.toLowerCase()) continue;
@@ -580,6 +593,7 @@ function eventFromReceipt(receipt: Erc8183RpcReceipt, abi: Abi, eventName: strin
     try {
       const decoded = decodeEventLog({ abi, data: log.data, topics: log.topics, strict: false } as never) as unknown as { readonly eventName?: string; readonly args?: unknown };
       if (decoded.eventName !== eventName || typeof decoded.args !== "object" || decoded.args === null || Array.isArray(decoded.args)) continue;
+      if (jobId !== undefined && String((decoded.args as Record<string, unknown>).jobId) !== jobId) continue;
       return { eventName, args: decoded.args as Readonly<Record<string, unknown>>, logIndex: log.logIndex ?? position };
     } catch {
       // Receipts include unrelated ERC-20 and hook logs. Keep looking for the
@@ -589,8 +603,8 @@ function eventFromReceipt(receipt: Erc8183RpcReceipt, abi: Abi, eventName: strin
   return null;
 }
 
-function requireReceiptEvent(receipt: Erc8183RpcReceipt, abi: Abi, eventName: string, expectedAddress: Address, action: string): DecodedReceiptEvent {
-  const event = eventFromReceipt(receipt, abi, eventName, expectedAddress);
+function requireReceiptEvent(receipt: Erc8183RpcReceipt, abi: Abi, eventName: string, expectedAddress: Address, action: string, jobId?: string): DecodedReceiptEvent {
+  const event = eventFromReceipt(receipt, abi, eventName, expectedAddress, jobId);
   if (event === null) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: `The successful ${action} receipt is missing ${eventName} on the pinned contract.`, transactionHash: receipt.transactionHash, nextAction: "reconcile_transaction" });
   return event;
 }
@@ -796,6 +810,17 @@ export function assertSdkDeploymentMatchesPin(pin: unknown): EnabledErc8183Deplo
   return enabled;
 }
 
+function assertReviewedMainnetPin(pin: unknown): EnabledErc8183DeploymentPin {
+  const enabled = parseEnabledDeploymentPin(pin);
+  const expected = ERC8183_EOA_MAINNET_CONTRACTS;
+  if (enabled.chainId !== 56 || enabled.abiHash.toLowerCase() !== REVIEWED_APEX_COMMERCE_ABI_SHA256 ||
+      enabled.commerceContract.toLowerCase() !== expected.commerceContract.toLowerCase() ||
+      enabled.paymentToken.toLowerCase() !== expected.paymentToken.toLowerCase() || enabled.paymentDecimals !== 18) {
+    throw new CommerceError({ code: "INVALID_CONTRACT", message: "Mainnet browser reads require the exact reviewed APEX deployment and U token.", nextAction: "verify_standards_lock" });
+  }
+  return enabled;
+}
+
 /**
  * Thin application boundary over @altananetwork/sdk. The SDK owns all APEX
  * calldata construction and transaction submission. BNBEra only validates the
@@ -817,11 +842,16 @@ export class Erc8183AltanaAdapter {
   private readonly standardsLockEnabled: boolean | undefined;
   private readonly standardsLockReleaseEnabled: boolean | undefined;
   private readonly developmentCanaryEnabled: boolean;
+  private readonly externalMainnetBrowserEnabled: boolean;
   private readonly runtimeEnvironment: Erc8183RuntimeEnvironment;
 
   public constructor(options: Erc8183AltanaAdapterOptions) {
-    this.pin = assertSdkDeploymentMatchesPin(options.pin);
-    this.network = options.network ?? BNB_TESTNET;
+    const parsed = parseEnabledDeploymentPin(options.pin);
+    this.externalMainnetBrowserEnabled = options.externalMainnetBrowserEnabled === true;
+    this.runtimeEnvironment = options.runtimeEnvironment ?? "production";
+    this.pin = parsed.chainId === 56 ? assertReviewedMainnetPin(parsed) : assertSdkDeploymentMatchesPin(parsed);
+    this.assertMainnetBrowserReadAllowed();
+    this.network = options.network ?? (this.pin.chainId === 56 ? BNB : BNB_TESTNET);
     if (this.network.chainId !== this.pin.chainId) throw new CommerceError({ code: "INVALID_CHAIN", message: "Altana SDK network does not match the pinned chain." });
     const addresses = erc8183Addresses(this.pin.chainId);
     this.routerContract = addresses.router;
@@ -841,18 +871,25 @@ export class Erc8183AltanaAdapter {
     this.deploymentVerification = lockConfig?.verification ?? options.deploymentVerification;
     this.standardsLockEnabled = lockConfig?.enabled;
     this.standardsLockReleaseEnabled = lockConfig?.releaseEnabled;
+    if (this.pin.chainId === 56 && lockConfig?.enabled !== true) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "Mainnet browser reads require the checked-in enabled candidate lock.", nextAction: "verify_standards_lock" });
     const runtimeEnvironment = options.runtimeEnvironment ?? "production";
-    if (runtimeEnvironment !== "development" && runtimeEnvironment !== "test" && runtimeEnvironment !== "production") throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The ERC-8183 runtime environment is invalid for the commerce canary.", nextAction: "verify_standards_lock" });
+    if (!["development", "test", "preview", "production"].includes(runtimeEnvironment)) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The ERC-8183 runtime environment is invalid for the commerce canary.", nextAction: "verify_standards_lock" });
     this.runtimeEnvironment = runtimeEnvironment;
     this.developmentCanaryEnabled = options.developmentCanaryEnabled ?? false;
-    if (this.developmentCanaryEnabled && (this.pin.chainId !== 97 || (this.runtimeEnvironment !== "development" && this.runtimeEnvironment !== "test"))) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The ERC-8183 development canary is only allowed on chain 97 in development or test configuration.", nextAction: "verify_standards_lock" });
+    if (this.developmentCanaryEnabled && (this.pin.chainId !== 97 || !["development", "test", "preview"].includes(this.runtimeEnvironment))) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The ERC-8183 canary is only allowed on chain 97 in development, test or explicitly authorized testnet preview configuration.", nextAction: "verify_standards_lock" });
+  }
+
+  private assertMainnetBrowserReadAllowed(): void {
+    if (this.pin.chainId === 56 && (!this.externalMainnetBrowserEnabled || !["preview", "production"].includes(this.runtimeEnvironment) || process.env.EXTERNAL_ERC8183_MAINNET_ENABLED !== "true")) {
+      throw new CommerceError({ code: "COMMERCE_DISABLED", message: "Mainnet requires explicitly enabled browser-owned commerce.", nextAction: "verify_standards_lock" });
+    }
   }
 
   public async verifyNetwork(): Promise<Erc8183NetworkEvidence> {
-    if (this.network.chainId !== 97) throw new CommerceError({ code: "INVALID_CHAIN", message: "Only BSC testnet is enabled for the T4 paid-hire canary." });
+    this.assertMainnetBrowserReadAllowed();
     await this.verifyPinnedDeployment();
     return {
-      chainId: 97,
+      chainId: this.pin.chainId,
       commerceContract: this.pin.commerceContract as Address,
       routerContract: this.routerContract,
       policyContract: this.policyContract,
@@ -874,7 +911,8 @@ export class Erc8183AltanaAdapter {
       if (actual.toLowerCase() !== locked.toLowerCase()) throw new CommerceError({ code: "INVALID_CONTRACT", message: `The standards-locked ${label} address does not match the configured deployment.`, nextAction: "verify_standards_lock" });
     }
     if (expected.commerceProxy.toLowerCase() !== addresses.commerce.toLowerCase() || expected.routerProxy.toLowerCase() !== addresses.router.toLowerCase() || expected.policy.toLowerCase() !== addresses.policy.toLowerCase() || expected.paymentToken.toLowerCase() !== addresses.paymentToken.toLowerCase()) throw new CommerceError({ code: "INVALID_CONTRACT", message: "The standards-locked ERC-8183 addresses do not match @altananetwork/sdk@0.9.0.", nextAction: "verify_standards_lock" });
-    if (this.deploymentReader.getChainId !== undefined && await this.deploymentReader.getChainId() !== this.pin.chainId) throw new CommerceError({ code: "INVALID_CHAIN", message: "The connected RPC is not the standards-locked BSC testnet network.", nextAction: "verify_standards_lock" });
+    if (this.pin.chainId === 56 && this.deploymentReader.getChainId === undefined) throw new CommerceError({ code: "INVALID_CHAIN", message: "Mainnet deployment verification requires an RPC chain ID check." });
+    if (this.deploymentReader.getChainId !== undefined && await this.deploymentReader.getChainId() !== this.pin.chainId) throw new CommerceError({ code: "INVALID_CHAIN", message: "The connected RPC is not the standards-locked BSC network.", nextAction: "verify_standards_lock" });
     assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.commerceProxy }), expected.commerceProxyRuntimeSha256, "commerce proxy");
     assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.routerProxy }), expected.routerProxyRuntimeSha256, "router proxy");
     assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.policy }), expected.policyRuntimeSha256, "policy");
@@ -883,6 +921,10 @@ export class Erc8183AltanaAdapter {
     assertImplementationSlot(await this.deploymentReader.getStorageAt({ address: expected.commerceProxy, slot }), expected.commerceImplementation, "commerce");
     assertImplementationSlot(await this.deploymentReader.getStorageAt({ address: expected.routerProxy, slot }), expected.routerImplementation, "router");
     assertImplementationSlot(await this.deploymentReader.getStorageAt({ address: expected.paymentToken, slot }), expected.paymentTokenImplementation, "payment token");
+    if (this.pin.chainId === 56) {
+      if (!expected.paymentTokenProxyAdmin) throw new CommerceError({ code: "INVALID_TOKEN", message: "Mainnet token proxy admin must be reviewed and pinned." });
+      assertImplementationSlot(await this.deploymentReader.getStorageAt({ address: expected.paymentToken, slot: "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103" }), expected.paymentTokenProxyAdmin, "payment token proxy admin");
+    }
     assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.commerceImplementation }), expected.commerceImplementationRuntimeSha256, "commerce implementation");
     assertRuntimeHash(await this.deploymentReader.getBytecode({ address: expected.routerImplementation }), expected.routerImplementationRuntimeSha256, "router implementation");
     if (expected.paymentTokenImplementationRuntimeSha256 !== undefined) {
@@ -909,9 +951,58 @@ export class Erc8183AltanaAdapter {
     const policyCommerce = asAddress(await this.deploymentReader.readContract({ address: expected.policy, abi: ERC8183_POLICY_LINK_ABI as unknown as Abi, functionName: "commerce" }), "policy commerce");
     const policyRouter = asAddress(await this.deploymentReader.readContract({ address: expected.policy, abi: ERC8183_POLICY_LINK_ABI as unknown as Abi, functionName: "router" }), "policy router");
     if (policyCommerce.toLowerCase() !== expected.commerceProxy.toLowerCase() || policyRouter.toLowerCase() !== expected.routerProxy.toLowerCase()) throw new CommerceError({ code: "INVALID_CONTRACT", message: "The standards-locked policy is not linked to the commerce/router pair.", nextAction: "verify_standards_lock" });
+    if (this.pin.chainId === 56) {
+      if (await this.readDisputeWindow() !== 604_800) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The reviewed mainnet policy must retain its seven-day dispute window." });
+    }
+  }
+
+  private assertServerWriteAllowed(): void {
+    if (this.pin.chainId !== 97) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "Server-side Altana signer writes are permanently restricted to chain 97; mainnet requires explicit browser transactions." });
+  }
+
+  /** Read-only last-mile checks before a user-owned wallet request. The pinned
+   * U implementation uses exact non-rebasing transfers, but can pause/freeze. */
+  public assertBrowserNewHireReleased(): void {
+    if (this.pin.chainId === 56 && this.standardsLockReleaseEnabled !== true) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "New mainnet hiring is closed by the reviewed release gate. Existing-job reads, disputes and refunds remain available.", nextAction: "mainnet_release_pending" });
+  }
+
+  public async verifyBrowserPaymentParticipants(input: { buyer: string; provider?: string; budgetAtomic?: string; step: Erc8183EoaStep }): Promise<void> {
+    await this.verifyNetwork();
+    if (this.pin.chainId !== 56) return;
+    // Dispute records a time-limited objection in Policy; it does not transfer
+    // tokens or mutate paused Commerce/Router. Never suppress that recovery.
+    if (input.step === "dispute") return;
+    if (!["settle", "claim_refund"].includes(input.step)) this.assertBrowserNewHireReleased();
+    if (input.step !== "claim_refund") {
+      const fee = await this.deploymentReader.readContract({ address: this.pin.commerceContract as Address, abi: [{ type: "function", name: "platformFeeBP", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] }] as const, functionName: "platformFeeBP" });
+      if (BigInt(String(fee)) !== 0n) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The reviewed zero-fee deployment changed its platform fee. New payments are unavailable until the fee and treasury are reviewed; disputes and refunds remain available.", nextAction: "review_platform_fee" });
+    }
+    const pausedAbi = [{ type: "function", name: "paused", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] }] as const;
+    // claimRefund deliberately remains callable while Commerce/Router pause.
+    // Token pause can still prevent its transfer; read-only reconciliation is
+    // never blocked merely because an operator has paused new payments.
+    for (const address of input.step === "claim_refund" ? [this.paymentToken] : [this.paymentToken, this.pin.commerceContract as Address, this.routerContract]) {
+      if (await this.deploymentReader.readContract({ address, abi: pausedAbi, functionName: "paused" }) !== false) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "A contract needed for this payment step is paused. Reads and eligible recovery remain available.", nextAction: "check_contract_status" });
+    }
+    const abi = [{ type: "function", name: "frozen", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "bool" }] },
+      { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint256" }] },
+      { type: "function", name: "allowance", stateMutability: "view", inputs: [{ type: "address" }, { type: "address" }], outputs: [{ type: "uint256" }] }] as const;
+    const buyer = normalizeAddress(input.buyer, "buyer address") as Address;
+    const accounts = [buyer, this.pin.commerceContract as Address, ...(input.provider && input.step !== "claim_refund" ? [normalizeAddress(input.provider, "provider address") as Address] : [])];
+    for (const account of accounts) {
+      if (await this.deploymentReader.readContract({ address: this.paymentToken, abi, functionName: "frozen", args: [account] }) !== false) throw new CommerceError({ code: "INVALID_TOKEN", message: "The payment token currently freezes a participant or escrow. No wallet request is available.", nextAction: "check_token_status" });
+    }
+    if (input.step === "fund") {
+      const budget = parseAtomic(input.budgetAtomic ?? "", "Funding amount");
+      const balance = await this.deploymentReader.readContract({ address: this.paymentToken, abi, functionName: "balanceOf", args: [buyer] });
+      const allowance = await this.deploymentReader.readContract({ address: this.paymentToken, abi, functionName: "allowance", args: [buyer, this.pin.commerceContract] });
+      if (BigInt(String(balance)) < budget) throw new CommerceError({ code: "INVALID_AMOUNT", message: "Your verified payment-token balance is insufficient for this exact offer.", nextAction: "check_token_balance" });
+      if (BigInt(String(allowance)) !== budget) throw new CommerceError({ code: "INVALID_AMOUNT", message: "Funding requires an allowance equal to this exact offer, not an unlimited or different allowance.", nextAction: "review_token_allowance" });
+    }
   }
 
   private async ensureNetworkVerified(): Promise<void> {
+    this.assertServerWriteAllowed();
     try { await this.verifyNetwork(); } catch (cause) {
       if (cause instanceof CommerceError) throw cause;
       throw new CommerceError({ code: "CHAIN_PROVIDER_INVALID", message: "The standards-lock deployment could not be verified by the configured RPC.", nextAction: "verify_standards_lock", cause });
@@ -920,6 +1011,7 @@ export class Erc8183AltanaAdapter {
   }
 
   public async readJob(jobId: string | bigint): Promise<Erc8183OnchainJob> {
+    if (this.pin.chainId === 56) await this.verifyNetwork();
     let numeric: bigint;
     try { numeric = typeof jobId === "bigint" ? jobId : BigInt(jobId); } catch (cause) { throw new CommerceError({ code: "INVALID_JOB", message: "The ERC-8183 job ID must be a decimal integer.", cause }); }
     if (numeric < 0n) throw new CommerceError({ code: "INVALID_JOB", message: "The ERC-8183 job ID must be non-negative." });
@@ -927,15 +1019,18 @@ export class Erc8183AltanaAdapter {
   }
 
   public async getTransactionReceipt(hash: Hex): Promise<Erc8183RpcReceipt | null> {
+    this.assertMainnetBrowserReadAllowed();
     try { return await this.receiptReader.getTransactionReceipt({ hash }); } catch (cause) { throw sdkCallError("receipt read", cause); }
   }
 
   public async getTransaction(hash: Hex): Promise<Awaited<ReturnType<Erc8183TransactionReader["getTransaction"]>>> {
+    this.assertMainnetBrowserReadAllowed();
     try { return await this.transactionReader.getTransaction({ hash }); } catch (cause) { throw sdkCallError("transaction read", cause); }
   }
 
   /** Read the pinned policy window used to make a create expiry valid. */
   public async readDisputeWindow(): Promise<number> {
+    this.assertMainnetBrowserReadAllowed();
     try {
       const value = await this.deploymentReader.readContract({
         address: this.policyContract,
@@ -963,6 +1058,7 @@ export class Erc8183AltanaAdapter {
   }
 
   public async hire(authority: Erc8183AltanaAuthority, input: Erc8183HireInput): Promise<Erc8183HireResult> {
+    this.assertServerWriteAllowed();
     const provider = normalizeAddress(input.providerAddress, "provider address") as Address;
     const budget = parseAtomic(input.budgetAtomic, "Job budget");
     if (budget > 10_000_000_000_000_000n) throw new CommerceError({ code: "INVALID_AMOUNT", message: "Job budget exceeds the reviewed MVP cap of 0.01 U.", nextAction: "verify_standards_lock" });
@@ -995,6 +1091,7 @@ export class Erc8183AltanaAdapter {
   }
 
   public async submit(input: Erc8183SubmitInput): Promise<Erc8183SubmitResult> {
+    this.assertServerWriteAllowed();
     const jobId = assertDecimalJobId(input.jobId);
     if (!/^[0-9a-f]{64}$/iu.test(input.resultDigest)) throw new CommerceError({ code: "INVALID_JOB", message: "The local result digest must be a 32-byte SHA-256 digest." });
     if (input.task !== undefined && input.result !== undefined) assertProviderResultMatchesTask(input.task, input.result);
@@ -1041,6 +1138,7 @@ export class Erc8183AltanaAdapter {
   }
 
   public async settle(authority: Erc8183AltanaAuthority, input: { readonly jobId: string; readonly action?: "approve" | "dispute"; readonly executeOptions?: { readonly noWait?: boolean; readonly feeToken?: Address } }): Promise<Erc8183SettleResult> {
+    this.assertServerWriteAllowed();
     const jobId = assertDecimalJobId(input.jobId);
     const action = input.action ?? "approve";
     const beforeSettle = await this.readJob(jobId);
@@ -1065,6 +1163,7 @@ export class Erc8183AltanaAdapter {
   }
 
   public async claimRefund(authority: Erc8183AltanaAuthority, input: { readonly jobId: string; readonly executeOptions?: { readonly noWait?: boolean; readonly feeToken?: Address } }): Promise<Erc8183ClaimRefundResult> {
+    this.assertServerWriteAllowed();
     const jobId = assertDecimalJobId(input.jobId);
     const beforeRefund = await this.readJob(jobId);
     assertActor(authorityAddress(authority), beforeRefund.client, "client");
@@ -1087,6 +1186,37 @@ export class Erc8183AltanaAdapter {
   }
 
   /** Verify a previously persisted transaction without submitting anything. */
+  public async verifyPublicTerminalReceipt(input: { transactionHash: Hex; jobId: string; client: string; provider: string; budgetAtomic: string; description: string }): Promise<{ receipt: Erc8183RpcReceipt; job: Erc8183OnchainJob; state: "completed" | "rejected" | "expired" }> {
+    await this.verifyNetwork();
+    const receipt = assertReceipt(await this.requireReceipt(input.transactionHash, "public terminal reconciliation"), input.transactionHash, "public terminal reconciliation");
+    const job = await this.readJob(input.jobId);
+    if (job.client.toLowerCase() !== input.client.toLowerCase() || job.provider.toLowerCase() !== input.provider.toLowerCase() || job.budgetAtomic !== input.budgetAtomic || job.description !== input.description || job.evaluator.toLowerCase() !== this.routerContract.toLowerCase() || job.hook.toLowerCase() !== this.routerContract.toLowerCase()) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The terminal job does not match the immutable buyer, seller and signed terms." });
+    if (job.status === "COMPLETED") {
+      this.assertSettleReceipt(receipt, input.jobId, "approve", job.client, job);
+      return { receipt, job, state: "completed" };
+    }
+    if (job.status === "EXPIRED") {
+      this.assertRefundReceipt(receipt, input.jobId, job.client, job);
+      return { receipt, job, state: "expired" };
+    }
+    if (job.status === "REJECTED") {
+      const rejected = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobRejected", this.pin.commerceContract as Address, "rejected refund", input.jobId);
+      const refunded = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "Refunded", this.pin.commerceContract as Address, "rejected refund", input.jobId);
+      const settled = requireReceiptEvent(receipt, ERC8183_ROUTER_EVENTS_ABI, "JobSettled", this.routerContract, "rejected refund", input.jobId);
+      const finalised = requireReceiptEvent(receipt, ERC8183_ROUTER_EVENTS_ABI, "JobFinalised", this.routerContract, "rejected refund", input.jobId);
+      assertEventAddress(eventAddress(settled.args, "policy", "rejected refund", input.transactionHash), this.policyContract, "rejecting policy", input.transactionHash);
+      assertEventBigInt(eventBigInt(settled.args, "verdict", "rejected refund", input.transactionHash), 2n, "rejecting verdict", input.transactionHash);
+      assertEventBigInt(eventBigInt(finalised.args, "status", "rejected refund", input.transactionHash), 4n, "rejected status", input.transactionHash);
+      assertEventBigInt(eventBigInt(rejected.args, "jobId", "rejected refund", input.transactionHash), BigInt(input.jobId), "rejected job", input.transactionHash);
+      assertEventAddress(eventAddress(rejected.args, "rejector", "rejected refund", input.transactionHash), this.routerContract, "rejecting evaluator", input.transactionHash);
+      assertEventBigInt(eventBigInt(refunded.args, "jobId", "rejected refund", input.transactionHash), BigInt(input.jobId), "refunded job", input.transactionHash);
+      assertEventAddress(eventAddress(refunded.args, "client", "rejected refund", input.transactionHash), job.client, "refund beneficiary", input.transactionHash);
+      assertEventBigInt(eventBigInt(refunded.args, "amount", "rejected refund", input.transactionHash), BigInt(job.budgetAtomic), "exact refund", input.transactionHash);
+      return { receipt, job, state: "rejected" };
+    }
+    throw new CommerceError({ code: "STALE_JOB", message: "This public job has not reached a terminal onchain state." });
+  }
+
   public async verifyReceiptForOperation(input: {
     readonly transactionHash: Hex;
     readonly kind: Erc8183OperationKind;
@@ -1177,8 +1307,8 @@ export class Erc8183AltanaAdapter {
       chainId: this.pin.chainId,
       contracts: {
         commerceContract: this.pin.commerceContract,
-        routerContract: ERC8183_EOA_CONTRACTS.routerContract,
-        policyContract: ERC8183_EOA_CONTRACTS.policyContract,
+        routerContract: this.routerContract,
+        policyContract: this.policyContract,
         paymentToken: this.pin.paymentToken
       },
       step: input.step,
@@ -1313,9 +1443,9 @@ export class Erc8183AltanaAdapter {
 
   private assertSettleReceipt(receipt: Erc8183RpcReceipt, jobId: string, action: "approve" | "dispute", client: Address, job: Erc8183OnchainJob): void {
     if (action === "approve") {
-      const settled = requireReceiptEvent(receipt, ERC8183_ROUTER_EVENTS_ABI, "JobSettled", this.routerContract, "settle");
-      const finalised = requireReceiptEvent(receipt, ERC8183_ROUTER_EVENTS_ABI, "JobFinalised", this.routerContract, "settle");
-      const completed = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobCompleted", this.pin.commerceContract as Address, "settle");
+      const settled = requireReceiptEvent(receipt, ERC8183_ROUTER_EVENTS_ABI, "JobSettled", this.routerContract, "settle", jobId);
+      const finalised = requireReceiptEvent(receipt, ERC8183_ROUTER_EVENTS_ABI, "JobFinalised", this.routerContract, "settle", jobId);
+      const completed = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobCompleted", this.pin.commerceContract as Address, "settle", jobId);
       assertEventBigInt(eventBigInt(settled.args, "jobId", "settle", receipt.transactionHash), BigInt(jobId), "settled job ID", receipt.transactionHash);
       assertEventAddress(eventAddress(settled.args, "policy", "settle", receipt.transactionHash), this.policyContract, "settlement policy", receipt.transactionHash);
       if (eventBigInt(settled.args, "verdict", "settle", receipt.transactionHash) !== 1n) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The settlement receipt did not contain an approval verdict.", transactionHash: receipt.transactionHash, nextAction: "reconcile_transaction" });
@@ -1324,15 +1454,15 @@ export class Erc8183AltanaAdapter {
       assertEventBigInt(eventBigInt(completed.args, "jobId", "settle", receipt.transactionHash), BigInt(jobId), "completed job ID", receipt.transactionHash);
       assertEventAddress(eventAddress(completed.args, "evaluator", "settle", receipt.transactionHash), job.evaluator, "completion evaluator", receipt.transactionHash);
     } else {
-      const disputed = requireReceiptEvent(receipt, ERC8183_POLICY_EVENTS_ABI, "Disputed", this.policyContract, "dispute");
+      const disputed = requireReceiptEvent(receipt, ERC8183_POLICY_EVENTS_ABI, "Disputed", this.policyContract, "dispute", jobId);
       assertEventBigInt(eventBigInt(disputed.args, "jobId", "dispute", receipt.transactionHash), BigInt(jobId), "dispute job ID", receipt.transactionHash);
       assertEventAddress(eventAddress(disputed.args, "client", "dispute", receipt.transactionHash), client, "dispute client", receipt.transactionHash);
     }
   }
 
   private assertRefundReceipt(receipt: Erc8183RpcReceipt, jobId: string, client: Address, job: Erc8183OnchainJob): void {
-    const refunded = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "Refunded", this.pin.commerceContract as Address, "claim refund");
-    const expired = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobExpired", this.pin.commerceContract as Address, "claim refund");
+    const refunded = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "Refunded", this.pin.commerceContract as Address, "claim refund", jobId);
+    const expired = requireReceiptEvent(receipt, ERC8183_COMMERCE_EVENTS_ABI, "JobExpired", this.pin.commerceContract as Address, "claim refund", jobId);
     assertEventBigInt(eventBigInt(refunded.args, "jobId", "claim refund", receipt.transactionHash), BigInt(jobId), "refund job ID", receipt.transactionHash);
     assertEventAddress(eventAddress(refunded.args, "client", "claim refund", receipt.transactionHash), client, "refund client", receipt.transactionHash);
     assertEventBigInt(eventBigInt(refunded.args, "amount", "claim refund", receipt.transactionHash), BigInt(job.budgetAtomic), "refund amount", receipt.transactionHash);

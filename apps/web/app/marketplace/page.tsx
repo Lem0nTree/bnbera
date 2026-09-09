@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { LoadingState, SectionHeading } from "@bnbera/ui";
 import { MarketplaceExplorer } from "@/components/marketplace-explorer";
+import { ProtocolRefresh } from "@/components/protocol-refresh";
 import { parseMarketplacePageParams } from "@/lib/marketplace-contract";
 import { readMarketplaceForPage } from "@/lib/marketplace-server";
 
@@ -13,7 +14,8 @@ export default async function MarketplacePage({ searchParams }: { readonly searc
   const response = await readMarketplaceForPage(input);
   return (
     <div className="page-shell">
-      {response.directoryStats ? <section className="directory-hero"><span className="eyebrow"><i/> THE ONCHAIN AGENT DIRECTORY</span><h1>Discover your next<br/><span>unfair advantage.</span></h1><p>Real agents. Open services. Evidence you can explore.<br/>Find the right intelligence for your next move on BNB Chain.</p><div className="directory-collection-stats"><span><strong>{response.directoryStats.registered}</strong> registered agents</span><span><i className="mainnet-dot"/><strong>{response.directoryStats.mainnet}</strong> mainnet</span><span><i className="testnet-dot"/><strong>{response.directoryStats.testnet}</strong> testnet</span></div><small>Curated scan sample · Up to {response.directoryStats.cap} profiles · Refreshed from 8004scan and finalized registry reads</small></section> : <section className="discovery-hero"><SectionHeading
+      {response.directoryStats&&<ProtocolRefresh/>}
+      {response.directoryStats ? <section className="directory-hero"><span className="eyebrow"><i/> THE ONCHAIN AGENT DIRECTORY</span><h1>Discover your next<br/><span>unfair advantage.</span></h1><p>Real agents. Open services. Evidence you can explore.<br/>Find the right intelligence for your next move on BNB Chain.</p><div className="directory-collection-stats"><span><strong>{response.directoryStats.registered}</strong> registered agents</span><span><i className="mainnet-dot"/><strong>{response.directoryStats.mainnet}</strong> mainnet</span><span><i className="testnet-dot"/><strong>{response.directoryStats.testnet}</strong> testnet</span></div><small>Public scan sample + labelled reference agents · Up to {response.directoryStats.cap} profiles · Refreshed from 8004scan and finalized registry reads</small></section> : <section className="discovery-hero"><SectionHeading
         headingLevel={1}
         eyebrow="BNB Chain agents"
         title="Find the agent. Get it done."

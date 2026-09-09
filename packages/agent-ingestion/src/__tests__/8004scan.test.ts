@@ -35,6 +35,16 @@ const summary = {
 } as const;
 
 describe("reviewed 8004scan contract boundary", () => {
+  it("accepts a full 100-profile page while preserving each profile's safety budget", async () => {
+    const items = Array.from({ length: 100 }, (_, index) => ({ ...summary, id: `summary-${index}`, extraPublicFacts: Array.from({ length: 30 }, (_, fact) => `fact-${fact}`) }));
+    const client = new EightHundredFourScanHttpClient({ minRequestIntervalMs: 0, maxRetries: 0,
+      fetch: async () => Response.json({ items, total: 310000, limit: 100, offset: 0 }) });
+    await expect(client.listCandidates({ limit: 100 })).resolves.toMatchObject({ total: 310000, nextOffset: 100 });
+    const unsafe = new EightHundredFourScanHttpClient({ minRequestIntervalMs: 0, maxRetries: 0,
+      fetch: async () => Response.json({ items: [...items.slice(0, 99), { ...summary, access_token: "not-public" }], total: 100, limit: 100, offset: 0 }) });
+    await expect(unsafe.listCandidates({ limit: 100 })).rejects.toMatchObject({ code: "SCAN_CONTRACT_INVALID" });
+  });
+
   it("preserves network and bounded sorted-page selection", async () => {
     const fetcher=vi.fn<typeof fetch>(async input=>{
       const url=new URL(String(input));
@@ -52,6 +62,18 @@ describe("reviewed 8004scan contract boundary", () => {
     expect(mapped.sourceReference).toBe(`agent:97:${address}:900719925474099312345`);
     expect(mapped.metadata).not.toHaveProperty("owner_address");
     expect(mapped.services).toEqual([{ kind: "a2a", url: "https://agent.example/a2a", protocolVersion: "1" }]);
+  });
+
+  it("allows explicit inactive-inclusive discovery without changing the default", async () => {
+    const urls: URL[] = [];
+    const client = new EightHundredFourScanHttpClient({ minRequestIntervalMs: 0, maxRetries: 0,
+      fetch: async input => { urls.push(new URL(String(input))); return page(summary); } });
+    await client.listCandidates({ chainId: 56, isActive: "any" });
+    await client.listCandidates({ chainId: 56 });
+    expect(urls[0]!.searchParams.get("is_active")).toBe("any");
+    expect(urls[1]!.searchParams.has("is_active")).toBe(false);
+    await expect(client.listCandidates({ isActive: "all" as "any" })).rejects.toMatchObject({ code: "SCAN_CONFIG_INVALID" });
+    expect(urls).toHaveLength(2);
   });
 
   it("does not invent service versions or capability schemas from incomplete summaries", () => {

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { mainnetSellerProfile } from "./mainnet-seller-catalog";
 import {
   canonicalSha256Hex,
   erc8004IdentityKey,
@@ -12,10 +13,12 @@ import {
 } from "@bnbera/domain";
 import {
   CommerceError,
+  reserveReferenceCapacity,
   erc8183ProviderBindingSchema,
   referenceProviderSecretReferenceSchema,
   type Erc8183OperationQueryPool,
   type Erc8183ProviderBinding,
+  type ExternalSellerQuote,
   type EnabledErc8183DeploymentPin
 } from "@bnbera/agent-commerce";
 export {
@@ -117,13 +120,16 @@ export type CommerceProviderReadiness = {
   readonly providerAddress: string;
   readonly endpoint: string;
   /** A reference only; the resolved secret never leaves the resolver. */
-  readonly authoritySecretReference: string;
+  readonly authoritySecretReference?: string;
+  readonly verificationMode?: "external-signed-offer";
   readonly observedAt: string;
 };
 
 export interface CommerceProviderReadinessResolver {
   /** Resolve the one configured provider, or reject before any buyer send. */
   resolve(input: CommerceProviderReadinessInput): Promise<CommerceProviderReadiness>;
+  negotiate?(input: CommerceProviderReadinessInput, task: string): Promise<ExternalSellerQuote>;
+  verifySavedOffer?(input: CommerceProviderReadinessInput, quote: ExternalSellerQuote): Promise<void>;
 }
 
 export type ProviderSignerAddressResolver = (secretReference: string) => Promise<string>;
@@ -204,6 +210,8 @@ const listingSelect = `
       AND p.url = service.url
       AND p.validation_status = 'healthy'
       AND p.observed_at >= now() - interval '2 minutes'
+      AND NOT EXISTS (SELECT 1 FROM agent_service_probe_results newer
+        WHERE newer.identity_id=p.identity_id AND newer.kind=p.kind AND newer.url=p.url AND newer.observed_at>p.observed_at)
     ORDER BY p.observed_at DESC, p.id DESC
     LIMIT 1
   ) probe ON TRUE
@@ -300,6 +308,10 @@ export function assertCommerceProviderReadiness(input: CommerceProviderReadiness
   if (erc8004IdentityKey(result.identity) !== erc8004IdentityKey(input.identity)) throw readinessFailure("ONCHAIN_MISMATCH", "The provider readiness identity changed during resolution.", "reload_identity");
   if (normalizedAddress(result.providerAddress, "resolved provider address") !== normalizedAddress(input.providerAddress, "provider address")) throw readinessFailure("UNAUTHORIZED_ACTOR", "The provider readiness actor does not match the published listing.", "reload_identity");
   if (normalizedHttpsEndpoint(result.endpoint, "resolved provider card") !== normalizedHttpsEndpoint(input.service.url, "provider service")) throw readinessFailure("ONCHAIN_MISMATCH", "The provider readiness card URL does not match the published agent card.", "reload_listing");
+  if (result.verificationMode === "external-signed-offer") {
+    if (input.chainId !== 56 || result.authoritySecretReference !== undefined || input.authorityStatus !== "none") throw readinessFailure("COMMERCE_DISABLED", "External seller readiness must not introduce delegated signer authority.", "reload_listing");
+    return result;
+  }
   try {
     referenceProviderSecretReferenceSchema.parse(result.authoritySecretReference);
   } catch (cause) {
@@ -539,6 +551,7 @@ type ReservationParent = {
   readonly status: "draft" | "negotiating" | "funded" | "accepted" | "submitted" | "completed" | "rejected" | "disputed" | "settled" | "cancelled";
   readonly priceAtomic: string;
   readonly task: string;
+  readonly estimatedCompletionSeconds?: number;
   readonly taskInputDigest: string;
   readonly fundingTransactionHash: string | null;
   readonly fulfillmentTransactionHash: string | null;
@@ -564,7 +577,7 @@ function reservationParent(row: ReservationRow, quote: CommerceQuoteSnapshot, li
   if (!["draft", "negotiating", "funded", "accepted", "submitted", "completed", "rejected", "disputed", "settled", "cancelled"].includes(status)) {
     throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted reservation has an unknown status.", nextAction: "manual_review" });
   }
-  if (quote.identity.chainId !== listing.identity.chainId || quote.agentVersionId !== listing.binding.agentVersionId || quote.agentVersion !== listing.binding.agentVersion || quote.providerAddress.toLowerCase() !== listing.providerAddress.toLowerCase() || quote.priceAtomic !== listing.price.priceAtomic) {
+  if (quote.identity.chainId !== listing.identity.chainId || quote.agentVersionId !== listing.binding.agentVersionId || quote.agentVersion !== listing.binding.agentVersion || quote.providerAddress.toLowerCase() !== listing.providerAddress.toLowerCase() || (!quote.externalSeller && quote.priceAtomic !== listing.price.priceAtomic)) {
     throw new CommerceError({ code: "STALE_JOB", message: "The quote no longer matches the current published listing.", nextAction: "reload_quote" });
   }
   return {
@@ -573,6 +586,7 @@ function reservationParent(row: ReservationRow, quote: CommerceQuoteSnapshot, li
     status,
     priceAtomic: quote.priceAtomic,
     task: quote.task,
+    ...(quote.externalSeller ? { estimatedCompletionSeconds: Number(JSON.parse(quote.externalSeller.signedOffer).estimatedCompletionSeconds) } : {}),
     taskInputDigest: quote.taskDigest,
     fundingTransactionHash: row.funding_transaction_hash,
     fulfillmentTransactionHash: row.fulfillment_transaction_hash,
@@ -595,7 +609,7 @@ function reservationParent(row: ReservationRow, quote: CommerceQuoteSnapshot, li
       runtimeStatus: "live",
       authorityStatus: listing.readiness.authorityStatus,
       version: { id: listing.binding.agentVersionId, number: listing.binding.agentVersion },
-      readiness: listing.readiness
+      readiness: { ...listing.readiness, priceAtomic: quote.priceAtomic }
     }
   };
 }
@@ -677,7 +691,7 @@ export class PostgresCommerceReservationStore {
       quote.agentVersionId !== listing.binding.agentVersionId ||
       quote.agentVersion !== listing.binding.agentVersion ||
       quote.providerAddress.toLowerCase() !== listing.providerAddress.toLowerCase() ||
-      quote.priceAtomic !== listing.price.priceAtomic ||
+      (!quote.externalSeller && quote.priceAtomic !== listing.price.priceAtomic) ||
       quote.chainId !== this.pin.chainId ||
       quote.commerceContract.toLowerCase() !== this.pin.commerceContract.toLowerCase() ||
       quote.paymentToken.toLowerCase() !== this.pin.paymentToken.toLowerCase() ||
@@ -691,11 +705,28 @@ export class PostgresCommerceReservationStore {
     const parsed = commerceQuoteRequestSchema.parse({ agentIdentifier: input.agentIdentifier, task: input.task });
     const listingRow = await this.listingByIdentifier(parsed.agentIdentifier);
     const listing = rowToListing(listingRow, this.pin);
+    if (listing.identity.chainId === 97 && listing.identity.agentId === process.env.T5_REFERENCE_PROVIDER_AGENT_ID) {
+      if(process.env.T5_REFERENCE_PROVIDER_ADMISSION_ENABLED!=="true")throw new CommerceError({code:"COMMERCE_DISABLED",message:"New reference tasks are paused until an operator authorizes a bounded provider run. Existing jobs can still be resumed.",nextAction:"view_existing_hires"});
+      const { parseReferenceBuyerTask } = await import("@bnbera/agent-commerce");
+      try {
+        const task = parseReferenceBuyerTask(parsed.task);
+        const now = Math.floor(Date.now() / 1000);
+        if (task.observedAtUnix > now || task.observedAtUnix < now - 3600) throw new Error("stale");
+      } catch {
+        throw new CommerceError({ code: "INVALID_QUOTE", message: "Supply valid collateral, nonzero debt and liquidation threshold values observed within the last hour.", nextAction: "correct_reference_task" });
+      }
+    }
     await this.assertProviderReadiness(listing);
+    const externalOffer = listing.identity.chainId === 56 && this.providerReadinessResolver?.negotiate
+      ? await this.providerReadinessResolver.negotiate(listing.readiness, parsed.task) : undefined;
+    if (listing.identity.chainId === 56 && externalOffer === undefined) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "Mainnet external hiring requires a fresh provider-signed offer.", nextAction: "refresh_seller_offer" });
+    if (externalOffer && externalOffer.providerAddress.toLowerCase() !== listing.providerAddress.toLowerCase()) throw new CommerceError({ code: "STALE_JOB", message: "The signed seller provider changed; refresh the listing before proceeding.", nextAction: "reload_listing" });
+    const profile = mainnetSellerProfile(listing.identity);
     const nowUnix = Math.floor(Date.now() / 1_000);
     const issuedAt = new Date(nowUnix * 1_000);
-    const expiresAt = new Date((nowUnix + this.quoteLifetimeSeconds) * 1_000);
-    const taskDigest = digestTask(parsed.task);
+    const expiresAt = new Date((externalOffer?.expiresAtUnix ?? nowUnix + this.quoteLifetimeSeconds) * 1_000);
+    const contractTask = externalOffer?.signedDescription ?? parsed.task;
+    const taskDigest = digestTask(contractTask);
     const snapshotWithoutId: Omit<CommerceQuoteSnapshot, "quoteId"> = {
       schemaVersion: "bnbera.erc8183-quote/v1",
       agentIdentifier: parsed.agentIdentifier,
@@ -710,9 +741,10 @@ export class PostgresCommerceReservationStore {
       paymentToken: this.pin.paymentToken,
       paymentDecimals: this.pin.paymentDecimals,
       tokenSymbol: listing.price.tokenSymbol,
-      priceAtomic: listing.price.priceAtomic,
-      task: parsed.task,
+      priceAtomic: externalOffer?.priceAtomic ?? listing.price.priceAtomic,
+      task: contractTask,
       taskDigest,
+      ...(externalOffer ? { externalSeller: { protocol: "apex-erc8183-v1" as const, requestedTask: parsed.task, signedOffer: JSON.stringify(externalOffer), executionStatus: profile?.historicalJobId ? "historical_result_verified" as const : "protocol_ready" as const, ...(profile?.historicalJobId ? { historicalJobId: profile.historicalJobId } : {}), disputeWindowSeconds: 604800 as const } } : {}),
       issuedAt: issuedAt.toISOString(),
       expiresAt: expiresAt.toISOString(),
       status: "draft"
@@ -725,7 +757,7 @@ export class PostgresCommerceReservationStore {
       await client.query("BEGIN");
       // Serialize only the same buyer/listing/task reservation. This keeps a
       // double click from creating two unpaid draft rows without a new table.
-      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [canonicalSha256Hex({ buyerUserId: input.buyerUserId, agentId: listingRow.agent_id, taskDigest })]);
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [canonicalSha256Hex({ buyerUserId: input.buyerUserId, agentId: listingRow.agent_id, taskDigest: digestTask(parsed.task) })]);
       const existing = await client.query<ReservationRow>(`
         SELECT id, erc8183_job_id, buyer_user_id, provider_agent_id, quote, price,
           task_input_digest, status, funding_transaction_hash,
@@ -733,12 +765,12 @@ export class PostgresCommerceReservationStore {
         FROM commerce_jobs
         WHERE buyer_user_id = $1
           AND provider_agent_id = $2
-          AND task_input_digest = $3
+          AND (task_input_digest = $3 OR (quote->'externalSeller'->>'requestedTask' = $4 AND quote->>'agentVersionId' = $5))
           AND status IN ('draft', 'negotiating')
         ORDER BY "createdAt" DESC, id DESC
         LIMIT 1
         FOR UPDATE
-      `, [input.buyerUserId, listingRow.agent_id, taskDigest]);
+      `, [input.buyerUserId, listingRow.agent_id, taskDigest, parsed.task, listing.binding.agentVersionId]);
       const existingRow = existing.rows[0];
       if (existingRow !== undefined) {
         const existingQuote = parseReservationRow(existingRow);
@@ -746,6 +778,11 @@ export class PostgresCommerceReservationStore {
         await this.assertProviderReadiness(current);
         try {
           this.assertQuoteStillCurrent(existingQuote, current, nowUnix);
+          if (existingQuote.externalSeller) {
+            const { externalSellerQuoteSchema } = await import("@bnbera/agent-commerce");
+            if (!this.providerReadinessResolver?.verifySavedOffer) throw new CommerceError({ code: "INVALID_QUOTE", message: "The saved seller offer cannot be verified." });
+            await this.providerReadinessResolver.verifySavedOffer({ ...current.readiness, priceAtomic: existingQuote.priceAtomic }, externalSellerQuoteSchema.parse(JSON.parse(existingQuote.externalSeller.signedOffer)));
+          }
           await client.query("COMMIT");
           return existingQuote;
         } catch (cause) {
@@ -761,6 +798,7 @@ export class PostgresCommerceReservationStore {
           task_input_digest, status, "createdAt", "updatedAt"
         ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, 'draft', $8, $8)
       `, [commerceJobId, `draft:${commerceJobId}`, input.buyerUserId, listingRow.agent_id, JSON.stringify(snapshot), snapshot.priceAtomic, taskDigest, issuedAt]);
+      if(listing.identity.chainId===97 && listing.identity.agentId==="2293") await reserveReferenceCapacity(client,snapshot);
       await client.query("COMMIT");
       return snapshot;
     } catch (cause) {
@@ -820,6 +858,12 @@ export class PostgresCommerceReservationStore {
     const listingRow = await this.listingByAgentId(row.provider_agent_id);
     const listing = rowToListing(listingRow, this.pin);
     await this.assertProviderReadiness(listing);
+    if (quote.externalSeller) {
+      const { externalSellerQuoteSchema } = await import("@bnbera/agent-commerce");
+      const offer = externalSellerQuoteSchema.parse(JSON.parse(quote.externalSeller.signedOffer));
+      if (!this.providerReadinessResolver?.verifySavedOffer || quote.task !== offer.signedDescription || quote.taskDigest !== offer.descriptionDigest || quote.priceAtomic !== offer.priceAtomic || quote.externalSeller.requestedTask !== offer.requestedTask || Date.parse(quote.expiresAt) !== offer.expiresAtUnix * 1000) throw new CommerceError({ code: "INVALID_QUOTE", message: "The immutable external offer does not match this reservation.", nextAction: "reload_quote" });
+      await this.providerReadinessResolver.verifySavedOffer(listing.readiness, offer);
+    } else if (this.pin.chainId === 56) throw new CommerceError({ code: "INVALID_QUOTE", message: "Mainnet reservations require an immutable signed offer.", nextAction: "reload_quote" });
     this.assertQuoteStillCurrent(quote, listing, Math.floor(Date.now() / 1_000));
     if (input.chainId !== this.pin.chainId || input.commerceContract.toLowerCase() !== this.pin.commerceContract.toLowerCase() || input.paymentToken.toLowerCase() !== this.pin.paymentToken.toLowerCase() || input.paymentDecimals !== this.pin.paymentDecimals) {
       throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The requested commerce deployment does not match the standards-locked quote.", nextAction: "verify_standards_lock" });

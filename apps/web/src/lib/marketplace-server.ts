@@ -5,9 +5,11 @@
  * it out of the shared web contract: pg and the ingestion repository must
  * never be reachable from a client component or browser bundle.
  */
-import { AppError, loadRuntimeConfig, validateSemanticEmbeddingLock } from "@bnbera/config";
+import { AppError, loadRuntimeConfig, validateSemanticEmbeddingLock, mainnetBrowserCommerceEnabled } from "@bnbera/config";
+import { mainnetSellerProfile } from "./mainnet-seller-catalog";
+import { formatUnits } from "viem";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readCheckedInStandardsLock } from "./checked-in-lock";
 import pg from "pg";
 import {
   IngestionMarketplaceSource,
@@ -25,13 +27,14 @@ import {
 } from "@bnbera/agent-ingestion";
 import {
   agentCategorySchema,
+  canonicalSha256Hex,
   erc8004IdentityKey,
   erc8004IdentitySchema,
   evmAddressSchema,
   type AgentCategory,
   type Erc8004Identity
 } from "@bnbera/domain";
-import { PostgresErc8183MarketplaceProjection } from "@bnbera/agent-commerce";
+import { PostgresErc8183MarketplaceProjection, readReferenceCapacity } from "@bnbera/agent-commerce";
 import {
   marketplaceActivationOfferSchema,
   marketplaceErc8183ActivationBindingSchema,
@@ -49,7 +52,7 @@ import {
   type MarketplaceListingMetadata,
   type MarketplaceSearchRequest
 } from "@bnbera/marketplace";
-import { directoryObservationType, directorySnapshotSchema, directorySlug, publicHttpsUrl } from "@bnbera/agent-ingestion/directory";
+import { directoryObservationType, directorySnapshotSchema, directorySlug, publicHttpsUrl, serviceVerificationObservationType, serviceVerificationSchema, serviceVerificationState } from "@bnbera/agent-ingestion/directory";
 import {
   configuredMarketplaceDataMode,
   mapMarketplaceDetailResponse,
@@ -69,6 +72,7 @@ import {
   readMarketplaceAgentApi as readLocalMarketplaceAgentApi,
   readMarketplaceApi as readLocalMarketplaceApi,
   type MarketplaceAgentReadResponse,
+  type MarketplaceAgentReadModel,
   type MarketplaceSearchInput
 } from "./marketplace-contract";
 import { z } from "zod";
@@ -1003,8 +1007,7 @@ function getPool(connectionString: string, ssl: boolean): DatabasePool {
 }
 
 async function readSemanticEmbeddingStandardsLock(): Promise<unknown> {
-  const content = await readFile(new URL("../../../../config/standards.lock.json", import.meta.url), "utf8");
-  return JSON.parse(content) as unknown;
+  return readCheckedInStandardsLock();
 }
 
 /** Test/process shutdown hook; production route handlers keep the pool cached. */
@@ -1078,17 +1081,34 @@ type LiveReadContext = {
 
 let directoryCache: {key:string; expiresAt:number; promise:ReturnType<typeof loadRegisteredDirectory>} | undefined;
 
+async function withReferenceCapacity(agent: MarketplaceAgentReadModel): Promise<MarketplaceAgentReadModel> {
+  if(agent.identity.chainId!==97||agent.identity.agentId!=="2293"||agent.identity.identityRegistry.toLowerCase()!=="0x8004a818bfb912233c491871b3d84c89a494bd9e")return agent;
+  const runtime=loadRuntimeConfig(process.env);
+  const capacity=runtime.databaseUrl?await readReferenceCapacity(getPool(runtime.databaseUrl,runtime.databaseSsl)).catch(()=>null):null;
+  const enabled=agent.activation.enabled&&capacity?.ready===true&&process.env.T5_REFERENCE_PROVIDER_ADMISSION_ENABLED==="true";
+  const reason=!agent.activation.enabled?"PUBLISHED_OFFER_UNAVAILABLE":capacity?.reason??"WORKER_UNAVAILABLE";
+  return {...agent,activation:{...agent.activation,enabled,availability:enabled?"available":"unavailable",
+    title:enabled?`Hire on testnet · ${capacity.remaining} task slots left`:"Testnet reference · admission paused",
+    reason:enabled?`Bounded provider online. ${capacity.remaining} of 3 lifetime task reservations remain at exactly 0.001 test U each. Reservations are not recycled. The worker computes your supplied snapshot; you explicitly approve settlement after the protocol review window.`:
+      `New tasks cannot be admitted (${reason}). Existing jobs and results remain in My hires. Mainnet payments are disabled.`,
+    ...(capacity?{boundedCapacity:{remaining:capacity.remaining,admitted:capacity.admitted,submitted:capacity.submitted,completed:capacity.completed,checkedAt:capacity.checkedAt,reason:capacity.reason}}:{})}};
+}
+
+async function freshReferenceCapacity(directory: Awaited<ReturnType<typeof loadRegisteredDirectory>>) {
+  return {...directory,agents:await Promise.all(directory.agents.map(withReferenceCapacity))};
+}
+
 /** Coalesce concurrent page/API reads; do not run 100 commerce projections per visitor. */
 async function readRegisteredDirectory() {
   const runtime=loadRuntimeConfig(process.env);
   const key=connectionKey(runtime.databaseUrl??"",runtime.databaseSsl);
-  if(directoryCache?.key===key&&directoryCache.expiresAt>Date.now())return directoryCache.promise;
+  if(directoryCache?.key===key&&directoryCache.expiresAt>Date.now())return freshReferenceCapacity(await directoryCache.promise);
   const promise=loadRegisteredDirectory();
   directoryCache={key,expiresAt:Number.POSITIVE_INFINITY,promise};
   try {
     const result=await promise;
     if(directoryCache?.promise===promise)directoryCache.expiresAt=Date.now()+15_000;
-    return result;
+    return freshReferenceCapacity(result);
   }catch(error){if(directoryCache?.promise===promise)directoryCache=undefined;throw error;}
 }
 
@@ -1097,18 +1117,30 @@ async function loadRegisteredDirectory() {
   const runtime = loadRuntimeConfig(process.env);
   if (!runtime.databaseUrl) throw configurationError(new Error("Database not configured"));
   const pool = getPool(runtime.databaseUrl, runtime.databaseSsl);
+  const releaseLock = readCheckedInStandardsLock() as { networks?: Record<string, { erc8183?: { releaseEnabled?: boolean } }> };
+  const mainnetRelease = mainnetBrowserCommerceEnabled() && releaseLock.networks?.["56"]?.erc8183?.releaseEnabled === true;
   const rows = await pool.query(`SELECT * FROM (
     SELECT DISTINCT ON (i.id) i.namespace, i.chain_id, i.identity_registry, i.agent_id, i.owner_address, i.agent_wallet,
       i.observed_block, i.observed_block_hash, i.read_consistency, i."updatedAt" AS identity_observed_at,
       a.origin_type, a.claim_status, a.verification_status, a.runtime_status, a.authority_status, a.listing_status,
-      eo.normalized_payload, eo.payload_digest, eo.source_timestamp
+      (SELECT av.pricing_manifest FROM agent_versions av WHERE av.id=a.current_version_id) AS seller_pricing,
+      (SELECT av.public_metadata->>'mainnetSellerReviewDigest' FROM agent_versions av WHERE av.id=a.current_version_id) AS seller_review,
+      (SELECT jsonb_build_object('observedAt',p.observed_at,'status',p.validation_status,'url',p.url) FROM agent_service_probe_results p WHERE p.identity_id=i.id AND p.kind='a2a' ORDER BY p.observed_at DESC LIMIT 1) AS seller_probe,
+      eo.normalized_payload, eo.payload_digest, eo.source_timestamp,eo.provider AS snapshot_provider
     FROM agent_enrichment_observations eo JOIN agent_versions v ON v.id=eo.agent_version_id
     JOIN agents a ON a.id=v.agent_id JOIN erc8004_identities i ON i.id=a.identity_id
-    WHERE eo.observation_type=$1 AND eo.provider='8004scan' AND eo.validation_state='valid'
+    WHERE eo.observation_type=$1 AND eo.provider IN ('8004scan','bnbera-registry-review') AND eo.validation_state='valid'
+      AND EXISTS (SELECT 1 FROM agent_discovery_sources membership WHERE membership.identity_id=i.id
+        AND membership.normalized_ingestion_version='bnbera-directory-v1')
       AND i.chain_id IN (56,97) AND i.read_consistency='finalized'
       AND a.listing_status NOT IN ('delisted','suspended') AND a.verification_status <> 'rejected'
     ORDER BY i.id, eo.source_timestamp DESC, eo."createdAt" DESC
   ) directory ORDER BY chain_id, agent_id::numeric LIMIT 100`, [directoryObservationType]);
+  const checks = (await pool.query(`select distinct on(i.id) i.namespace,i.chain_id,i.identity_registry,i.agent_id,eo.normalized_payload
+    from agent_enrichment_observations eo join agent_versions v on v.id=eo.agent_version_id join agents a on a.id=v.agent_id join erc8004_identities i on i.id=a.identity_id
+    where eo.observation_type=$1 and eo.provider='bnbera-protocol-verifier' and eo.validation_state='valid'
+    order by i.id,eo.source_timestamp desc,eo."createdAt" desc`,[serviceVerificationObservationType])).rows;
+  const checkMap = new Map(checks.map(row=>[`${row.namespace}:${row.chain_id}:${row.identity_registry}:${row.agent_id}`,row.normalized_payload]));
   const commerce = new PostgresErc8183MarketplaceProjection(pool);
   const agents: z.infer<typeof marketplaceAgentReadModelSchema>[] = [];
   for (let start=0;start<rows.rows.length;start+=8) {
@@ -1116,8 +1148,15 @@ async function loadRegisteredDirectory() {
     const parsed = directorySnapshotSchema.safeParse(row.normalized_payload);
     if (!parsed.success) return;
     const snapshot = parsed.data;
+    const registryOnly = row.snapshot_provider === "bnbera-registry-review";
+    const profileSource = registryOnly ? "Finalized ERC-8004 registry" : "8004scan";
     const identityKey = erc8004IdentityKey(snapshot.identity);
     if (identityKey !== `${row.namespace}:${row.chain_id}:${row.identity_registry}:${row.agent_id}`) return;
+    const observation=checkMap.get(identityKey);
+    snapshot.serviceVerifications=Array.isArray(observation?.services) ? observation.services.flatMap((raw:unknown)=>{
+      const check=serviceVerificationSchema.safeParse(raw);
+      return check.success && snapshot.services.some(s=>s.url===check.data.url&&s.name===check.data.name) ? [check.data] : [];
+    }) : [];
     const metrics = unknownMetrics();
     try {
       const read = await commerce.readForIdentity({identity:snapshot.identity, limit:100});
@@ -1128,7 +1167,15 @@ async function loadRegisteredDirectory() {
     } catch { /* Keep the explicit unavailable state if commerce reads fail. */ }
     const age = Date.now()-Date.parse(snapshot.fetchedAt);
     const freshness = age < 24*60*60*1000 ? "fresh" : "stale";
-    const reason = "Registered agent. Hiring requires a separately verified callable service and supported payment offer.";
+    const profile = mainnetSellerProfile(snapshot.identity);
+    const sellerAmount = typeof row.seller_pricing?.amountAtomic === "string" && /^[1-9][0-9]*$/u.test(row.seller_pricing.amountAtomic) ? row.seller_pricing.amountAtomic as string : null;
+    const sellerBound = !!profile && row.seller_review === canonicalSha256Hex(profile) && row.agent_wallet?.toLowerCase() === profile.wallet.toLowerCase() &&
+      snapshot.services.some(service => service.url === profile.card && service.name.toLowerCase() === "a2a") && row.listing_status === "published" && row.verification_status === "verified" && row.runtime_status === "live" &&
+      row.seller_pricing?.tokenAddress?.toLowerCase() === "0xce24439f2d9c6a2289f741120fe202248b666666" && row.seller_pricing?.decimals === 18 && sellerAmount !== null;
+    const sellerFresh = sellerBound && row.seller_probe?.url === profile?.card && row.seller_probe?.status === "healthy" &&
+      Date.now() - Date.parse(row.seller_probe.observedAt) >= 0 && Date.now() - Date.parse(row.seller_probe.observedAt) <= 120000;
+    const sellerReady = mainnetRelease && sellerFresh;
+    const reason = sellerBound ? `${profile?.historicalJobId ? "Useful historical result verified; new delivery is not guaranteed." : "Protocol-ready seller; useful delivery history is unverified."} Fresh signed terms and explicit buyer risk acceptance are required. Seven-day permissionless settlement; no trading authority is granted.` : "Registered agent. Hiring requires a separately verified callable service and supported payment offer.";
     const uri=snapshot.registration.uri;
     const publicUri=uri?.startsWith("data:") ? "Inline on-chain registration (data URI); content digest recorded" : uri?.startsWith("ipfs:") && !/[?#@]/u.test(uri) ? uri : publicHttpsUrl(uri);
     const snapshotForBrowser = {...snapshot, renderedAt:new Date().toISOString(), registration:{...snapshot.registration,uri:publicUri}};
@@ -1138,22 +1185,40 @@ async function loadRegisteredDirectory() {
       identity:snapshot.identity, ownerAddress:row.owner_address,agentWallet:row.agent_wallet,
       stateAxes:{originType:row.origin_type,claimStatus:row.claim_status,verificationStatus:row.verification_status,runtimeStatus:row.runtime_status,authorityStatus:row.authority_status,listingStatus:row.listing_status},
       services:[],capabilityManifest:{schemaVersion:"bnbera-directory-v1",capabilities:[]},
-      eligibility:{eligible:false,score:null,components:null,reasons:[{code:"LISTING_NOT_PUBLISHED",message:reason}]},
-      freshness:{status:freshness,label:`Metadata ${freshness}`,observedAt:snapshot.fetchedAt,blockNumber:Number(row.observed_block),source:"8004scan + finalized ERC-8004 registry"},
-      pricing:{availability:"unknown",activationMethod:"none",label:"Contact agent",currency:null,amountAtomic:null,explanation:"No executable price quote has been verified by BNBEra."},
+      eligibility:{eligible:sellerReady,score:null,components:null,reasons:sellerReady?[]:[{code:sellerBound?"ENDPOINT_STALE":"ENDPOINT_UNVERIFIED",message:reason}]},
+      freshness:{status:freshness,label:`Metadata ${freshness}`,observedAt:snapshot.fetchedAt,blockNumber:Number(row.observed_block),source:registryOnly?profileSource:"8004scan + finalized ERC-8004 registry"},
+      pricing:sellerBound ? {availability:"available",activationMethod:"erc8183",label:`Last quoted ${formatUnits(BigInt(sellerAmount!),18)} U`,currency:"U",amountAtomic:sellerAmount,explanation:"Observed provider-signed price, not a binding offer. Request a fresh quote for your exact task; the amount can change."} : {availability:"unknown",activationMethod:"none",label:"Contact agent",currency:null,amountAtomic:null,explanation:"No executable price quote has been verified by BNBEra."},
       authority:{status:row.authority_status,summary:"Registration does not grant BNBEra execution authority.",executionWallet:null,provider:"unknown",expiry:null,spendCap:null},
-      currentData:metrics.currentData,health:{endpointStatus:"unknown",observedAt:null,latencyMs:null,source:null},metrics,serviceEvidence:[],
+      currentData:metrics.currentData,health:{endpointStatus:sellerFresh?"healthy":"unknown",observedAt:sellerBound?row.seller_probe?.observedAt??null:null,latencyMs:null,source:sellerBound?"Reviewed A2A card probe; delivery not guaranteed":null},metrics,serviceEvidence:[],
       evidence:{status:"unavailable",summary:"Registry identity was checked at a finalized block. No new Greenfield publication is claimed.",ipfsUri:null,greenfieldUri:null,lastVerifiedAt:null},
-      activation:{enabled:false,availability:"unavailable",method:"none",title:"Explore registered services",reason,nextAction:"inspect_services"},
-      scoreExplanation:{score:null,components:null,factors:["The displayed score is attributed to 8004scan; it is separate from BNBEra hire eligibility."]},
-      dataProvenance:{mode:"live",label:"Registered directory",details:"8004scan public profile, resolved registration metadata and independently finalized registry identity. Service execution remains unverified.",sourceKind:"ingestion",sources:[{source:"8004scan",sourceReference:snapshot.sourceUrl,firstObservedAt:snapshot.fetchedAt,lastObservedAt:snapshot.fetchedAt,rawResponseDigest:row.payload_digest,normalizedIngestionVersion:"bnbera-directory-v1"}],identityRead:{observedBlock:Number(row.observed_block),observedBlockHash:row.observed_block_hash,readConsistency:"finalized",observedAt:new Date(row.identity_observed_at).toISOString()},refreshedAt:snapshot.fetchedAt},
+      activation:{chainId:snapshot.identity.chainId,enabled:sellerReady,availability:sellerReady?"available":"unavailable",method:sellerBound?"erc8183":"none",title:sellerReady?"Request a signed mainnet offer":sellerBound?"Mainnet offer temporarily unavailable":"Explore registered services",reason,nextAction:sellerReady?"review_signed_offer":sellerBound?"refresh_service_status":"inspect_services"},
+      scoreExplanation:{score:null,components:null,factors:[registryOnly?"No vendor score is available from this primary-source registration.":"The displayed score is attributed to 8004scan; it is separate from BNBEra hire eligibility."]},
+      dataProvenance:{mode:"live",label:"Registered directory",details:`${profileSource}, resolved registration metadata and independently finalized registry identity. Current delivery is not guaranteed.`,sourceKind:"ingestion",sources:[{source:registryOnly?"manual":"8004scan",sourceReference:snapshot.sourceUrl,firstObservedAt:snapshot.fetchedAt,lastObservedAt:snapshot.fetchedAt,rawResponseDigest:row.payload_digest,normalizedIngestionVersion:"bnbera-directory-v1"}],identityRead:{observedBlock:Number(row.observed_block),observedBlockHash:row.observed_block_hash,readConsistency:"finalized",observedAt:new Date(row.identity_observed_at).toISOString()},refreshedAt:snapshot.fetchedAt},
       directory:snapshotForBrowser
     }));
     }));
   }
   // The directory snapshot digest is not a raw vendor-response digest.
   for (const agent of agents) for (const source of agent.dataProvenance.sources) source.rawResponseDigest = null;
-  const refreshedAt = agents.map(agent=>agent.directory!.fetchedAt).sort().at(-1) ?? null;
+  // A reference provider is read through the existing publication, capability,
+  // pricing and health gate. It never receives a synthetic vendor observation.
+  const referenceId=process.env.T5_REFERENCE_PROVIDER_AGENT_ID;
+  if(referenceId && /^[1-9][0-9]*$/u.test(referenceId)) {
+    try {
+    const {service}=await createLiveReadService();
+    const identifier=`eip155:97:${process.env.T5_REFERENCE_PROVIDER_IDENTITY_REGISTRY}:${referenceId}`;
+    const read=await service.readAgent(identifier);
+    if(read.agent) {
+      const mapped=mapMarketplaceDetailResponse(read.agent.agent,"live",new Date().toISOString());
+      const prior=agents.findIndex(agent=>agent.id===mapped.id);
+      if(prior>=0)agents.splice(prior,1);
+      // Display cap remains 100; retained external observations are not removed.
+      agents.unshift(mapped);
+      if(agents.length>100)agents.pop();
+    }
+    } catch { /* Optional reference-provider projection must not erase the public directory. */ }
+  }
+  const refreshedAt = agents.flatMap(agent=>agent.directory?.fetchedAt??[]).sort().at(-1) ?? null;
   const meta = {sourceStatus:agents.length?"healthy" as const:"empty" as const,sourceName:"postgres-registered-directory",sourceKind:"ingestion" as const,warning:null,refreshedAt,fixtureCount:0,retrievalMode:"deterministic" as const,semanticModelVersion:null};
   return {agents,meta};
 }
@@ -1162,7 +1227,7 @@ async function readRegisteredDirectorySearch(input: MarketplaceSearchInput) {
   const {agents,meta}=await readRegisteredDirectory();
   const sorted=sortAgents(agents.filter(agent=>selectionMatches(agent,input)),input);
   return webSearchResponseSchema.parse({contractVersion:marketplaceReadContractVersion,status:sorted.length?"ready":"empty",mode:"live",dataLabel:"Registered agents",notice:"A capped directory of real mainnet and testnet registrations. Service availability and hiring are evaluated separately.",agents:sorted.slice(0,input.limit),excluded:[],total:sorted.length,selection:querySelection(input),meta,error:null,
-    directoryStats:{registered:agents.length,mainnet:agents.filter(a=>a.identity.chainId===56).length,testnet:agents.filter(a=>a.identity.chainId===97).length,hireEligible:agents.filter(a=>a.activation.enabled).length,recentlyChecked:agents.filter(a=>a.directory?.cardCheck.status==="reachable"&&a.directory.cardCheck.observedAt&&Date.now()-Date.parse(a.directory.cardCheck.observedAt)<120000).length,cap:100}});
+    directoryStats:{registered:agents.length,mainnet:agents.filter(a=>a.identity.chainId===56).length,testnet:agents.filter(a=>a.identity.chainId===97).length,hireEligible:agents.filter(a=>a.activation.enabled).length,recentlyChecked:agents.filter(a=>a.directory?.serviceVerifications.some(s=>serviceVerificationState(s)==="verified")).length,cap:100}});
 }
 
 async function createLiveReadService(): Promise<LiveReadContext> {
@@ -1358,11 +1423,11 @@ export async function readMarketplaceAgentApi(
         ? result.meta.warning ?? "The PostgreSQL marketplace read model is degraded."
         : "The connected PostgreSQL marketplace read model returned this agent.",
       meta: mappedMeta,
-      agent: mapMarketplaceDetailResponse(
+      agent: await withReferenceCapacity(mapMarketplaceDetailResponse(
         { ...result.agent.agent, evidence },
         effectiveMode === "empty" ? "live" : effectiveMode,
         result.meta.refreshedAt
-      ),
+      )),
       error: null
     };
   } catch (error) {

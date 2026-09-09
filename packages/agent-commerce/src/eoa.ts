@@ -2,7 +2,7 @@ import { encodeFunctionData, type Address, type Hex } from "viem";
 import { CommerceError } from "./errors.js";
 import { normalizeAddress, parseAtomic } from "./validation.js";
 
-/** The only deployment used by the WalletConnect buyer canary. */
+/** Default reference deployment; mainnet encoding never grants send authority. */
 export const ERC8183_EOA_CHAIN_ID = 97 as const;
 export const ERC8183_EOA_CONTRACTS = {
   commerceContract: "0xa206c0517b6371c6638cd9e4a42cc9f02a33b0de" as Address,
@@ -10,7 +10,16 @@ export const ERC8183_EOA_CONTRACTS = {
   policyContract: "0xd6a4217588f6b1f5657a92a3e94e6422ad771cea" as Address,
   paymentToken: "0xc70b8741b8b07a6d61e54fd4b20f22fa648e5565" as Address
 } as const;
+/** Official APEX deployment, reviewed against the pinned source and runtime. */
+export const ERC8183_EOA_MAINNET_CONTRACTS = {
+  commerceContract: "0xEa4DAa3100A767e86FDed867729ae7446476EBA6" as Address,
+  routerContract: "0x51895229E12F9876011789B04f8698af06cCD6DA" as Address,
+  policyContract: "0x9C01845705b3078Aa2e8cfF7520a6376FD766dE5" as Address,
+  paymentToken: "0xcE24439F2D9C6a2289F741120FE202248B666666" as Address
+} as const;
 export const ERC8183_EOA_MAX_BUDGET_ATOMIC = "10000000000000000" as const;
+/** uint256's all-ones value means unlimited ERC-20 approval, never an offer. */
+export const ERC8183_MAINNET_MAX_EXACT_AMOUNT = ((1n << 256n) - 2n).toString();
 
 export const erc8183EoaSteps = [
   "create",
@@ -101,9 +110,10 @@ function decimal(value: string | undefined, label: string): bigint {
   return parseAtomic(value, label);
 }
 
-function budget(value: string | undefined, label: string): bigint {
+function budget(value: string | undefined, label: string, chainId: number): bigint {
   const amount = decimal(value, label);
-  if (amount < 1n || amount > BigInt(ERC8183_EOA_MAX_BUDGET_ATOMIC)) throw new CommerceError({ code: "INVALID_AMOUNT", message: `${label} is outside the standards-locked EOA budget bounds.`, nextAction: "reload_quote" });
+  const maximum = chainId === 56 ? ERC8183_MAINNET_MAX_EXACT_AMOUNT : ERC8183_EOA_MAX_BUDGET_ATOMIC;
+  if (amount < 1n || amount > BigInt(maximum)) throw new CommerceError({ code: "INVALID_AMOUNT", message: `${label} must be an exact positive uint256 amount, never unlimited approval; testnet operator limits remain separate.`, nextAction: "reload_quote" });
   return amount;
 }
 
@@ -112,7 +122,7 @@ function jobId(value: string | undefined): bigint {
   try { return BigInt(value); } catch (cause) { throw new CommerceError({ code: "INVALID_JOB", message: "The ERC-8183 job ID is outside the uint256 range.", cause }); }
 }
 
-function contracts(value: Erc8183EoaContracts): {
+function contracts(value: Erc8183EoaContracts, chainId: 56 | 97): {
   readonly commerce: Address;
   readonly router: Address;
   readonly policy: Address;
@@ -124,7 +134,7 @@ function contracts(value: Erc8183EoaContracts): {
     policy: normalizeAddress(value.policyContract, "policy contract") as Address,
     token: normalizeAddress(value.paymentToken, "payment token") as Address
   };
-  const expected = ERC8183_EOA_CONTRACTS;
+  const expected = chainId === 56 ? ERC8183_EOA_MAINNET_CONTRACTS : ERC8183_EOA_CONTRACTS;
   if (actual.commerce.toLowerCase() !== expected.commerceContract.toLowerCase() ||
       actual.router.toLowerCase() !== expected.routerContract.toLowerCase() ||
       actual.policy.toLowerCase() !== expected.policyContract.toLowerCase() ||
@@ -138,16 +148,17 @@ function data(input: Parameters<typeof encodeFunctionData>[0]): Hex {
   return encodeFunctionData(input) as Hex;
 }
 
-/** Build one exact, bounded EOA transaction. No job ID is ever predicted. */
+/** Pure encoding only: the caller must authorize the chain and verify its live
+ * deployment before requesting a browser signature. No job ID is predicted. */
 export function buildErc8183EoaCall(input: Erc8183EoaCallInput): Erc8183EoaCall {
-  if (input.chainId !== ERC8183_EOA_CHAIN_ID) throw new CommerceError({ code: "INVALID_CHAIN", message: "WalletConnect EOA commerce is pinned to BSC testnet (97)." });
-  const a = contracts(input.contracts);
+  if (input.chainId !== 56 && input.chainId !== ERC8183_EOA_CHAIN_ID) throw new CommerceError({ code: "INVALID_CHAIN", message: "Browser EOA commerce only supports reviewed BSC chains 56 and 97." });
+  const a = contracts(input.contracts, input.chainId);
   let to: Address;
   let calldata: Hex;
   switch (input.step) {
     case "create": {
       if (input.jobId !== undefined) fail("A create call cannot contain a predicted protocol job ID.");
-      if (input.budgetAtomic !== undefined) budget(input.budgetAtomic, "Job budget");
+      if (input.budgetAtomic !== undefined) budget(input.budgetAtomic, "Job budget", input.chainId);
       if (input.providerAddress === undefined || input.task === undefined || input.task.trim() === "") fail("The create call requires the persisted provider and task.");
       if (new TextEncoder().encode(input.task).byteLength > 4_096) throw new CommerceError({ code: "INVALID_JOB", message: "The ERC-8183 task exceeds 4096 UTF-8 bytes." });
       if (input.expiredAtUnix === undefined || !Number.isSafeInteger(input.expiredAtUnix) || input.expiredAtUnix <= 0) fail("The create call requires a valid persisted expiry.");
@@ -167,15 +178,15 @@ export function buildErc8183EoaCall(input: Erc8183EoaCallInput): Erc8183EoaCall 
       break;
     case "set_budget":
       to = a.commerce;
-      calldata = data({ abi: COMMERCE_ABI, functionName: "setBudget", args: [jobId(input.jobId), budget(input.budgetAtomic, "Job budget"), "0x"] });
+      calldata = data({ abi: COMMERCE_ABI, functionName: "setBudget", args: [jobId(input.jobId), budget(input.budgetAtomic, "Job budget", input.chainId), "0x"] });
       break;
     case "approve":
       to = a.token;
-      calldata = data({ abi: ERC20_ABI, functionName: "approve", args: [a.commerce, budget(input.budgetAtomic, "Approval amount")] });
+      calldata = data({ abi: ERC20_ABI, functionName: "approve", args: [a.commerce, budget(input.budgetAtomic, "Approval amount", input.chainId)] });
       break;
     case "fund":
       to = a.commerce;
-      calldata = data({ abi: COMMERCE_ABI, functionName: "fund", args: [jobId(input.jobId), budget(input.budgetAtomic, "Funding amount"), "0x"] });
+      calldata = data({ abi: COMMERCE_ABI, functionName: "fund", args: [jobId(input.jobId), budget(input.budgetAtomic, "Funding amount", input.chainId), "0x"] });
       break;
     case "settle":
       to = a.router;

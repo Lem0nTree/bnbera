@@ -2,6 +2,8 @@
 
 Scope: existing commands at `31d112f` plus the T1 persistent operational layer. A one-shot run is still not a completed G1 acceptance.
 
+For the current `bnbera-ui-light` preview, protocol refresh and the bounded testnet reference commerce lifecycle, use [the protocol/commerce operations addendum](PROTOCOL-COMMERCE-REVIEW.md). Its three permanent task reservations, supervised worker/readiness and mainnet release limitations are authoritative for that preview; the retained older commands below do not grant additional transaction authority. Two reservations remain after completed acceptance job 1177. Check live capacity before use: admission automatically closes for a stale/unhealthy worker or exhausted allowance. Stop signing with `systemctl --user disable --now bnbera-reference-provider.service`; never reset allowance rows to restore capacity.
+
 ## Existing local commands
 
 From `/home/ubuntu/bnbera-w0-w1`, use Node 22 and pnpm 10.15.1. Reuse the existing Docker PostgreSQL/pgvector database; do not recreate its volume. The root `.env` is loaded by `run-with-repo-env.mjs`; never print its values.
@@ -244,3 +246,6 @@ Run focused package tests plus real DB/API/browser checks for changed behavior. 
 For public deployment, build/start an immutable artifact from the accepted SHA and use authorized HTTPS API or private DB networking; a remote Vercel process cannot reach this host's loopback DB. Keep server credentials out of browser bundles.
 
 Disable vendor discovery with `ERC8004SCAN_DISCOVERY_ENABLED=false`, direct events with `ERC8004_DIRECT_REGISTRY_SYNC_ENABLED=false`, and semantic operations with `MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED=false`. Disabling `ERC8004_INGESTION_ENABLED` stops the ingestion path. Stop the specific installed cron entries/worker processes; preserve the DB, cursors, versions and evidence. Expired health remains stale until a real successful check occurs. Roll back application artifacts, not retained history. Paid/Creator/Greenfield disable procedures are supplied with T4/T6/T8.
+<!-- Bounded provider continuation: operational source of truth is linked below. -->
+
+The chain-97 reference provider's three-slot lifetime allowance, exact gas caps, systemd service, readiness, recovery and disable commands are documented in [PROTOCOL-COMMERCE-REVIEW.md](PROTOCOL-COMMERCE-REVIEW.md#three-slot-supervised-allowance-continuation). Never recycle its persisted slots or run the legacy signer to bypass admission.

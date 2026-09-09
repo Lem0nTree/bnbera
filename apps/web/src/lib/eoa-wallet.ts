@@ -35,7 +35,8 @@ export function isEoaDispatchGenerationCurrent(
   startedGeneration: number,
   currentGeneration: number,
   snapshot: EoaWalletSnapshot,
-  actorAddress: string
+  actorAddress: string,
+  expectedChainId: 56 | 97 = EOA_BUYER_CHAIN_ID
 ): boolean {
-  return startedGeneration === currentGeneration && isEoaAuthorityCurrent(snapshot, { address: actorAddress, chainId: EOA_BUYER_CHAIN_ID });
+  return startedGeneration === currentGeneration && isEoaAuthorityCurrent(snapshot, { address: actorAddress, chainId: expectedChainId });
 }

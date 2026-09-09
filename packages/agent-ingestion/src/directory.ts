@@ -3,6 +3,23 @@ import { erc8004IdentitySchema } from "@bnbera/domain";
 
 /** Public, attributed directory evidence. This does not grant invocation eligibility. */
 export const directoryObservationType = "registered_directory_v1";
+export const serviceVerificationObservationType = "service_verification_v1";
+export const serviceVerificationSchema = z.object({
+  name: z.string().min(1).max(128), url: z.string().url(),
+  protocol: z.enum(["a2a", "mcp", "web", "api", "other"]),
+  status: z.enum(["verified", "reachable", "auth_required", "invalid", "unreachable", "advertised"]),
+  checkedAt: z.string().datetime().nullable(), expiresAt: z.string().datetime().nullable(),
+  latencyMs: z.number().int().nonnegative().nullable(), httpStatus: z.number().int().nonnegative().nullable(),
+  reason: z.string().max(128).nullable(), source: z.literal("bnbera-protocol-verifier-v1"),
+  protocolVersion: z.string().max(128).nullable(), capabilityCount: z.number().int().nonnegative().nullable(),
+  capabilityNames: z.array(z.string().max(160)).max(32), invocationUrls: z.array(z.string().url()).max(32),
+  responseDigest: z.string().max(128).nullable(),
+  evidence: z.enum(["agent-card-schema", "handshake-and-list", "http-availability", "none"])
+});
+export type ServiceVerification = z.infer<typeof serviceVerificationSchema>;
+export function serviceVerificationState(observation: ServiceVerification, now: string | number = Date.now()): ServiceVerification["status"] | "stale" {
+  return observation.expiresAt && Date.parse(observation.expiresAt) <= (typeof now === "string" ? Date.parse(now) : now) ? "stale" : observation.status;
+}
 export const directoryServiceSchema = z.object({
   name: z.string().min(1).max(128), url: z.string().url(), version: z.string().max(128).nullable()
 });
@@ -11,12 +28,14 @@ export const directorySnapshotSchema = z.object({
   identity: erc8004IdentitySchema,
   name: z.string().min(1).max(160), description: z.string().min(1).max(2000),
   imageUrl: z.string().url().nullable(), sourceUrl: z.string().url(),
+  sourceLabel: z.string().min(1).max(100).optional(),
   fetchedAt: z.string().datetime(), vendorUpdatedAt: z.string().datetime().nullable(),
   /** Read-layer clock, not persisted source evidence; keeps SSR/client labels stable. */
   renderedAt: z.string().datetime().optional(),
   createdAt: z.string().datetime().nullable(), createdTransaction: z.string().regex(/^0x[0-9a-fA-F]{64}$/).nullable(),
   registration: z.object({ status: z.enum(["resolved", "unavailable"]), uri: z.string().max(1500000).nullable(), digest: z.string().nullable(), reason: z.string().nullable() }),
   services: z.array(directoryServiceSchema).max(32), protocols: z.array(z.string().max(128)).max(32),
+  serviceVerifications: z.array(serviceVerificationSchema).max(32).default([]),
   skills: z.array(z.object({ id: z.string().max(160), name: z.string().max(160), description: z.string().max(2000) })).max(32),
   tags: z.array(z.string().max(128)).max(32),
   scores: z.object({ overall: z.number().min(0).max(100).nullable(), quality: z.number().min(0).max(100).nullable(), health: z.number().min(0).max(100).nullable(), activity: z.number().min(0).max(100).nullable(), metadata: z.number().min(0).max(100).nullable(), algorithm: z.string().max(128).nullable(), observedAt: z.string().datetime().nullable() }),

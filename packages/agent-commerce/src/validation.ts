@@ -95,7 +95,14 @@ export function assertDeploymentPinSnapshot(
   trustedPin: EnabledErc8183DeploymentPin
 ): void {
   const persisted = parseEnabledDeploymentPin(snapshot);
-  if (erc8183DeploymentPinDigest(persisted) !== snapshotDigest || erc8183DeploymentPinDigest(trustedPin) !== snapshotDigest) {
+  // The September mainnet release removed only the application price cap.
+  // Existing reservations retain their original authenticated snapshot. Do
+  // not treat a different contract, token, decimals or other pin as migration.
+  const reviewedPricePolicyMigration = persisted.chainId === 56 && trustedPin.chainId === 56 &&
+    persisted.maxBudgetAtomic === "10000000000000000" &&
+    trustedPin.maxBudgetAtomic === ((1n << 256n) - 2n).toString() &&
+    erc8183DeploymentPinDigest({ ...persisted, maxBudgetAtomic: trustedPin.maxBudgetAtomic }) === erc8183DeploymentPinDigest(trustedPin);
+  if (erc8183DeploymentPinDigest(persisted) !== snapshotDigest || (erc8183DeploymentPinDigest(trustedPin) !== snapshotDigest && !reviewedPricePolicyMigration)) {
     throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted ERC-8183 deployment pin snapshot does not match the enabled standards pin." });
   }
 }
@@ -124,7 +131,7 @@ export function assertBudgetMatchesPin(
 ): void {
   parseAtomic(budgetAtomic, "Job budget");
   const budget = BigInt(budgetAtomic);
-  if (budget < BigInt(pin.minBudgetAtomic) || budget > BigInt(pin.maxBudgetAtomic) || budget > BigInt(ERC8183_MVP_MAX_BUDGET_ATOMIC)) {
+  if (budget < BigInt(pin.minBudgetAtomic) || budget > BigInt(pin.maxBudgetAtomic) || budget >= (1n << 256n) - 1n || (pin.chainId === 97 && budget > BigInt(ERC8183_MVP_MAX_BUDGET_ATOMIC))) {
     throw new CommerceError({ code: "INVALID_AMOUNT", message: "Job budget is outside the pinned min/max range." });
   }
 }

@@ -18,7 +18,7 @@ export const runtime = "nodejs";
 export async function POST(request: Request): Promise<Response> {
   try {
     const input = await parseCommerceJson(request, commerceHireRequestSchema);
-    const composition = await getCommerceComposition();
+    const composition = await getCommerceComposition(request);
     const result = await composition.prepareHireIntent(request, input);
     const jobId = result.operation.jobId;
     return commerceHttpJson(commerceActionResponse({

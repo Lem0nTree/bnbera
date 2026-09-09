@@ -1,3 +1,4 @@
+import { testnetCommercePreviewEnabled, mainnetBrowserCommerceEnabled } from "@bnbera/config";
 /**
  * Server-only ERC-8183 application composition.
  *
@@ -7,7 +8,7 @@
  * is still a separate, explicit boundary.
  */
 import { evmAddressSchema, type CommerceJobStatus } from "@bnbera/domain";
-import { readFile } from "node:fs/promises";
+import { readCheckedInStandardsLock } from "./checked-in-lock";
 import { privateKeyToAddress } from "viem/accounts";
 import type { Hex } from "viem";
 import { AppError } from "@bnbera/config";
@@ -43,11 +44,14 @@ import {
 import {
   buildErc8183EoaCall,
   ERC8183_EOA_CONTRACTS,
+  ERC8183_MAINNET_MAX_EXACT_AMOUNT,
   parseEnabledDeploymentPin,
   type Erc8183SubmitInput,
   type Erc8183EoaStep
 } from "@bnbera/agent-commerce";
 import { commerceBrowserDispatchSchema, type CommerceBrowserDispatch } from "./commerce-contract";
+import { createExternalSellerReadinessResolver } from "./external-seller-provider";
+import { ExternalSellerLifecycle } from "./external-seller-lifecycle";
 import {
   getCommerceAuthDatabasePool,
   requireAuthenticatedCommerceIdentity
@@ -151,6 +155,7 @@ export interface CommerceParentHireRecord {
   readonly priceAtomic: string;
   /** Exact task persisted in the buyer-owned quote snapshot. */
   readonly task: string;
+  readonly estimatedCompletionSeconds?: number;
   readonly taskInputDigest: string;
   readonly fundingTransactionHash: string | null;
   readonly fulfillmentTransactionHash: string | null;
@@ -187,7 +192,8 @@ export interface Erc8183CommerceCompositionOptions {
   readonly providerReadinessResolver?: CommerceProviderReadinessResolver;
   /** Explicit constructor-only development/test canary opt-in. */
   readonly developmentCanaryEnabled?: boolean;
-  readonly runtimeEnvironment?: "development" | "test" | "production";
+  readonly externalMainnetBrowserEnabled?: boolean;
+  readonly runtimeEnvironment?: "development" | "test" | "preview" | "production";
 }
 
 function invalidComposition(message: string, nextAction: string): CommerceError {
@@ -233,7 +239,7 @@ function assertIdentityShape(identity: unknown): asserts identity is Authenticat
     message: "The server-authenticated requester identity is invalid.",
     nextAction: "authenticate_actor"
   });
-  if (value.chainId !== undefined && value.chainId !== 97) throw new CommerceError({ code: "INVALID_CHAIN", message: "The authenticated requester session is not bound to BSC testnet.", nextAction: "authenticate_actor" });
+  if (value.chainId !== undefined && value.chainId !== 97 && value.chainId !== 56) throw new CommerceError({ code: "INVALID_CHAIN", message: "The authenticated requester session is not bound to a supported BSC network.", nextAction: "authenticate_actor" });
 }
 
 function assertAuthorityShape(authority: unknown): asserts authority is Erc8183AltanaAuthority {
@@ -381,7 +387,7 @@ function browserDispatchFor(operation: Erc8183OperationRecord, adapter?: Erc8183
     const steps: readonly Erc8183EoaStep[] = ["create", "register", "set_budget", "approve", "fund", "settle", "dispute", "claim_refund"];
     if (typeof persistedStep !== "string" || !steps.includes(persistedStep as Erc8183EoaStep)) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted browser EOA step is invalid.", nextAction: "manual_review" });
     if (operation.context?.signerAddress === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted browser EOA intent has no actor binding.", nextAction: "manual_review" });
-    if (parameters?.connector !== "walletConnect") throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted browser EOA intent is not bound to the WalletConnect connector.", nextAction: "manual_review" });
+    if (parameters?.connector !== "eip1193" && parameters?.connector !== "walletConnect") throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted browser EOA intent is not bound to an approved browser wallet transport.", nextAction: "manual_review" });
     const step = persistedStep as Erc8183EoaStep;
     const contracts = adapter === undefined ? ERC8183_EOA_CONTRACTS : {
       commerceContract: adapter.pin.commerceContract,
@@ -485,6 +491,7 @@ export class Erc8183CommerceComposition {
   private readonly parentHireResolver: CommerceParentHireResolver;
   private readonly reservationResolver: PostgresCommerceReservationStore | undefined;
   private readonly providerReadinessResolver: CommerceProviderReadinessResolver | undefined;
+  private readonly externalSellerLifecycle: ExternalSellerLifecycle | undefined;
 
   public constructor(options: Erc8183CommerceCompositionOptions) {
     if (options.standardsLock === undefined || options.standardsLock === null) {
@@ -501,6 +508,7 @@ export class Erc8183CommerceComposition {
       pin: options.pin,
       standardsLock: options.standardsLock,
       ...(options.developmentCanaryEnabled === undefined ? {} : { developmentCanaryEnabled: options.developmentCanaryEnabled }),
+      ...(options.externalMainnetBrowserEnabled === undefined ? {} : { externalMainnetBrowserEnabled: options.externalMainnetBrowserEnabled }),
       ...(options.runtimeEnvironment === undefined ? {} : { runtimeEnvironment: options.runtimeEnvironment })
     });
     this.operations = new PostgresErc8183OperationRepository(options.pool);
@@ -518,6 +526,25 @@ export class Erc8183CommerceComposition {
     };
     this.service = new Erc8183CommerceService(serviceOptions);
     this.reads = new Erc8183CommerceReadService(this.jobs, this.operations);
+    this.externalSellerLifecycle = options.externalMainnetBrowserEnabled === true ? new ExternalSellerLifecycle({ pool: options.pool, chain: this.adapter, service: this.service, operations: this.operations, rpcUrl: process.env.BSC_MAINNET_RPC_URL ?? "" }) : undefined;
+  }
+
+  public async notifyExternalSeller(request: Request, jobId: string) {
+    const buyer = await this.identity(request);
+    if (!this.externalSellerLifecycle) throw invalidComposition("External mainnet delivery is not enabled.", "mainnet_release_pending");
+    return this.externalSellerLifecycle.notify(jobId, buyer);
+  }
+
+  public async refreshExternalSellerResult(request: Request, jobId: string, transactionHash?: Hex) {
+    const buyer = await this.identity(request);
+    if (!this.externalSellerLifecycle) throw invalidComposition("External mainnet result retrieval is not enabled.", "mainnet_release_pending");
+    return this.externalSellerLifecycle.refresh(jobId, buyer, transactionHash);
+  }
+
+  public async reconcileExternalTerminal(request: Request, jobId: string, transactionHash: Hex) {
+    const buyer = await this.identity(request);
+    if (!this.externalSellerLifecycle) throw invalidComposition("External mainnet recovery is not enabled.", "mainnet_release_pending");
+    return this.externalSellerLifecycle.reconcileTerminal(jobId, buyer, transactionHash);
   }
 
   private async identity(request: Request): Promise<AuthenticatedCommerceIdentity> {
@@ -626,14 +653,17 @@ export class Erc8183CommerceComposition {
   /** Create a buyer-scoped quote/reservation without invoking a chain SDK. */
   public async createQuote(request: Request, input: { readonly agentIdentifier: string; readonly task: string }): Promise<CommerceQuoteSnapshot> {
     const identity = await this.identity(request);
+    if (this.adapter.pin.chainId === 56) await this.adapter.verifyNetwork();
     if (this.reservationResolver === undefined) {
       throw invalidComposition("T5 quote reservations require the persistent marketplace reservation store.", "configure_parent_hire_repository");
     }
-    return this.reservationResolver.quote({
+    const quote = await this.reservationResolver.quote({
       buyerUserId: identity.userId,
       agentIdentifier: input.agentIdentifier,
       task: input.task
     });
+    if (this.adapter.pin.chainId === 56) await this.adapter.verifyBrowserPaymentParticipants({ buyer: identity.requesterAddress, provider: quote.providerAddress, step: "create" });
+    return quote;
   }
 
   public async status(request: Request, jobId: string): Promise<Erc8183JobRead> {
@@ -690,6 +720,7 @@ export class Erc8183CommerceComposition {
     readonly deadlineSeconds?: number | undefined;
   }): Promise<CommerceBrowserIntentResult> {
     const identity = await this.identity(request);
+    if (this.adapter.pin.chainId === 56) this.adapter.assertBrowserNewHireReleased();
     const idempotencyKey = serverHireIdempotencyKey(input.commerceJobId);
     const replay = await this.replayPreparedEoaIntent(identity, idempotencyKey);
     if (replay !== null) return replay;
@@ -704,7 +735,7 @@ export class Erc8183CommerceComposition {
     if (task === undefined) throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "The persisted quote has no task snapshot.", nextAction: "manual_review" });
     const verifyNetwork = (this.adapter as Erc8183AltanaAdapter & { readonly verifyNetwork?: () => Promise<unknown> }).verifyNetwork;
     if (typeof verifyNetwork === "function") await verifyNetwork.call(this.adapter);
-    const deadlineSeconds = input.deadlineSeconds ?? 1_800;
+    const deadlineSeconds = Math.max(input.deadlineSeconds ?? 1_800, (parent.estimatedCompletionSeconds ?? 0) + 600);
     const disputeWindow = typeof (this.adapter as Erc8183AltanaAdapter & { readDisputeWindow?: () => Promise<number> }).readDisputeWindow === "function"
       ? await (this.adapter as Erc8183AltanaAdapter & { readDisputeWindow: () => Promise<number> }).readDisputeWindow()
       : this.adapter.pin.minExpiryLeadSeconds;
@@ -767,6 +798,8 @@ export class Erc8183CommerceComposition {
     const current = await this.reads.get(jobKey);
     assertJobActor(current, identity.requesterAddress);
     if (input.action === "approve") {
+      const gate=await this.settlementGate(current);
+      if(gate && gate.status!=="ready")throw new CommerceError({code:"STALE_JOB",message:gate.notBeforeUnix===null?"The settlement policy could not be checked. Reload before approval.":`The confirmed result remains in its dispute window until ${new Date(gate.notBeforeUnix*1000).toISOString()}.`,nextAction:"wait_for_settlement_window"});
       if (input.resultDigest === undefined) throw new CommerceError({ code: "INVALID_JOB", message: "Buyer approval requires the submitted local result digest.", nextAction: "inspect_result" });
       await this.service.approveResult({ jobKey, actorAddress: identity.requesterAddress, requesterAddress: identity.requesterAddress, resultDigest: input.resultDigest, nowUnix: Math.floor(Date.now() / 1_000) });
     }
@@ -954,6 +987,14 @@ export class Erc8183CommerceComposition {
       // owner, wallet, endpoint, freshness or configuration afterwards.
       await this.resolveParentHire(identity, { commerceJobId });
     }
+    if (this.adapter.pin.chainId === 56) {
+      const parameters = existing.context?.parameters ?? {};
+      const step = this.eoaStep(existing);
+      if (!step) throw invalidComposition("Mainnet requires an exact browser EOA step.", "manual_review");
+      await this.adapter.verifyBrowserPaymentParticipants({ buyer: existing.context?.signerAddress ?? "", step,
+        ...(typeof parameters.providerAddress === "string" ? { provider: parameters.providerAddress } : {}),
+        ...(typeof parameters.budgetAtomic === "string" ? { budgetAtomic: parameters.budgetAtomic } : {}) });
+    }
     const claimed = await this.operations.claimExternalDispatch({ operationId });
     return {
       operation: claimed.operation,
@@ -1097,7 +1138,21 @@ export class Erc8183CommerceComposition {
   }
 
   public async readWithoutActor(jobId: string): Promise<Erc8183JobRead> {
-    return this.reads.get(jobKeyFor(this.adapter, jobId));
+    const read=await this.reads.get(jobKeyFor(this.adapter, jobId));
+    if (!read) return read;
+    const settlementGate=await this.settlementGate(read);
+    return {...read,...(settlementGate?{settlementGate}:{})};
+  }
+
+  private async settlementGate(read:Erc8183JobRead):Promise<Erc8183JobRead["settlementGate"]> {
+    if(!read || read.job.state!=="submitted"||!read.submission||typeof this.adapter.readDisputeWindow!=="function")return undefined;
+    try {
+      const windowSeconds=await this.adapter.readDisputeWindow();
+      // The confirmed local observation is at or after inclusion, giving a
+      // conservative UI deadline; the contract remains final authority.
+      const notBeforeUnix=read.submission.observedAtUnix+windowSeconds;
+      return {status:Math.floor(Date.now()/1000)>=notBeforeUnix?"ready":"waiting",notBeforeUnix,windowSeconds};
+    }catch{return{status:"unavailable",notBeforeUnix:null,windowSeconds:null};}
   }
 }
 
@@ -1121,16 +1176,16 @@ function lockRecord(value: unknown, label: string): LockRecord {
 }
 
 /** Build the application ERC-8183 pin only from the checked-in lock. */
-export function commercePinFromStandardsLock(lock: unknown): EnabledErc8183DeploymentPin {
+export function commercePinFromStandardsLock(lock: unknown, chainId: 56 | 97 = 97): EnabledErc8183DeploymentPin {
   const root = lockRecord(lock, "root");
   const networks = lockRecord(root.networks, "networks");
-  const network = lockRecord(networks["97"], "BSC testnet");
-  const deployment = lockRecord(network.erc8183, "BSC testnet ERC-8183 deployment");
+  const network = lockRecord(networks[String(chainId)], `BSC ${chainId}`);
+  const deployment = lockRecord(network.erc8183, `BSC ${chainId} ERC-8183 deployment`);
   const abiHashes = lockRecord(deployment.abiHashes, "ERC-8183 ABI hashes");
   const riskLimits = lockRecord(deployment.riskLimits, "ERC-8183 risk limits");
   return parseEnabledDeploymentPin({
     enabled: deployment.enabled,
-    chainId: 97,
+    chainId,
     specRevision: deployment.specRevision,
     commerceContract: deployment.commerceProxy,
     paymentToken: deployment.paymentToken,
@@ -1139,9 +1194,9 @@ export function commercePinFromStandardsLock(lock: unknown): EnabledErc8183Deplo
     evaluatorProfile: "verified-policy-v1",
     confirmationThreshold: 1,
     minExpiryLeadSeconds: 60,
-    maxExpiryHorizonSeconds: 86_400,
+    maxExpiryHorizonSeconds: chainId === 56 ? 691_200 : 86_400,
     minBudgetAtomic: "1",
-    maxBudgetAtomic: riskLimits.maxBudgetAtomic
+    maxBudgetAtomic: chainId === 56 ? ERC8183_MAINNET_MAX_EXACT_AMOUNT : riskLimits.maxBudgetAtomic
   });
 }
 
@@ -1164,7 +1219,8 @@ function referenceProviderSignerAddressResolver(
     if (match === null || match[1] === undefined) {
       throw new CommerceError({ code: "COMMERCE_DISABLED", message: "This application has no resolver for the configured provider secret-manager scheme.", nextAction: "configure_secret_reference" });
     }
-    const rawKey = env[match[1]]?.trim();
+    const storedKey = env[match[1]]?.trim();
+    const rawKey = storedKey && /^[0-9a-f]{64}$/iu.test(storedKey) ? `0x${storedKey}` : storedKey;
     if (rawKey === undefined || !/^0x[0-9a-f]{64}$/iu.test(rawKey)) {
       throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The configured provider authority secret reference could not be resolved.", nextAction: "configure_secret_reference" });
     }
@@ -1226,7 +1282,7 @@ function referenceProviderReadinessFromEnvironment(
 
 async function readCommerceStandardsLock(): Promise<unknown> {
   try {
-    return JSON.parse(await readFile(new URL("../../../../config/standards.lock.json", import.meta.url), "utf8")) as unknown;
+    return readCheckedInStandardsLock();
   } catch {
     throw invalidComposition("The checked-in standards lock could not be loaded.", "verify_standards_lock");
   }
@@ -1239,18 +1295,20 @@ async function readCommerceStandardsLock(): Promise<unknown> {
  * serialized session, authority object, provider, price, or lock can come
  * from request data. Browser signing remains an explicit external SDK call.
  */
-export async function getCommerceComposition(): Promise<Erc8183CommerceComposition> {
-  const production = process.env.NODE_ENV === "production" || process.env.BNBERA_ENV === "production";
-  const nodeEnvironment = production
+export async function getCommerceComposition(request?: Request): Promise<Erc8183CommerceComposition> {
+  const preview = testnetCommercePreviewEnabled();
+  const mainnet = mainnetBrowserCommerceEnabled();
+  const production = !preview && (process.env.NODE_ENV === "production" || process.env.BNBERA_ENV === "production");
+  const nodeEnvironment = preview ? "preview" : production
     ? "production"
     : process.env.NODE_ENV === "test"
       ? "test"
       : "development";
   if (
-    production ||
+    !mainnet && (production ||
     process.env.T5_WALLETCONNECT_AUTH_ENABLED !== "true" ||
     process.env.T5_COMMERCE_LOCAL_ACTIVATION !== "true" ||
-    process.env.T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED !== "true"
+    process.env.T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED !== "true")
   ) {
     return Promise.reject(invalidComposition(
       "ERC-8183 WalletConnect EOA browser activation is limited to the explicitly enabled local development canary; the standards-lock release gate remains closed.",
@@ -1260,9 +1318,15 @@ export async function getCommerceComposition(): Promise<Erc8183CommerceCompositi
 
   const standardsLock = await readCommerceStandardsLock();
   try {
+    const session = request ? await requireAuthenticatedCommerceIdentity(request) : undefined;
+    const chainId = session?.chainId === 56 ? 56 : 97;
+    if (chainId === 56 && !mainnet) throw invalidComposition("Mainnet browser commerce is not enabled.", "mainnet_release_pending");
+    if (chainId === 97 && production) throw invalidComposition("Production does not enable operator testnet canary payments.", "switch_network");
     const pool = getCommerceAuthDatabasePool();
-    const pin = commercePinFromStandardsLock(standardsLock);
-    const providerReadinessResolver = referenceProviderReadinessFromEnvironment(pin, process.env);
+    const pin = commercePinFromStandardsLock(standardsLock, chainId);
+    const mainnetDeployment = chainId === 56 ? lockRecord(lockRecord(lockRecord(standardsLock, "root").networks, "networks")["56"], "mainnet").erc8183 : undefined;
+    const externalDeployment = mainnetDeployment ? lockRecord(mainnetDeployment, "mainnet deployment") : undefined;
+    const providerReadinessResolver = chainId === 56 && externalDeployment ? createExternalSellerReadinessResolver({ pin, routerContract: String(externalDeployment.routerProxy), policyContract: String(externalDeployment.policy), rpcUrl: process.env.BSC_MAINNET_RPC_URL ?? "" }) : referenceProviderReadinessFromEnvironment(pin, process.env);
     return createProductionCommerceComposition({
       standardsLock,
       pin,
@@ -1272,7 +1336,8 @@ export async function getCommerceComposition(): Promise<Erc8183CommerceCompositi
       // Server-side signer/session authority is intentionally not wired for
       // T5. Mutating SDK calls are browser-owned; provider/refund workers must
       // use a separately authenticated authority boundary before enablement.
-      developmentCanaryEnabled: process.env.T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED === "true",
+      developmentCanaryEnabled: chainId === 97 && process.env.T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED === "true",
+      externalMainnetBrowserEnabled: chainId === 56,
       runtimeEnvironment: nodeEnvironment
     });
   } catch (cause) {

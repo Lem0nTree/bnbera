@@ -16,7 +16,8 @@ export const metadata: Metadata = {
     template: "%s · BNBEra"
   },
   description: "Discover BNB Chain agents, inspect their capabilities and evidence, and hire when available.",
-  applicationName: "BNBEra"
+  applicationName: "BNBEra",
+  icons: { icon: "/favicon.svg" }
 };
 
 export const viewport: Viewport = {

@@ -50,6 +50,22 @@ export const runtimeEnvironmentSchema = z.enum([
   "production"
 ]);
 
+/** Explicit testnet-only public preview; never a production release override. */
+export function testnetCommercePreviewEnabled(env: Readonly<Record<string,string|undefined>> = process.env): boolean {
+  if (env.BNBERA_ENV !== "preview" || env.BSC_CHAIN_ID !== "97" || env.T5_COMMERCE_TESTNET_PREVIEW_ENABLED !== "true" ||
+      env.T5_WALLETCONNECT_AUTH_ENABLED !== "true" || env.T5_COMMERCE_LOCAL_ACTIVATION !== "true" || env.T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED !== "true") return false;
+  try { const url=new URL(env.APP_URL??"");return url.protocol==="https:"&&!url.username&&!url.password; } catch { return false; }
+}
+
+/** Mainnet browser payments are distinct from all operator/testnet authority. */
+export function mainnetBrowserCommerceEnabled(env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  if (!["preview", "production"].includes(env.BNBERA_ENV ?? "") || env.EXTERNAL_ERC8183_MAINNET_ENABLED !== "true" || env.T5_WALLETCONNECT_AUTH_ENABLED !== "true") return false;
+  try {
+    const url = new URL(env.APP_URL ?? "");
+    return url.protocol === "https:" && !url.username && !url.password && url.pathname === "/" && !url.search && !url.hash;
+  } catch { return false; }
+}
+
 export const runtimeConfigSchema = z.object({
   nodeEnv: z.enum(["development", "test", "production"]),
   environment: runtimeEnvironmentSchema,

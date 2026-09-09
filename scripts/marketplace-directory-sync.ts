@@ -9,7 +9,10 @@ import { directoryObservationType, directorySnapshotSchema, normalizeDirectorySn
   publicRecord, publicText, publicDate } from "../packages/agent-ingestion/src/directory.ts";
 
 const version = "bnbera-directory-v1";
+const pendingVersion = "bnbera-directory-pending-v1";
+const archivedVersion = "bnbera-directory-archived-v1";
 const maxAgents = Math.min(100, Math.max(1, Number(process.env.MARKETPLACE_DIRECTORY_LIMIT ?? "100")));
+const priorityIds = (process.env.MARKETPLACE_DIRECTORY_PRIORITY_MAINNET_IDS ?? "").split(",").filter(Boolean);
 const safeCode = (error: unknown) => {
   const code = publicRecord(error).code;
   return typeof code === "string" && /^(?:[A-Z][A-Z0-9_]{2,63}|[0-9A-Z]{5})$/u.test(code) ? code : "DIRECTORY_SOURCE_UNAVAILABLE";
@@ -19,6 +22,7 @@ const log = (value: unknown) => process.stdout.write(`${JSON.stringify(value)}\n
 async function main() {
   if (process.env.MARKETPLACE_DIRECTORY_SYNC_ENABLED !== "true") { log({status:"disabled"}); return; }
   if (!Number.isSafeInteger(maxAgents)) throw new Error("INVALID_DIRECTORY_CAP");
+  if (priorityIds.length > 10 || priorityIds.some(id => !/^[1-9][0-9]*$/u.test(id))) throw new Error("INVALID_PRIORITY_IDENTITIES");
   const lock = JSON.parse(await readFile(new URL("../config/standards.lock.json",import.meta.url),"utf8"));
   const pool = new pg.Pool({connectionString: process.env.DATABASE_URL, max:4});
   const guard = await pool.connect();
@@ -30,23 +34,26 @@ async function main() {
   try {
     // Membership is the persisted source marker. It survives a crash before metadata is ready.
     const memberQuery = `SELECT i.namespace, i.chain_id, i.identity_registry, i.agent_id FROM erc8004_identities i
-      WHERE EXISTS (SELECT 1 FROM agent_discovery_sources s WHERE s.identity_id=i.id AND s.normalized_ingestion_version=$1)
-      ORDER BY i.chain_id, i.agent_id::numeric`;
-    let members = (await pool.query(memberQuery,[version])).rows;
+      WHERE EXISTS (SELECT 1 FROM agent_discovery_sources s WHERE s.identity_id=i.id AND (s.normalized_ingestion_version=$1
+        OR (s.normalized_ingestion_version='bnbera-directory-pending-v1' AND i.chain_id=56 AND i.agent_id=ANY($2::text[]))))
+      ORDER BY CASE WHEN i.chain_id=56 AND i.agent_id=ANY($2::text[]) THEN 0 ELSE 1 END, i.chain_id, i.agent_id::numeric`;
+    let members = (await pool.query(memberQuery,[version,priorityIds])).rows;
     for (const chainId of [56,97]) {
       const quota = chainId === 56 ? Math.ceil(maxAgents*0.8) : Math.floor(maxAgents*0.2);
       const registry = lock.networks[String(chainId)].erc8004.identityRegistry;
       const keys = new Set(members.filter(m=>m.chain_id===chainId).map(m=>String(m.agent_id)));
       const add = async (raw: unknown) => {
         const v = publicRecord(raw); const tokenId = String(v.token_id);
-        if (keys.size >= quota || keys.has(tokenId) || v.chain_id !== chainId || String(v.contract_address).toLowerCase() !== registry || !/^\d+$/u.test(tokenId)) return;
+        if (keys.size >= quota && !(chainId===56 && priorityIds.includes(tokenId)) || keys.has(tokenId) || v.chain_id !== chainId || String(v.contract_address).toLowerCase() !== registry || !/^\d+$/u.test(tokenId)) return;
         const identity = {namespace:"eip155",chainId,identityRegistry:registry,agentId:tokenId};
-        await ingest.ingestCandidate({identity,source:"8004scan",sourceReference:`https://8004scan.io/agents/${chainId===56?"bsc":"bsc-testnet"}/${tokenId}`,observedAt:new Date(),rawResponseDigest:canonicalSha256Hex(raw),normalizedIngestionVersion:version});
+        // Above-quota priorities stay invisible until their complete finalized
+        // snapshot and a reversible membership swap commit atomically below.
+        await ingest.ingestCandidate({identity,source:"8004scan",sourceReference:`https://8004scan.io/agents/${chainId===56?"bsc":"bsc-testnet"}/${tokenId}`,observedAt:new Date(),rawResponseDigest:canonicalSha256Hex(raw),normalizedIngestionVersion:keys.size>=quota?pendingVersion:version});
         keys.add(tokenId);
       };
       // Keep the user-specified reference and the retained useful testnet examples in scope.
-      for (const id of chainId===56?["341628"]:["2206","2283"]) {
-        if(keys.size>=quota) break;
+      for (const id of chainId===56?[...priorityIds,"341628"]:["2206","2283"]) {
+        if(keys.size>=quota && !(chainId===56 && priorityIds.includes(id))) break;
         if(keys.has(id)) continue;
         try {await add(await client.getCandidateByIdentity({namespace:"eip155",chainId,identityRegistry:registry,agentId:id}));} catch(error){log({stage:"reference",chainId,agentId:id,error:safeCode(error)});}
       }
@@ -61,7 +68,7 @@ async function main() {
           log({stage:"discovery",chainId,sortBy,offset,vendorTotal:result.total,selected:keys.size,cap:quota});
         }catch(error){log({stage:"discovery",chainId,sortBy,offset,error:safeCode(error)});}
       }
-      members=(await pool.query(memberQuery,[version])).rows;
+      members=(await pool.query(memberQuery,[version,priorityIds])).rows;
     }
     const counts={enriched:0,failed:0,metadataResolved:0,cardsReachable:0};
     const complete = new Set((await pool.query(`SELECT DISTINCT i.chain_id || ':' || i.agent_id AS key
@@ -123,12 +130,29 @@ async function main() {
           const payload=JSON.stringify(snapshot); const payloadDigest=canonicalSha256Hex(snapshot);
           await tx.query(`INSERT INTO agent_enrichment_observations(agent_version_id,provider,observation_type,normalized_payload,source_timestamp,source_block,freshness,validation_state,payload_digest)
             SELECT $1::uuid,'8004scan',$2::varchar,$3::jsonb,$4::timestamptz,$5::bigint,'fresh','valid',$6::varchar WHERE NOT EXISTS(SELECT 1 FROM agent_enrichment_observations WHERE agent_version_id=$1::uuid AND observation_type=$2::varchar AND payload_digest=$6::varchar)`,[v.id,directoryObservationType,payload,snapshot.fetchedAt,canonical.observedBlock,payloadDigest]);
+          if(identity.chainId===56 && priorityIds.includes(identity.agentId)) {
+            const active=(await tx.query(`SELECT i.id,i.agent_id FROM erc8004_identities i WHERE i.chain_id=56
+              AND EXISTS(SELECT 1 FROM agent_discovery_sources s WHERE s.identity_id=i.id AND s.normalized_ingestion_version=$1)
+              ORDER BY i.agent_id::numeric DESC`,[version])).rows;
+            const alreadyActive=active.some(row=>row.agent_id===identity.agentId);
+            if(!alreadyActive || active.length>Math.ceil(maxAgents*0.8)) {
+              const quota=Math.ceil(maxAgents*0.8);
+              const added=alreadyActive?0:1;
+              const victims=active.filter(row=>!priorityIds.includes(row.agent_id)&&!["45422","49637","341628"].includes(row.agent_id)).slice(0,Math.max(0,active.length-quota+added));
+              if(active.length-victims.length+added>quota)throw new Error("DIRECTORY_ROTATION_HAS_NO_SAFE_SLOT");
+              for(const victim of victims) await tx.query("UPDATE agent_discovery_sources SET normalized_ingestion_version=$1 WHERE identity_id=$2 AND normalized_ingestion_version=$3",[archivedVersion,victim.id,version]);
+              await tx.query(`UPDATE agent_discovery_sources s SET normalized_ingestion_version=$1 FROM erc8004_identities i
+                WHERE s.identity_id=i.id AND i.namespace=$2 AND i.chain_id=$3 AND i.identity_registry=$4 AND i.agent_id=$5 AND s.normalized_ingestion_version=$6`,[version,identity.namespace,identity.chainId,identity.identityRegistry,identity.agentId,pendingVersion]);
+              log({stage:"membership_rotation",activated:alreadyActive?null:identity.agentId,archived:victims.map(row=>row.agent_id),deleted:0,cap:maxAgents});
+            }
+          }
           await tx.query("COMMIT");
         } catch(error){await tx.query("ROLLBACK");throw error;}finally{tx.release();}
         counts.enriched++;
         log({stage:"enrichment",identity:erc8004IdentityKey(identity),name:snapshot.name,registration:snapshot.registration.status,card:snapshot.cardCheck.status,score:snapshot.scores.overall,feedback:snapshot.feedback.count,progress:counts.enriched+counts.failed,total:members.length});
       }catch(error){counts.failed++;log({stage:"enrichment",step:stage,identity:erc8004IdentityKey(identity),error:safeCode(error)});}
     }
+    members=(await pool.query(memberQuery,[version,[]])).rows;
     log({status:counts.failed?"partial":"completed",cap:maxAgents,members:members.length,...counts});
   } finally {await guard.query("SELECT pg_advisory_unlock(8004100)");guard.release();await pool.end();}
 }

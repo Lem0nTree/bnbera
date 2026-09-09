@@ -77,8 +77,10 @@ describe("Wave 1 legacy upgrade path", () => {
     expect(legacySmoke).toContain('DROP TABLE IF EXISTS "scan_discovery_checkpoints" CASCADE;');
     expect(legacySmoke).toContain('DROP TABLE IF EXISTS "erc8183_operations" CASCADE;');
     expect(legacySmoke).toContain('DROP COLUMN IF EXISTS "provider_binding" CASCADE');
-    expect(legacySmoke).toContain("LIMIT 8");
-    expect(legacySmoke).toContain('count === "10"');
+    expect(legacySmoke).toContain("LIMIT 10");
+    expect(legacySmoke).toContain('DROP TABLE IF EXISTS "external_seller_deliveries"');
+    expect(legacySmoke).toContain('count === "12"');
+    expect(legacySmoke).toContain('DROP TABLE IF EXISTS "reference_provider_slots" CASCADE;');
     expect(legacySmoke).toContain("LEGACY_HISTORY_NOT_PRESERVED");
     expect(legacySmoke).toContain("MARKETPLACE_RETRY_MIGRATION_MISSING");
   });

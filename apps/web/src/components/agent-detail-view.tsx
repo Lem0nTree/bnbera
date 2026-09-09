@@ -8,6 +8,7 @@ import { AgentDecisionSummary, AgentRating, AgentReviews } from "./agent-decisio
 import { AgentAvatar } from "./agent-avatar";
 import { agentExplorerUrl, agentPriceLabel, heartbeatLabel } from "@/lib/agent-summary";
 import { DirectoryAgentProfile } from "./directory-agent";
+import { ProtocolRefresh } from "./protocol-refresh";
 
 function SchemaPreview({ value }: { readonly value: Record<string, unknown> }) {
   return <details><summary>Inspect schema</summary><pre>{JSON.stringify(value, null, 2)}</pre></details>;
@@ -192,6 +193,7 @@ export function AgentDetailView({ agent, sourceNotice }: { readonly agent: Marke
   const heartbeat = heartbeatLabel(agent);
   const explorerUrl = agentExplorerUrl(agent);
   return <div className="page-shell page-shell--tight agent-profile">
+    <ProtocolRefresh intervalMs={agent.activation.boundedCapacity?5_000:30_000}/>
     <div className="detail-hero__crumbs"><Link href="/marketplace">← All agents</Link><span>{categoryLabel(agent.category)}</span></div>
     {agent.dataProvenance.mode !== "live" && <p className="preview-banner">{preview ? "Preview profile · Sample data. Hiring is unavailable." : "Recorded profile · Current availability could not be confirmed."}</p>}
     <section className="profile-header">
@@ -202,29 +204,38 @@ export function AgentDetailView({ agent, sourceNotice }: { readonly agent: Marke
         <AgentRating agent={agent} />
         <p className="profile-purpose">{agent.description}</p>
         <div className="profile-summary">
-          <div><span>Heartbeat</span><strong className="heartbeat" data-online={heartbeat === "Online"}><i />{heartbeat}</strong><small>{preview ? "No live heartbeat" : `Checked ${formatObservedAt(agent.health.observedAt)}`}</small></div>
+          <div><span>Service check</span><strong className="heartbeat" data-online={heartbeat === "Interface verified"}><i />{heartbeat}</strong><small>{preview ? "No live heartbeat" : `Checked ${formatObservedAt(agent.health.observedAt)}`}</small></div>
           <div><span>Price</span><strong>{agent.pricing.label}</strong><small>{preview ? "Sample price" : "Review quote before paying"}</small></div>
           {agent.metrics.reputation.verifiedPurchases.count !== null && <div><span>Buyer reviews</span><strong>{agent.metrics.reputation.verifiedPurchases.count}</strong><small>Verified purchases</small></div>}
           {agent.metrics.completedJobs.completedCount !== null && <div><span>Completed jobs</span><strong>{agent.metrics.completedJobs.completedCount}</strong><small>{agent.metrics.completedJobs.source}</small></div>}
           {explorerUrl && <div><span>On-chain data</span><a href={explorerUrl} target="_blank" rel="noreferrer">View registry ↗</a></div>}
         </div>
       </div>
-      <aside className="profile-booking"><span className="eyebrow">{agent.activation.enabled ? "Start your next task" : "Hiring availability"}</span><strong>{agentPriceLabel(agent)}</strong><p>{preview ? "Sample offer · Hiring unavailable" : agent.activation.enabled ? "Available for new tasks" : "Not accepting new tasks"}</p><a className="button button--primary" href="#hire">{agent.activation.enabled ? "Hire agent" : "View availability"} ↗</a><small>{preview ? "Preview data only" : "Payment always requires your approval"}</small></aside>
+      <aside className="profile-booking" aria-label="Price and hiring availability">
+        <div className="profile-booking__heading"><span className="eyebrow">{agent.activation.enabled ? "Start your next task" : "Hiring availability"}</span><span className="booking-status" data-ready={!preview && agent.activation.enabled}><i aria-hidden="true"/>{!preview && agent.activation.enabled ? "Ready" : "Unavailable"}</span></div>
+        <strong>{agentPriceLabel(agent)}</strong><p>{preview ? "Sample offer · Hiring unavailable" : agent.pricing.availability === "available" ? "Published price · confirm your quote before funding." : "No verified price is available."}</p>
+        <dl className="profile-booking__facts"><div><dt>Network</dt><dd>BNB {agent.identity.chainId === 97 ? "testnet" : "mainnet"}</dd></div><div><dt>Payment</dt><dd>{agent.activation.method === "erc8183" ? "ERC-8183 escrow" : "No verified offer"}</dd></div>{agent.activation.boundedCapacity && <div><dt>Remaining task slots</dt><dd>{agent.activation.boundedCapacity.remaining}</dd></div>}</dl>
+        <a className="button button--primary" href="#hire">{agent.activation.enabled ? "Review task & price" : "View availability"} <span aria-hidden="true">↗</span></a>
+        <small>{preview ? "Preview data only" : agent.activation.enabled ? "You approve funding and the final result." : "New tasks are paused. You can still view existing hires."}</small>
+        {agent.activation.boundedCapacity && <small>Readiness checked {formatObservedAt(agent.activation.boundedCapacity.checkedAt)}</small>}
+      </aside>
     </section>
     <AgentDecisionSummary agent={agent} />
     <nav className="profile-nav" aria-label="Agent sections"><a href="#services">Services</a><a href="#reviews">Reviews</a><a href="#hire">Hire</a><a href="#technical-details">Technical details</a></nav>
     <section className="profile-services" id="services">
-      <h2>What it does</h2>
+      <div className="profile-section-heading"><h2>What it does</h2><span>{agent.capabilityManifest.capabilities.length} advertised {agent.capabilityManifest.capabilities.length === 1 ? "capability" : "capabilities"}</span></div>
+      <div className="profile-protocol-summary">{agent.services.map(service=><div key={`${service.kind}:${service.url}`}><strong>{service.kind.toUpperCase()}</strong><span className="protocol-status">{agent.services.length===1?heartbeatLabel(agent):"Advertised · individual check unavailable"}</span><small>{agent.services.length===1?`Checked ${formatObservedAt(agent.health.observedAt)}${agent.health.latencyMs!==null?` · ${agent.health.latencyMs} ms`:""}`:"The aggregate profile check is not attributed to this service."}</small><a href={service.url} target="_blank" rel="noreferrer">{service.kind==="a2a"?"Agent Card":"Service endpoint"} ↗</a></div>)}</div><p className="directory-footnote">Card or interface validation is separate from a completed task. A check expires after two minutes and is not an uptime measurement.</p>
       <div className="profile-service-grid">{agent.capabilityManifest.capabilities.length ? agent.capabilityManifest.capabilities.map((capability, index) => <article className="profile-service" key={capability.id}>
-        <span className="profile-service__number">Service {String(index + 1).padStart(2, "0")}</span>
-        <h3>{categoryLabel(agent.category)}</h3><p>{capability.description}</p>
-        <a className="button button--primary" href="#hire">{agent.activation.enabled ? "Hire for this task" : "View availability"} ↗</a>
+        <div className="profile-service__heading"><span className="profile-service__number">{String(index + 1).padStart(2, "0")}</span><span>Advertised capability</span></div>
+        <h3>{capability.id.replaceAll(/[-_.:]+/gu, " ")}</h3><p>{capability.description}</p>
+        {capability.requiredProtocols.length > 0 && <div className="profile-service__protocols">{capability.requiredProtocols.map(protocol => <span key={protocol}>{protocol}</span>)}</div>}
+        <div className="profile-service__footer"><span>Review task compatibility<br/><small>{agent.activation.enabled ? "Quote confirmed before funding" : "Hiring currently unavailable"}</small></span><a className="button" href="#hire">{agent.activation.enabled ? "Review task" : "Availability"} <span aria-hidden="true">↗</span></a></div>
       </article>) : <p>No service description is available yet.</p>}</div>
     </section>
     <AgentReviews agent={agent} />
     <section className="profile-hire" id="hire">
       <div><h2>{agent.activation.enabled ? "Start a task" : "Hiring availability"}</h2><p>{preview ? "This is a sample profile. Explore its services or find another agent." : agent.activation.enabled ? "Describe your task, review the quote, then approve payment in your wallet." : "This agent is not accepting new tasks through BNBEra right now."}</p></div>
-      {agent.activation.enabled ? <ActivationPanel activation={agent.activation} detail identityKey={erc8004IdentityKey(agent.identity)} runBundle={agent.evidence.runBundle} /> : <Link className="button" href="/marketplace">Explore agents →</Link>}
+      {agent.activation.enabled || agent.activation.boundedCapacity ? <ActivationPanel activation={agent.activation} detail targetChainId={agent.identity.chainId === 56 ? 56 : 97} identityKey={erc8004IdentityKey(agent.identity)} runBundle={agent.evidence.runBundle} /> : <><p>{agent.activation.reason}</p><div className="detail-actions"><Link className="button" href="/marketplace">Explore agents →</Link><Link className="button button--ghost" href="/hired">View existing hires</Link></div></>}
     </section>
     <details className="profile-technical" id="technical-details"><summary>Technical details <span>Identity, heartbeat history & evidence</span></summary>
       {sourceNotice && <p className="detail-section__lede">{sourceNotice}</p>}

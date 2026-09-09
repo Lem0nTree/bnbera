@@ -22,7 +22,7 @@ export async function POST(
     const { operationId: rawOperationId } = await params;
     const operationId = parseCommerceOperationId(rawOperationId);
     await parseCommerceJson(request, commerceReconcileRequestSchema);
-    const composition = await getCommerceComposition();
+    const composition = await getCommerceComposition(request);
     const result = await composition.reconcile(request, operationId);
     const jobId = result.operation.jobId;
     const job = jobId === null ? null : await composition.readWithoutActor(jobId);

@@ -43,6 +43,15 @@ export const commerceQuoteSnapshotSchema = z.object({
   priceAtomic: positiveDecimalSchema,
   task: z.string().trim().min(1).max(4_096),
   taskDigest: z.string().regex(/^[0-9a-f]{64}$/u),
+  externalSeller: z.object({
+    protocol: z.literal("apex-erc8183-v1"),
+    requestedTask: z.string().min(1).max(1600),
+    /** Opaque immutable signed envelope; fully validated by the server adapter. */
+    signedOffer: z.string().min(1).max(16000),
+    executionStatus: z.enum(["unverified", "protocol_ready", "historical_result_verified"]),
+    historicalJobId: z.string().regex(/^[1-9][0-9]*$/u).optional(),
+    disputeWindowSeconds: z.literal(604800)
+  }).strict().optional(),
   issuedAt: timestampSchema,
   expiresAt: timestampSchema,
   status: z.literal("draft")
