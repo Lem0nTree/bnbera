@@ -1,6 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import worker from "./worker.mjs";
+test("preserves browser caching only for successful immutable build assets", async () => {
+  const original = globalThis.fetch;
+  const env = { UPSTREAM_ORIGIN: "https://stable-origin.example", ORIGIN_ACCESS_CLIENT_ID: "id", ORIGIN_ACCESS_CLIENT_SECRET: "secret" };
+  try {
+    for (const [path, method, status, upstreamCache, expected] of [
+      ["/_next/static/chunks/abc.js", "GET", 200, "public, max-age=31536000, immutable", "public, max-age=31536000, immutable"],
+      ["/_next/static/css/abc.css", "HEAD", 200, "public, max-age=31536000, immutable", "public, max-age=31536000, immutable"],
+      ["/_next/static/chunks/abc.js", "GET", 404, "immutable", "private, no-store"],
+      ["/_next/static/chunks/abc.js", "GET", 200, "no-store", "public, max-age=31536000, immutable"],
+      ["/_next/static/chunks/abc.js", "POST", 200, "immutable", "private, no-store"],
+      ["/api/marketplace", "GET", 200, "immutable", "private, no-store"],
+      ["/agents/example?_rsc=abc", "GET", 200, "immutable", "private, no-store"]
+    ]) {
+      globalThis.fetch = async () => new Response(null, { status, headers: { "Cache-Control": upstreamCache, "Content-Type": "application/javascript; charset=UTF-8" } });
+      const response = await worker.fetch(new Request(`https://bnbera.ritarda.to${path}`, { method }), env);
+      assert.equal(response.headers.get("Cache-Control"), expected);
+    }
+    globalThis.fetch = async () => new Response("Login", { headers: { "Content-Type": "text/html" } });
+    const login = await worker.fetch(new Request("https://bnbera.ritarda.to/_next/static/chunks/abc.js"), env);
+    assert.equal(login.headers.get("Cache-Control"), "private, no-store");
+  } finally { globalThis.fetch = original; }
+});
 test("fails closed without a stable authenticated origin or for an unknown host", async () => {
   assert.equal((await worker.fetch(new Request("https://bnbera.ritarda.to/"), {})).status, 503);
   assert.equal((await worker.fetch(new Request("https://wrong.example/"), { UPSTREAM_ORIGIN: "https://origin.example" })).status, 421);
