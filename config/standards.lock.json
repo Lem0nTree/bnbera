@@ -179,8 +179,8 @@
       },
       "erc8183": {
         "enabled": true,
-        "releaseEnabled": false,
-        "disabledReason": "Read-only verified mainnet candidate; external seller execution and application release acceptance remain pending.",
+        "releaseEnabled": true,
+        "disabledReason": "Released for browser-owned BSC mainnet hiring after explicit operator approval and ten-seller identity, card, contract, payment and recovery verification.",
         "specRevision": "a078cab5cc8e9581c15f76c091ed96eed28f02f7",
         "sourceRevision": "b40b18011407ba13516661d3784bcb727a0c7794",
         "commerceProxy": "0xEa4DAa3100A767e86FDed867729ae7446476EBA6",
