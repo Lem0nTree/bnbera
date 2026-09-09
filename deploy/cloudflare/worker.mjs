@@ -17,7 +17,15 @@ export default {
     try {
       const response = await fetch(upstream, { method: request.method, headers, body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body, redirect: "manual", cf: { cacheEverything: false, cacheTtl: 0 } });
       const output = new Response(response.body, response);
-      output.headers.set("Cache-Control", "private, no-store");
+      // Next's build-addressed assets are safe to reuse in the browser. Keep
+      // HTML, RSC, APIs, redirects and failures private and uncached.
+      const immutableAsset = ["GET", "HEAD"].includes(request.method)
+        && /^\/_next\/static\/[a-zA-Z0-9_./-]+$/u.test(incoming.pathname)
+        && response.status === 200
+        // Access may replace the origin's Cache-Control. Check the asset
+        // MIME type too so an Access login/error HTML response is never cached.
+        && /^(?:(?:application|text)\/(?:javascript|x-javascript)|text\/css|font\/[a-z0-9-]+|image\/[a-z0-9.+-]+)(?:;|$)/iu.test(response.headers.get("Content-Type") ?? "");
+      output.headers.set("Cache-Control", immutableAsset ? "public, max-age=31536000, immutable" : "private, no-store");
       // Access authenticates the Worker to the private origin. Its assertion
       // cookies are edge credentials and must never be forwarded to browsers.
       const responseCookies = typeof output.headers.getSetCookie === "function" ? output.headers.getSetCookie() : [];

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { InMemoryIngestionRepository } from "@bnbera/agent-ingestion";
 import { canonicalSha256Hex } from "@bnbera/domain";
 import {
@@ -607,6 +607,24 @@ describe("MarketplaceReadService", () => {
       { now: () => sourceNow, recognizedReviewerAddresses: [`0x${recognizedReviewer.slice(2).toUpperCase()}`] }
     );
     const snapshot = await source.read();
+    // A known reference identity must not enrich every marketplace listing.
+    // Preserve all of the same health, reputation and provenance projections.
+    const listIdentities = vi.spyOn(repository, "listIdentities");
+    const findIdentity = vi.spyOn(repository, "findIdentity");
+    const scoped = new IngestionMarketplaceSource(
+      repository,
+      new InMemoryMarketplaceMetadataSource([metadata]),
+      { identity: fixture.identity, now: () => sourceNow, recognizedReviewerAddresses: [`0x${recognizedReviewer.slice(2).toUpperCase()}`] }
+    );
+    expect(await scoped.read()).toEqual(snapshot);
+    expect(listIdentities).not.toHaveBeenCalled();
+    expect(findIdentity).toHaveBeenCalledWith(fixture.identity);
+    const missing = new IngestionMarketplaceSource(repository, new InMemoryMarketplaceMetadataSource([metadata]), {
+      identity: { ...fixture.identity, agentId: "999999" }, now: () => sourceNow
+    });
+    expect((await missing.read()).records).toEqual([]);
+    listIdentities.mockRestore();
+    findIdentity.mockRestore();
     expect(snapshot.records[0]?.identityKey).toBe(fixture.identityKey);
     expect(snapshot.records[0]?.provenance.sourceKind).toBe("ingestion");
     expect(snapshot.records[0]?.fixture).toBeNull();

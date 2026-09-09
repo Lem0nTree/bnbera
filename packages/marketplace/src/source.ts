@@ -144,6 +144,9 @@ export class InMemoryMarketplaceMetadataSource implements MarketplaceMetadataSou
 }
 
 export type IngestionMarketplaceSourceOptions = {
+  /** Restrict identity enrichment for callers that already know the exact
+   * identity. Metadata still resolves slugs across the complete namespace. */
+  readonly identity?: Erc8004Identity;
   readonly sourceName?: string;
   readonly now?: () => Date;
   /** A disabled or lagging synchronization gate can keep reads available
@@ -191,7 +194,9 @@ export class IngestionMarketplaceSource implements MarketplaceSource {
 
   public async read(): Promise<MarketplaceSourceSnapshot> {
     const [identities, metadata] = await Promise.all([
-      this.repository.listIdentities(),
+      this.options.identity === undefined
+        ? this.repository.listIdentities()
+        : this.repository.findIdentity(this.options.identity).then((identity) => identity === null ? [] : [identity]),
       this.metadataSource.listMetadata()
     ]);
     const parsedMetadata = metadata.map(parseMarketplaceMetadata);
