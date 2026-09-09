@@ -1,12 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Callout, EmptyState, LoadingState, StatusBadge } from "@bnbera/ui";
 import type { MarketplaceSearchResponse } from "@/lib/marketplace-contract";
 import { categoryLabel, titleCase } from "@/lib/presentation";
-import { AgentCard } from "./agent-card";
 
 const categories = [
   "rebalancing",
@@ -37,14 +36,12 @@ function paramsForAllSupply(searchString: string): string {
   return `/marketplace${query ? `?${query}` : ""}`;
 }
 
-export function MarketplaceExplorer({ response }: { readonly response: MarketplaceSearchResponse }) {
-  const [visibleCount,setVisibleCount]=useState(20);
-  useEffect(()=>setVisibleCount(20),[response]);
+export function MarketplaceExplorer({ response, agentCount, children }: { readonly response: Omit<MarketplaceSearchResponse, "agents">; readonly agentCount: number; readonly children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const currentCategory = response.selection.category;
-  const pageSize=Number(searchParams.get("limit")??100);
+  const pageSize=Number(searchParams.get("limit")??20);
   const cleanParams = new URLSearchParams(searchParams.toString());
   cleanParams.delete("agents");
   const searchString = cleanParams.toString();
@@ -203,22 +200,21 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
           {response.notice} Try a wider filter, or connect the read-model API. Fixture data is never used as a production fallback.
         </EmptyState>
       ) : null}
-      {response.status === "degraded" && response.agents.length === 0 ? (
+      {response.status === "degraded" && agentCount === 0 ? (
         <EmptyState title="No agents are currently available">
           The connected collection has no listings that meet the current availability checks. Try again later or explore the recorded candidate details below. No sample agents have been substituted.
         </EmptyState>
       ) : null}
 
-      {response.agents.length > 0 ? (
+      {agentCount > 0 ? (
         <div className="agent-grid">
-          {response.agents.slice(0,visibleCount).map((agent) => <AgentCard agent={agent} key={agent.id} />)}
+          {children}
         </div>
       ) : null}
 
-      {response.agents.length>visibleCount&&<div className="directory-load-more"><p>Showing {visibleCount} of {response.total} agents</p><button className="button" onClick={()=>setVisibleCount(count=>Math.min(count+20,response.agents.length))}>Explore more agents ↓</button></div>}
-      {response.directoryStats && response.total>response.agents.length && <nav className="directory-load-more" aria-label="Result pages">
+      {response.total>agentCount && <nav className="directory-load-more" aria-label="Result pages">
         {Number(searchParams.get("offset")??0)>0 && <Link prefetch={false} className="button" href={`${pathname}?${new URLSearchParams({...Object.fromEntries(searchParams),offset:String(Math.max(0,Number(searchParams.get("offset")??0)-pageSize))})}`}>Previous page</Link>}
-        {Number(searchParams.get("offset")??0)+response.agents.length<response.total && <Link prefetch={false} className="button" href={`${pathname}?${new URLSearchParams({...Object.fromEntries(searchParams),offset:String(Number(searchParams.get("offset")??0)+pageSize)})}`}>Next page</Link>}
+        {Number(searchParams.get("offset")??0)+agentCount<response.total && <Link prefetch={false} className="button" href={`${pathname}?${new URLSearchParams({...Object.fromEntries(searchParams),offset:String(Number(searchParams.get("offset")??0)+pageSize)})}`}>Next page</Link>}
       </nav>}
 
       {response.excluded.length > 0 ? (

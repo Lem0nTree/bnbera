@@ -1,7 +1,8 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
-import { LoadingState, SectionHeading } from "@bnbera/ui";
-import { MarketplaceExplorer } from "@/components/marketplace-explorer";
+import { SectionHeading } from "@bnbera/ui";
+import { AgentRowSkeletons } from "@/components/agent-row-skeleton";
+import { MarketplaceResults } from "@/components/marketplace-results";
 import {
   categoryDescription,
   categoryLabel,
@@ -48,8 +49,8 @@ export default async function CategoryPage({
         action={<span className="status-badge status-badge--purple"><span className="status-badge__dot" aria-hidden="true" />Category view</span>}
       />
       <div className="section-block section-block--flush">
-        <Suspense fallback={<LoadingState label={`Loading ${categoryLabel(category)} records`} />}>
-          <MarketplaceExplorer response={response} />
+        <Suspense fallback={<AgentRowSkeletons />}>
+          <MarketplaceResults response={response} />
         </Suspense>
       </div>
     </div>

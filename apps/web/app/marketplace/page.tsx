@@ -1,6 +1,7 @@
 import { Suspense } from "react";
-import { LoadingState, SectionHeading } from "@bnbera/ui";
-import { MarketplaceExplorer } from "@/components/marketplace-explorer";
+import { SectionHeading } from "@bnbera/ui";
+import { AgentRowSkeletons } from "@/components/agent-row-skeleton";
+import { MarketplaceResults } from "@/components/marketplace-results";
 import { ProtocolRefresh } from "@/components/protocol-refresh";
 import { parseMarketplacePageParams } from "@/lib/marketplace-contract";
 import { readMarketplaceForPage } from "@/lib/marketplace-server";
@@ -23,8 +24,8 @@ export default async function MarketplacePage({ searchParams }: { readonly searc
       />
       <aside className="discovery-total"><span className="eyebrow">{response.mode === "fixture" ? "Preview collection" : "Marketplace collection"}</span><strong>{response.total.toLocaleString()}</strong><span>{response.selection.query || response.selection.category || response.selection.chainId ? "matching agents" : "agents to explore"}</span><div className="discovery-total__ornament" aria-hidden="true"><i /><i /><i /><i /><i /></div><small>{response.mode === "fixture" ? "Sample profiles · Not live supply" : "Eligible listings from the current response"}</small></aside></section>}
       <div className="section-block section-block--flush">
-        <Suspense fallback={<LoadingState label="Preparing marketplace controls" />}>
-          <MarketplaceExplorer response={response} />
+        <Suspense fallback={<AgentRowSkeletons />}>
+          <MarketplaceResults response={response} />
         </Suspense>
       </div>
     </div>

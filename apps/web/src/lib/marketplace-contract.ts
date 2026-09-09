@@ -384,7 +384,7 @@ export const marketplaceSearchInputSchema = z.object({
   protocol: z.string().trim().max(128).optional(),
   freshness: z.enum(["fresh", "stale", "unknown"]).optional(),
   sort: z.enum(["relevance", "freshness", "score"]).default("relevance"),
-  limit: z.coerce.number().int().min(1).max(100).default(100),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
   offset: z.coerce.number().int().min(0).max(10000000).optional(),
   preview: z.enum(marketplacePreviewStates).optional()
 });

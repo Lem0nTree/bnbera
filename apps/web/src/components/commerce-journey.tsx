@@ -24,6 +24,7 @@ import { commerceQuoteSnapshotSchema, type CommerceQuoteResponse, type CommerceQ
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
 import { isEoaDispatchGenerationCurrent, shouldInvalidateEoaAuthority, EOA_BUYER_CHAIN_ID, type EoaWalletSnapshot } from "@/lib/eoa-wallet";
 import { formatSiweMessage } from "@/lib/siwe-message";
+import { CommerceWalletPanel } from "./commerce-wallet-panel";
 import { WalletConnectorChoices } from "./wallet-connector-choices";
 import { CommerceResultSummary } from "./commerce-result-summary";
 import { referenceBuyerTaskSchema } from "@bnbera/agent-commerce/browser";
@@ -690,31 +691,29 @@ function CommerceJourneyInner({ activation, targetChainId, identityKey, commerce
     : null;
 
   return (
-    <div className={`commerce-journey${compact ? " commerce-journey--compact" : ""}${compact && operationId === null && quote === null ? " commerce-journey--compose" : ""}`} data-testid="commerce-journey">
-      {!compact && <div className="commerce-journey__header"><strong>{walletOnly ? "Buyer wallet" : "Hire this agent"}</strong><StatusBadge value={`${buyerChainLabel} · ${buyerChainId}`} tone="info" />{operation !== null && <StatusBadge value={statusLabel(operation.status)} tone={operationStatusTone(operation.status)} />}</div>}
+    <div className={`commerce-journey${walletOnly ? " commerce-journey--wallet-only" : ""}${compact ? " commerce-journey--compact" : ""}${compact && operationId === null && quote === null ? " commerce-journey--compose" : ""}`} data-testid="commerce-journey">
+      {!compact && !walletOnly && <div className="commerce-journey__header"><strong>{walletOnly ? "Buyer wallet" : "Hire this agent"}</strong><StatusBadge value={`${buyerChainLabel} · ${buyerChainId}`} tone="info" />{operation !== null && <StatusBadge value={statusLabel(operation.status)} tone={operationStatusTone(operation.status)} />}</div>}
       {compact && operation !== null && <p className="commerce-journey__operation" role="status">{statusLabel(operation.status)}</p>}
       {!walletOnly && <ol className="journey-steps">{["Task", "Quote", "Fund escrow", "Review result", "Complete"].map((label, index) => <li key={label} aria-current={index === (completed ? 4 : submitted ? 3 : operationId ? 2 : quote ? 1 : 0) ? "step" : undefined}>{index + 1}. {label}</li>)}</ol>}
       <div className="commerce-journey__authority">
-        {compact && <h3>Buyer wallet</h3>}
-        {!walletAuthenticated && <p className="detail-section__lede">{isConnected ? "Your wallet is connected. Sign in to view your private hires and continue. This gasless signature does not approve a payment." : walletOnly ? "Connect your buyer wallet using the header, then sign in here to view your hires." : "Connect your wallet, then sign in. Sign-in is gasless and does not approve a payment."}</p>}
-        {!isConnected && !walletOnly && <WalletConnectorChoices chainId={buyerChainId} disabled={busy} />}
-        {isConnected && chainId !== buyerChainId && <>
-          <p className="muted-label">Connected on chain {chainId ?? "unknown"}. This hire requires {buyerChainLabel} ({buyerChainId}).</p>
-          <button className="button button--primary" type="button" disabled={busy || switchPending} onClick={() => {
-            setBusy(true);
-            setError(null);
+        <CommerceWalletPanel
+          state={!isConnected ? "disconnected" : chainId !== buyerChainId ? "wrong_network" : walletAuthenticated ? "ready" : "connected"}
+          address={address} network={buyerChainLabel} walletOnly={walletOnly} busy={busy || signPending || switchPending}
+          choices={!isConnected && !walletOnly ? <WalletConnectorChoices chainId={buyerChainId} disabled={busy} /> : null}
+          onConnect={() => {
+            const menu = document.querySelector<HTMLDetailsElement>(".global-wallet");
+            if (menu) { menu.open = true; menu.querySelector<HTMLElement>("summary")?.focus(); }
+          }}
+          onSwitch={() => {
+            setBusy(true); setError(null);
             void switchToBuyerChain().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "The wallet network could not be changed.")).finally(() => setBusy(false));
-          }}>Switch to {buyerChainLabel}</button>
-        </>}
-        {isConnected && chainId === buyerChainId && !walletAuthenticated && <button className="button button--primary" type="button" disabled={busy || signPending} onClick={() => {
-          setBusy(true);
-          setError(null);
-          void signInWithWallet().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "The wallet sign-in could not be completed.")).finally(() => setBusy(false));
-        }}>Sign in with wallet</button>}
-        {isConnected && chainId === buyerChainId && walletAuthenticated && <div className="detail-actions">
-          <p className="muted-label">Buyer wallet ready · {authority?.address ?? address}</p>
-          <button className="button button--ghost button--small" type="button" disabled={busy} onClick={disconnectWallet}>Disconnect wallet</button>
-        </div>}
+          }}
+          onSignIn={() => {
+            setBusy(true); setError(null);
+            void signInWithWallet().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "The wallet sign-in could not be completed.")).finally(() => setBusy(false));
+          }}
+          onDisconnect={disconnectWallet}
+        />
       </div>
       {error !== null && <Callout title="Commerce action stopped" tone="warning" icon="!">{error}</Callout>}
       {!walletOnly && <>

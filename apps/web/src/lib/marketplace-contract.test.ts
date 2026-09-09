@@ -28,6 +28,10 @@ afterEach(() => {
 });
 
 describe("marketplace web adapter", () => {
+  it("loads twenty agents by default while preserving explicit page sizes and offsets", () => {
+    expect(parseMarketplaceSearchParams(new URLSearchParams())).toMatchObject({ limit: 20 });
+    expect(parseMarketplaceSearchParams(new URLSearchParams("limit=100&offset=100"))).toMatchObject({ limit: 100, offset: 100 });
+  });
   it("normalizes only credential-free HTTPS Greenfield links and keeps bad evidence isolated", () => {
     const valid = {
       artifactType: "agent_profile" as const,
