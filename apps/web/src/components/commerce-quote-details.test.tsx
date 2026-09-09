@@ -23,7 +23,7 @@ describe("explicit signed-offer quote presentation", () => {
     expect(html).toContain("delivery history unverified");
     expect(html).toContain("Summarize this public protocol");
     expect(html.indexOf("canonical contract task")).toBeGreaterThan(html.indexOf("<details>"));
-    expect(html).toContain("0.0001 U");
+    expect(html).toContain("0.0001 United Dollars");
     expect(html).toContain("gas paid separately");
     expect(html).toContain("seven-day dispute window");
     expect(html).toContain("Anyone can settle");
@@ -40,7 +40,7 @@ describe("explicit signed-offer quote presentation", () => {
     const html = renderToStaticMarkup(<CommerceQuoteDetails quote={{ ...reference, chainId: 97, task: "A reference task", priceAtomic: "1000000000000000" }} />);
     expect(html).toContain("Server quote");
     expect(html).toContain("A reference task");
-    expect(html).toContain("0.001 U");
+    expect(html).toContain("0.001 United Dollars");
     expect(html).not.toContain("Experimental");
     expect(html).not.toContain("7-day");
   });

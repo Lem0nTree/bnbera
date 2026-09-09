@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Callout, StateAxisGrid, StatusBadge } from "@bnbera/ui";
 import { erc8004IdentityKey } from "@bnbera/domain";
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
-import { categoryLabel, compactAddress, formatObservedAt, joinOrFallback, statusTone, titleCase } from "@/lib/presentation";
+import { categoryLabel, compactAddress, formatObservedAt, joinOrFallback, priceDisplayLabel, statusTone, titleCase } from "@/lib/presentation";
 import { ActivationPanel } from "./activation-panel";
 import { AgentDecisionSummary, AgentRating, AgentReviews } from "./agent-decision-summary";
 import { AgentAvatar } from "./agent-avatar";
@@ -205,7 +205,7 @@ export function AgentDetailView({ agent, sourceNotice }: { readonly agent: Marke
         <p className="profile-purpose">{agent.description}</p>
         <div className="profile-summary">
           <div><span>Service check</span><strong className="heartbeat" data-online={heartbeat === "Interface verified"}><i />{heartbeat}</strong><small>{preview ? "No live heartbeat" : `Checked ${formatObservedAt(agent.health.observedAt)}`}</small></div>
-          <div><span>Price</span><strong>{agent.pricing.label}</strong><small>{preview ? "Sample price" : "Review quote before paying"}</small></div>
+          <div><span>Price</span><strong>{priceDisplayLabel(agent.pricing.label)}</strong><small>{preview ? "Sample price" : "Review quote before paying"}</small></div>
           {agent.metrics.reputation.verifiedPurchases.count !== null && <div><span>Buyer reviews</span><strong>{agent.metrics.reputation.verifiedPurchases.count}</strong><small>Verified purchases</small></div>}
           {agent.metrics.completedJobs.completedCount !== null && <div><span>Completed jobs</span><strong>{agent.metrics.completedJobs.completedCount}</strong><small>{agent.metrics.completedJobs.source}</small></div>}
           {explorerUrl && <div><span>On-chain data</span><a href={explorerUrl} target="_blank" rel="noreferrer">View registry ↗</a></div>}
@@ -241,7 +241,7 @@ export function AgentDetailView({ agent, sourceNotice }: { readonly agent: Marke
       {sourceNotice && <p className="detail-section__lede">{sourceNotice}</p>}
       <p className="detail-section__lede">{agent.dataProvenance.label} · {agent.dataProvenance.details}</p>
       <p className="detail-section__lede">Hiring: {agent.activation.reason} {agent.activation.nextAction}</p>
-      <p className="detail-section__lede">Pricing: {agent.pricing.explanation}</p>
+      <p className="detail-section__lede">Pricing: {priceDisplayLabel(agent.pricing.explanation)}</p>
       <details className="detail-section"><summary>Capability schemas</summary>{agent.capabilityManifest.capabilities.map(capability => <div className="capability-card" key={capability.id}><h3>{capability.id}</h3><p>{capability.description}</p><div className="schema-pair"><div>Input<SchemaPreview value={capability.inputSchema} /></div><div>Output<SchemaPreview value={capability.outputSchema} /></div></div></div>)}</details>
         <details className="detail-section" id="track-record"><summary>Track record & reputation</summary>
           <p className="eyebrow">Observed marketplace metrics</p>

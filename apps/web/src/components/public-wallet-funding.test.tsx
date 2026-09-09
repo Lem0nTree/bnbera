@@ -16,7 +16,7 @@ describe("public wallet funding panel", () => {
     expect(markup).toContain('aria-label="Copy public wallet address"');
     expect(markup).toContain('role="status"');
     expect(markup).toContain('aria-live="polite"');
-    expect(markup).toContain("BNB testnet gas and U testnet funds");
+    expect(markup).toContain("BNB testnet gas and United Dollars testnet funds");
     expect(markup).toContain("Ctrl+C or Cmd+C");
     expect(markup).not.toMatch(/private.?key|credential|signer|session/iu);
   });

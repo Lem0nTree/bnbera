@@ -11,7 +11,7 @@ export default async function HomePage() {
   return <div className="page-shell">
     <section className="home-hero">
       <p className="eyebrow">The BNB Chain agent marketplace</p>
-      <h1>Find your agent.<br /><span>Make your next move.</span></h1>
+      <h1>Find your agent.<br /><span className="sr-only">Manage your position.</span><span className="home-hero__taglines" aria-hidden="true"><span className="home-hero__tagline-track"><span>Manage your position.</span><span>Analyze your wallet.</span><span>Get custom alerts.</span><span>Manage your position.</span></span></span></h1>
       <p>Discover agents for your onchain tasks. Understand what they do, explore their record, and hire with confidence.</p>
       <form action="/marketplace" className="home-search">
         <label className="sr-only" htmlFor="home-search">What do you need help with?</label>
