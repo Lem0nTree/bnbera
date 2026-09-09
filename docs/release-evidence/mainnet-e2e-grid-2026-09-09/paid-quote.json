@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "bnbera.erc8183-quote/v1",
+  "quoteId": "805ac4d6-e973-4da7-a466-3394263dfbde",
+  "agentIdentifier": "eip155:56:0x8004a169fb4a3325136eb29fa0ceb6d2e539a432:303779",
+  "identity": {
+    "namespace": "eip155",
+    "chainId": 56,
+    "identityRegistry": "0x8004a169fb4a3325136eb29fa0ceb6d2e539a432",
+    "agentId": "303779"
+  },
+  "agentVersionId": "7e2ff279-d7ab-40d9-8c90-0150872be918",
+  "agentVersion": 2,
+  "providerAddress": "0xa2a2012e52fd075c0f3146e37e833e7294ee52b5",
+  "providerAddressSource": "erc8004_agent_wallet",
+  "service": {
+    "kind": "a2a",
+    "url": "https://bnb-agent-marketplace-ruby.vercel.app/grid/.well-known/agent-card.json",
+    "protocolVersion": "0.3.0",
+    "observedAt": "2026-09-09T17:45:42.543Z",
+    "probeObservedAt": "2026-09-09T17:45:42.543Z"
+  },
+  "chainId": 56,
+  "commerceContract": "0xea4daa3100a767e86fded867729ae7446476eba6",
+  "paymentToken": "0xce24439f2d9c6a2289f741120fe202248b666666",
+  "paymentDecimals": 18,
+  "tokenSymbol": "U",
+  "priceAtomic": "10000000000000000",
+  "task": "{\"chain_id\":56,\"currency\":\"0xcE24439F2D9C6a2289F741120FE202248B666666\",\"negotiated_at\":1788975960,\"negotiation_hash\":\"0x6e0f2a9601c33f66bc94aac5885c5e9592f5f4e4b0b288654ff5fd3d07f98469\",\"price\":\"10000000000000000\",\"provider_sig\":\"0xb6750fb1b18cb40490ddb205b15454eaa67df20305414f7d9c3fb45aed5268245bde541174cda8d2fe4413487e6324f023c1c50d5ab6c4ebb804f6fcf3d71c1d1b\",\"quote_expires_at\":1788976860,\"task\":\"GRID_PLAN_V1:{\\\"capital\\\":\\\"1000\\\",\\\"gridCount\\\":9,\\\"lowerPrice\\\":\\\"700\\\",\\\"pair\\\":\\\"BNB/USDT\\\",\\\"upperPrice\\\":\\\"900\\\"}\",\"terms\":{\"deliverables\":\"Deterministic Grid plan JSON with levels, allocation, triggers and assumptions\",\"quality_standards\":\"Deterministic output, no order execution and no custody\"},\"verifying_contract\":\"0xEa4DAa3100A767e86FDed867729ae7446476EBA6\",\"version\":1}",
+  "taskDigest": "364954657dec647bb1f5e4e3b8ab0a50210469aae2e0b3251b7040839071fd35",
+  "externalSeller": {
+    "protocol": "apex-erc8183-v1",
+    "requestedTask": "GRID_PLAN_V1:{\"capital\":\"1000\",\"gridCount\":9,\"lowerPrice\":\"700\",\"pair\":\"BNB/USDT\",\"upperPrice\":\"900\"}",
+    "signedOffer": "{\"schemaVersion\":\"bnbera.external-erc8183-quote/v1\",\"identity\":{\"namespace\":\"eip155\",\"chainId\":56,\"identityRegistry\":\"0x8004a169fb4a3325136eb29fa0ceb6d2e539a432\",\"agentId\":\"303779\"},\"providerAddress\":\"0xA2a2012e52Fd075c0F3146e37E833E7294ee52B5\",\"endpoint\":\"https://bnb-agent-marketplace-ruby.vercel.app/api/sellers/grid/a2a\",\"resultBaseUrl\":\"https://bnb-agent-marketplace-ruby.vercel.app\",\"chainId\":56,\"commerceContract\":\"0xEa4DAa3100A767e86FDed867729ae7446476EBA6\",\"paymentToken\":\"0xcE24439F2D9C6a2289F741120FE202248B666666\",\"priceAtomic\":\"10000000000000000\",\"requestedTask\":\"GRID_PLAN_V1:{\\\"capital\\\":\\\"1000\\\",\\\"gridCount\\\":9,\\\"lowerPrice\\\":\\\"700\\\",\\\"pair\\\":\\\"BNB/USDT\\\",\\\"upperPrice\\\":\\\"900\\\"}\",\"deliverables\":\"Deterministic Grid plan JSON with levels, allocation, triggers and assumptions\",\"qualityStandards\":\"Deterministic output, no order execution and no custody\",\"issuedAtUnix\":1788975960,\"expiresAtUnix\":1788976860,\"estimatedCompletionSeconds\":120,\"negotiationHash\":\"0x6e0f2a9601c33f66bc94aac5885c5e9592f5f4e4b0b288654ff5fd3d07f98469\",\"providerSignature\":\"0xb6750fb1b18cb40490ddb205b15454eaa67df20305414f7d9c3fb45aed5268245bde541174cda8d2fe4413487e6324f023c1c50d5ab6c4ebb804f6fcf3d71c1d1b\",\"signedDescription\":\"{\\\"chain_id\\\":56,\\\"currency\\\":\\\"0xcE24439F2D9C6a2289F741120FE202248B666666\\\",\\\"negotiated_at\\\":1788975960,\\\"negotiation_hash\\\":\\\"0x6e0f2a9601c33f66bc94aac5885c5e9592f5f4e4b0b288654ff5fd3d07f98469\\\",\\\"price\\\":\\\"10000000000000000\\\",\\\"provider_sig\\\":\\\"0xb6750fb1b18cb40490ddb205b15454eaa67df20305414f7d9c3fb45aed5268245bde541174cda8d2fe4413487e6324f023c1c50d5ab6c4ebb804f6fcf3d71c1d1b\\\",\\\"quote_expires_at\\\":1788976860,\\\"task\\\":\\\"GRID_PLAN_V1:{\\\\\\\"capital\\\\\\\":\\\\\\\"1000\\\\\\\",\\\\\\\"gridCount\\\\\\\":9,\\\\\\\"lowerPrice\\\\\\\":\\\\\\\"700\\\\\\\",\\\\\\\"pair\\\\\\\":\\\\\\\"BNB/USDT\\\\\\\",\\\\\\\"upperPrice\\\\\\\":\\\\\\\"900\\\\\\\"}\\\",\\\"terms\\\":{\\\"deliverables\\\":\\\"Deterministic Grid plan JSON with levels, allocation, triggers and assumptions\\\",\\\"quality_standards\\\":\\\"Deterministic output, no order execution and no custody\\\"},\\\"verifying_contract\\\":\\\"0xEa4DAa3100A767e86FDed867729ae7446476EBA6\\\",\\\"version\\\":1}\",\"descriptionDigest\":\"364954657dec647bb1f5e4e3b8ab0a50210469aae2e0b3251b7040839071fd35\",\"finalizedIdentityBlock\":\"120920588\"}",
+    "executionStatus": "historical_result_verified",
+    "historicalJobId": "56720",
+    "disputeWindowSeconds": 604800
+  },
+  "issuedAt": "2026-09-09T17:46:00.000Z",
+  "expiresAt": "2026-09-09T18:01:00.000Z",
+  "status": "draft"
+}

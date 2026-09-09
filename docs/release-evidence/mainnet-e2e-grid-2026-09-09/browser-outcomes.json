@@ -1,0 +1,247 @@
+{
+  "observedAt": "2026-09-09T17:57:43.620Z",
+  "delivery": {
+    "url": "https://bnbera.ritarda.to/api/commerce/56765/deliver",
+    "status": 409,
+    "body": {
+      "contractVersion": "bnbera.erc8183-commerce/v1",
+      "status": "error",
+      "error": {
+        "code": "RECONCILIATION_REQUIRED",
+        "message": "The seller delivery outcome is unknown. The saved claim prevents duplicate work; refresh the job and result.",
+        "requestId": "105810b2-db50-4622-9f15-611cfa200125",
+        "retriable": false,
+        "nextAction": "reconcile_job"
+      },
+      "job": null,
+      "operation": null
+    }
+  },
+  "refresh": {
+    "url": "https://bnbera.ritarda.to/api/commerce/56765/refresh-result",
+    "status": 200,
+    "body": {
+      "status": "result_verified",
+      "resultDigest": "b08e20f96debc6c016616ea5df1b4df1983cf74311fd36d4fc63f8cd2eec8ed0",
+      "transactionHash": "0x622db01ef41fe6b866ef32b47d7b77d21af3b80f864760919668af8fa8dc1b83"
+    }
+  },
+  "operation": {
+    "url": "https://bnbera.ritarda.to/api/commerce/operation/8a762932-5259-47c5-bfb9-89465eae6cad",
+    "status": 200,
+    "body": {
+      "contractVersion": "bnbera.erc8183-commerce/v1",
+      "status": "ready",
+      "operation": {
+        "operationId": "8a762932-5259-47c5-bfb9-89465eae6cad",
+        "jobId": "56765",
+        "kind": "fund",
+        "signerRole": "client",
+        "status": "confirmed",
+        "callsId": null,
+        "transactionHash": "0xead646ad5da6f15ca2e8bf453ec41fa34e6947a21ffba6db43acd72a9d62c7a6",
+        "blockNumber": "120921520",
+        "blockHash": "0xa08f0c26fe37c9fa2ed73dfd5e13d2bc693c13f9fc6b50e3c10879fabba7b056",
+        "failureCode": null,
+        "createdAtUnix": 1788976349,
+        "updatedAtUnix": 1788976380
+      },
+      "job": {
+        "job": {
+          "jobKey": {
+            "chainId": 56,
+            "commerceContract": "0xea4daa3100a767e86fded867729ae7446476eba6",
+            "jobId": "56765"
+          },
+          "terms": {
+            "chainId": 56,
+            "commerceContract": "0xea4daa3100a767e86fded867729ae7446476eba6",
+            "paymentToken": "0xce24439f2d9c6a2289f741120fe202248b666666",
+            "paymentDecimals": 18,
+            "clientAddress": "0x230072625f8090d5271c5f882748ce11134ac2ba",
+            "providerAddress": "0xa2a2012e52fd075c0f3146e37e833e7294ee52b5",
+            "evaluatorAddress": "0x51895229e12f9876011789b04f8698af06ccd6da",
+            "hookAddress": "0x51895229e12f9876011789b04f8698af06ccd6da",
+            "budgetAtomic": "10000000000000000",
+            "descriptionDigest": "364954657dec647bb1f5e4e3b8ab0a50210469aae2e0b3251b7040839071fd35",
+            "expiresAtUnix": 1789582596
+          },
+          "deploymentPin": {
+            "enabled": true,
+            "chainId": 56,
+            "specRevision": "a078cab5cc8e9581c15f76c091ed96eed28f02f7",
+            "commerceContract": "0xea4daa3100a767e86fded867729ae7446476eba6",
+            "paymentToken": "0xce24439f2d9c6a2289f741120fe202248b666666",
+            "paymentDecimals": 18,
+            "abiHash": "4d8ac8b406dff522f1b9066eb3e00e2c8e491d4d09df2564ede124220b623ede",
+            "evaluatorProfile": "verified-policy-v1",
+            "confirmationThreshold": 1,
+            "minExpiryLeadSeconds": 60,
+            "maxExpiryHorizonSeconds": 691200,
+            "minBudgetAtomic": "1",
+            "maxBudgetAtomic": "115792089237316195423570985008687907853269984665640564039457584007913129639934"
+          },
+          "deploymentPinDigest": "970c870550b3a9d1f4dd7313efbcdead3799ecd8b9fb7110c2e811a297fd0a4b",
+          "state": "submitted",
+          "createdAtUnix": 1788976349,
+          "updatedAtUnix": 1788976559,
+          "deliverableDigest": "b08e20f96debc6c016616ea5df1b4df1983cf74311fd36d4fc63f8cd2eec8ed0",
+          "providerBinding": {
+            "identity": {
+              "namespace": "eip155",
+              "chainId": 56,
+              "identityRegistry": "0x8004a169fb4a3325136eb29fa0ceb6d2e539a432",
+              "agentId": "303779"
+            },
+            "agentVersionId": "7e2ff279-d7ab-40d9-8c90-0150872be918",
+            "agentVersion": 2
+          },
+          "buyerApproval": null,
+          "fundingTransactionHash": "0xead646ad5da6f15ca2e8bf453ec41fa34e6947a21ffba6db43acd72a9d62c7a6",
+          "submissionTransactionHash": "0x622db01ef41fe6b866ef32b47d7b77d21af3b80f864760919668af8fa8dc1b83",
+          "completionTransactionHash": null,
+          "rejectionTransactionHash": null,
+          "refundTransactionHash": null,
+          "lastObservedBlock": "120921583",
+          "lastObservedBlockHash": "0x0deec973bc69da4d9c1d1a3868f72559332d89c4a56048db91a9a55ae67dd47f",
+          "lastObservedAtUnix": 1788976559
+        },
+        "submission": {
+          "eventId": "bfc07863-1c32-47b3-97de-97696b74a520",
+          "eventKey": "operation:5447c2f1-a26c-4c6d-8e70-7c1c5e632ea1:submit",
+          "confirmationState": "canonical",
+          "status": "confirmed",
+          "observedAtUnix": 1788976559,
+          "blockNumber": "120921583",
+          "blockHash": "0x0deec973bc69da4d9c1d1a3868f72559332d89c4a56048db91a9a55ae67dd47f",
+          "logIndex": null,
+          "operationId": "5447c2f1-a26c-4c6d-8e70-7c1c5e632ea1",
+          "callsId": null,
+          "transactionHash": "0x622db01ef41fe6b866ef32b47d7b77d21af3b80f864760919668af8fa8dc1b83",
+          "localSha256": "b08e20f96debc6c016616ea5df1b4df1983cf74311fd36d4fc63f8cd2eec8ed0",
+          "chainKeccak": "0x3184a55488c862c06aa2feb8c58646604b88c89b7218c960b38502fed29ce7b4",
+          "resultDigest": "b08e20f96debc6c016616ea5df1b4df1983cf74311fd36d4fc63f8cd2eec8ed0",
+          "chainDeliverable": "0x3184a55488c862c06aa2feb8c58646604b88c89b7218c960b38502fed29ce7b4",
+          "deliverableUrl": "https://bnb-agent-marketplace-ruby.vercel.app/api/sellers/grid/job/56765/response",
+          "manifestText": "{\"chain_id\":56,\"contracts\":{\"commerce\":\"0xEa4DAa3100A767e86FDed867729ae7446476EBA6\",\"policy\":\"0x9C01845705b3078Aa2e8cfF7520a6376FD766dE5\",\"router\":\"0x51895229E12F9876011789B04f8698af06cCD6DA\"},\"job_id\":56765,\"metadata\":{\"execution\":\"none\",\"sellerType\":\"marketplace-operated-grid-seller\"},\"response\":{\"content\":\"{\\\"schemaVersion\\\":1,\\\"pair\\\":\\\"BNB/USDT\\\",\\\"lowerPrice\\\":\\\"700\\\",\\\"upperPrice\\\":\\\"900\\\",\\\"capital\\\":\\\"1000\\\",\\\"gridCount\\\":9,\\\"spacing\\\":\\\"25\\\",\\\"levels\\\":[{\\\"index\\\":1,\\\"price\\\":\\\"700\\\",\\\"side\\\":\\\"buy\\\",\\\"capital\\\":\\\"111.11111111\\\"},{\\\"index\\\":2,\\\"price\\\":\\\"725\\\",\\\"side\\\":\\\"buy\\\",\\\"capital\\\":\\\"111.11111111\\\"},{\\\"index\\\":3,\\\"price\\\":\\\"750\\\",\\\"side\\\":\\\"buy\\\",\\\"capital\\\":\\\"111.11111111\\\"},{\\\"index\\\":4,\\\"price\\\":\\\"775\\\",\\\"side\\\":\\\"buy\\\",\\\"capital\\\":\\\"111.11111111\\\"},{\\\"index\\\":5,\\\"price\\\":\\\"800\\\",\\\"side\\\":\\\"buy\\\",\\\"capital\\\":\\\"111.11111111\\\"},{\\\"index\\\":6,\\\"price\\\":\\\"825\\\",\\\"side\\\":\\\"sell\\\",\\\"capital\\\":\\\"111.11111111\\\"},{\\\"index\\\":7,\\\"price\\\":\\\"850\\\",\\\"side\\\":\\\"sell\\\",\\\"capital\\\":\\\"111.11111111\\\"},{\\\"index\\\":8,\\\"price\\\":\\\"875\\\",\\\"side\\\":\\\"sell\\\",\\\"capital\\\":\\\"111.11111111\\\"},{\\\"index\\\":9,\\\"price\\\":\\\"900\\\",\\\"side\\\":\\\"sell\\\",\\\"capital\\\":\\\"111.11111112\\\"}],\\\"rebalanceTriggers\\\":{\\\"below\\\":\\\"665\\\",\\\"above\\\":\\\"945\\\"},\\\"assumptions\\\":[\\\"Arithmetic price spacing with inclusive lower and upper bounds.\\\",\\\"Capital is allocated evenly; rounding remainder is assigned to the final level.\\\",\\\"Buy levels are at or below the range midpoint and sell levels are above it.\\\",\\\"Rebalance triggers sit five percent outside the configured range.\\\",\\\"This plan performs no order placement, custody or financial execution.\\\"],\\\"execution\\\":\\\"none\\\"}\",\"content_type\":\"application/json\"},\"version\":1}",
+          "manifest": {
+            "job_id": 56765,
+            "version": 1,
+            "chain_id": 56,
+            "metadata": {
+              "execution": "none",
+              "sellerType": "marketplace-operated-grid-seller"
+            },
+            "response": {
+              "content": "{\"schemaVersion\":1,\"pair\":\"BNB/USDT\",\"lowerPrice\":\"700\",\"upperPrice\":\"900\",\"capital\":\"1000\",\"gridCount\":9,\"spacing\":\"25\",\"levels\":[{\"index\":1,\"price\":\"700\",\"side\":\"buy\",\"capital\":\"111.11111111\"},{\"index\":2,\"price\":\"725\",\"side\":\"buy\",\"capital\":\"111.11111111\"},{\"index\":3,\"price\":\"750\",\"side\":\"buy\",\"capital\":\"111.11111111\"},{\"index\":4,\"price\":\"775\",\"side\":\"buy\",\"capital\":\"111.11111111\"},{\"index\":5,\"price\":\"800\",\"side\":\"buy\",\"capital\":\"111.11111111\"},{\"index\":6,\"price\":\"825\",\"side\":\"sell\",\"capital\":\"111.11111111\"},{\"index\":7,\"price\":\"850\",\"side\":\"sell\",\"capital\":\"111.11111111\"},{\"index\":8,\"price\":\"875\",\"side\":\"sell\",\"capital\":\"111.11111111\"},{\"index\":9,\"price\":\"900\",\"side\":\"sell\",\"capital\":\"111.11111112\"}],\"rebalanceTriggers\":{\"below\":\"665\",\"above\":\"945\"},\"assumptions\":[\"Arithmetic price spacing with inclusive lower and upper bounds.\",\"Capital is allocated evenly; rounding remainder is assigned to the final level.\",\"Buy levels are at or below the range midpoint and sell levels are above it.\",\"Rebalance triggers sit five percent outside the configured range.\",\"This plan performs no order placement, custody or financial execution.\"],\"execution\":\"none\"}",
+              "content_type": "application/json"
+            },
+            "contracts": {
+              "policy": "0x9C01845705b3078Aa2e8cfF7520a6376FD766dE5",
+              "router": "0x51895229E12F9876011789B04f8698af06cCD6DA",
+              "commerce": "0xEa4DAa3100A767e86FDed867729ae7446476EBA6"
+            }
+          },
+          "result": null,
+          "operationStatus": "reconciled"
+        },
+        "operations": [
+          {
+            "operationId": "68c1258c-f3b0-4566-a14d-25b11e768400",
+            "jobId": "56765",
+            "kind": "create",
+            "signerRole": "client",
+            "status": "confirmed",
+            "callsId": null,
+            "transactionHash": "0xeb63336c9b39c15ad5d9cd6607640c31836ab2249d7cd4208f5ff7957c3b6a2c",
+            "blockNumber": "120920783",
+            "blockHash": "0x39eb609a685a53b3a33b760ed31dda24f45a9cc4f930deb9ae1a883d38a03696",
+            "failureCode": null,
+            "createdAtUnix": 1788975996,
+            "updatedAtUnix": 1788976049
+          },
+          {
+            "operationId": "86471585-7b63-4b29-83ac-2bf48bc89987",
+            "jobId": "56765",
+            "kind": "register",
+            "signerRole": "client",
+            "status": "confirmed",
+            "callsId": null,
+            "transactionHash": "0xd5a9bac6c8039ee26d24b81618b1a4eaad9681e4ec7ae8e41d6e64215d917e23",
+            "blockNumber": "120920878",
+            "blockHash": "0x7248ea04cb0a6594b20e78f3282302a46d20d0e31ea91f9cb7cced8f4d9f8ad9",
+            "failureCode": null,
+            "createdAtUnix": 1788976049,
+            "updatedAtUnix": 1788976092
+          },
+          {
+            "operationId": "c96feeb4-74bb-4be7-96cd-1f2cde0c0c10",
+            "jobId": "56765",
+            "kind": "set_budget",
+            "signerRole": "client",
+            "status": "confirmed",
+            "callsId": null,
+            "transactionHash": "0x8b68f8a53a9323627aefbf3ec144dbe9c010333afb790b1ec112cf7d3923dce5",
+            "blockNumber": "120921378",
+            "blockHash": "0x1ddc8c41a95fcb3ba56ede1e700e8631fbd94ae5d7ecafb5aa750213abee6be9",
+            "failureCode": null,
+            "createdAtUnix": 1788976092,
+            "updatedAtUnix": 1788976316
+          },
+          {
+            "operationId": "779dd5d1-f23e-4dbb-aec2-0b4e4daceea7",
+            "jobId": "56765",
+            "kind": "approve",
+            "signerRole": "client",
+            "status": "confirmed",
+            "callsId": null,
+            "transactionHash": "0x615db35f73515040122336f7765204d3b294c2c3be4d16254ec184c839dfd1da",
+            "blockNumber": "120921452",
+            "blockHash": "0x1ded87022066da04de0f58ad4a8cb126cc01bfdb5ecdda158f3495c7aad1ca28",
+            "failureCode": null,
+            "createdAtUnix": 1788976316,
+            "updatedAtUnix": 1788976349
+          },
+          {
+            "operationId": "8a762932-5259-47c5-bfb9-89465eae6cad",
+            "jobId": "56765",
+            "kind": "fund",
+            "signerRole": "client",
+            "status": "confirmed",
+            "callsId": null,
+            "transactionHash": "0xead646ad5da6f15ca2e8bf453ec41fa34e6947a21ffba6db43acd72a9d62c7a6",
+            "blockNumber": "120921520",
+            "blockHash": "0xa08f0c26fe37c9fa2ed73dfd5e13d2bc693c13f9fc6b50e3c10879fabba7b056",
+            "failureCode": null,
+            "createdAtUnix": 1788976349,
+            "updatedAtUnix": 1788976380
+          },
+          {
+            "operationId": "5447c2f1-a26c-4c6d-8e70-7c1c5e632ea1",
+            "jobId": "56765",
+            "kind": "submit",
+            "signerRole": "provider",
+            "status": "reconciled",
+            "callsId": null,
+            "transactionHash": "0x622db01ef41fe6b866ef32b47d7b77d21af3b80f864760919668af8fa8dc1b83",
+            "blockNumber": "120921583",
+            "blockHash": "0x0deec973bc69da4d9c1d1a3868f72559332d89c4a56048db91a9a55ae67dd47f",
+            "failureCode": null,
+            "createdAtUnix": 1788976558,
+            "updatedAtUnix": 1788976560
+          }
+        ],
+        "settlementGate": {
+          "status": "waiting",
+          "notBeforeUnix": 1789581359,
+          "windowSeconds": 604800
+        },
+        "approvalRequired": true
+      },
+      "dispatch": null,
+      "error": null
+    }
+  },
+  "reviewAcknowledged": true,
+  "approveAndSettleDisabled": true
+}
