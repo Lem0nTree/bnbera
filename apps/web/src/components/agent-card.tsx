@@ -3,7 +3,6 @@ import { DataModeBadge, StateAxisGrid, StatusBadge } from "@bnbera/ui";
 import { erc8004IdentityKey } from "@bnbera/domain";
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
 import { categoryLabel, compactAddress, formatObservedAt, joinOrFallback, statusTone, titleCase } from "@/lib/presentation";
-import { ActivationPanel } from "./activation-panel";
 import { CompareToggle } from "./compare-toggle";
 
 function reputationCountLabel(view: MarketplaceAgentReadModel["metrics"]["reputation"]["rawPermissionless"]): string {
@@ -38,14 +37,13 @@ export function AgentCard({ agent }: { readonly agent: MarketplaceAgentReadModel
       <p className="agent-card__description">{agent.description}</p>
       <div className="agent-card__facts">
         <span><b>Network</b> BSC {identity.chainId === 97 ? "testnet" : "mainnet"}</span>
-        <span><b>Identity</b> {identity.namespace}:{identity.chainId}:{compactAddress(identity.identityRegistry)}:#{identity.agentId}</span>
         <span><b>Protocols</b> {joinOrFallback(agent.protocols, "Not observed")}</span>
         <span><b>Endpoint probe</b> {titleCase(agent.health.endpointStatus)} · {formatObservedAt(agent.health.observedAt)}{agent.health.latencyMs === null ? "" : ` · ${agent.health.latencyMs} ms`}</span>
         <span><b>Observed uptime samples</b> {agent.metrics.uptime.status === "observed" ? `${agent.metrics.uptime.successfulChecks}/${agent.metrics.uptime.attemptedChecks}` : "Not observed"}</span>
         <span><b>Reputation views</b> raw {reputationCountLabel(agent.metrics.reputation.rawPermissionless)} · recognized {reputationCountLabel(agent.metrics.reputation.recognizedReviewers)} · verified {reputationCountLabel(agent.metrics.reputation.verifiedPurchases)}</span>
         <span><b>Completed jobs</b> {agent.metrics.completedJobs.completedCount ?? "Unavailable"}</span>
       </div>
-      <StateAxisGrid axes={agent.stateAxes} compact />
+      <details className="quiet-disclosure"><summary>Listing status & identity</summary><StateAxisGrid axes={agent.stateAxes} compact /><p><code title={erc8004IdentityKey(identity)}>{identity.namespace}:{identity.chainId}:{compactAddress(identity.identityRegistry)}:#{identity.agentId}</code></p><p><code>{erc8004IdentityKey(identity)}</code></p></details>
       <div className="agent-card__footer">
         <div className="agent-card__freshness">
           <span className="muted-label">Read observations</span>
@@ -57,11 +55,11 @@ export function AgentCard({ agent }: { readonly agent: MarketplaceAgentReadModel
         <div className="agent-card__actions">
           <CompareToggle slug={agent.slug} />
           <Link className="button button--small" href={`/agents/${agent.slug}`}>
-            View detail <span aria-hidden="true">↗</span>
+            View agent <span aria-hidden="true">↗</span>
           </Link>
         </div>
       </div>
-      <ActivationPanel activation={agent.activation} identityKey={erc8004IdentityKey(identity)} />
+      <div className="agent-card__offer"><strong>{agent.pricing.label}</strong>{agent.activation.enabled ? <Link href={`/agents/${agent.slug}#hire`}>Hire agent →</Link> : <small>{agent.activation.reason}</small>}</div>
       <p className="fixture-caption">{titleCase(agent.dataProvenance.label)} · {agent.dataProvenance.details}</p>
     </article>
   );

@@ -15,10 +15,9 @@ export default async function MarketplacePage({ searchParams }: { readonly searc
     <div className="page-shell">
       <SectionHeading
         headingLevel={1}
-        eyebrow="Public marketplace · W0/W1"
-        title="Find the evidence before the action."
-        description="Search structured capabilities and inspect the six independent state axes. A discovery record is never presented as an execution guarantee."
-        action={<span className="status-badge status-badge--success"><span className="status-badge__dot" aria-hidden="true" />Core Marketplace enabled</span>}
+        eyebrow="Discover"
+        title="Explore the marketplace."
+        description="Find the right capabilities for your task. Inspect availability, price, and evidence before you hire."
       />
       <div className="section-block section-block--flush">
         <Suspense fallback={<LoadingState label="Preparing marketplace controls" />}>

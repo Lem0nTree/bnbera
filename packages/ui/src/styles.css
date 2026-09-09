@@ -2,11 +2,11 @@
   --bnbera-purple: #7c3aed;
   --bnbera-purple-hover: #6d28d9;
   --bnbera-purple-highlight: #a78bfa;
-  --bnbera-background: #0b0714;
-  --bnbera-surface: #151020;
-  --bnbera-elevated: #1d1630;
-  --bnbera-text: #f8f7fc;
-  --bnbera-muted: #a8a1b5;
+  --bnbera-background: #0b0a10;
+  --bnbera-surface: #15131d;
+  --bnbera-elevated: #211d2c;
+  --bnbera-text: #f5f3f8;
+  --bnbera-muted: #b5afc0;
   --bnbera-border: #302742;
   --bnbera-yellow: #f0b90b;
   --bnbera-green: #22c55e;
@@ -37,7 +37,7 @@
   font-weight: 850;
   height: 2.05rem;
   justify-content: center;
-  transform: rotate(-8deg);
+  transform: none;
   width: 2.05rem;
 }
 
@@ -56,13 +56,13 @@
   border: 1px solid var(--bnbera-border);
   border-radius: 999px;
   display: inline-flex;
-  font-size: 0.68rem;
+  font-size: 0.8125rem;
   font-weight: 720;
   gap: 0.4rem;
   letter-spacing: 0.025em;
   line-height: 1;
   padding: 0.45rem 0.65rem;
-  text-transform: uppercase;
+  text-transform: none;
   white-space: nowrap;
 }
 

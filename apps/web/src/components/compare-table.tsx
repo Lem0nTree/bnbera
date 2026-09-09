@@ -17,7 +17,7 @@ export function CompareTable({ agents }: { readonly agents: readonly Marketplace
   }
 
   return (
-    <div className="compare-table-wrap">
+    <div className="compare-table-wrap" role="region" aria-label="Agent comparison; scroll horizontally to inspect all agents" tabIndex={0}>
       <div className="compare-grid" style={{ "--compare-columns": agents.length } as CSSProperties}>
         {agents.map((agent) => (
           <article className="compare-column" key={agent.id}>

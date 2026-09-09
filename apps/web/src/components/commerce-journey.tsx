@@ -1,7 +1,9 @@
 "use client";
 
 import { Callout, StatusBadge } from "@bnbera/ui";
-import type { WalletClient } from "viem";
+import { formatUnits, type WalletClient } from "viem";
+import { resumedOperationMatches } from "@/lib/hired-presentation";
+import { useToast } from "./toast-provider";
 import { bscTestnet } from "viem/chains";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -29,6 +31,10 @@ type JourneyProps = {
   readonly activation: MarketplaceAgentReadModel["activation"];
   /** Canonical ERC-8004 identity key; slugs remain presentation-only. */
   readonly identityKey: string;
+  readonly resumeOperationId?: string | null;
+  readonly expectedProtocolJobId?: string | null;
+  readonly walletOnly?: boolean;
+  readonly onAuthenticated?: () => void;
   /** A server-created parent quote/reservation. Never generated client-side. */
   readonly commerceJobId?: string | null;
   /** Detail-read evidence, bound to the same persisted commerce job. */
@@ -104,7 +110,8 @@ export function CommerceJourney(props: JourneyProps) {
   );
 }
 
-function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, runBundle = undefined }: JourneyProps) {
+function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, runBundle = undefined, resumeOperationId = null, expectedProtocolJobId = null, walletOnly = false, onAuthenticated }: JourneyProps) {
+  const { notify } = useToast();
   const storageKey = useMemo(() => publicStorageKey(identityKey), [identityKey]);
   const quoteKey = useMemo(() => quoteStorageKey(identityKey), [identityKey]);
   const [authority, setAuthority] = useState<BrowserAuthority | null>(null);
@@ -122,7 +129,11 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
   const [reviewComment, setReviewComment] = useState("");
   const [reviewSent, setReviewSent] = useState(false);
   const [transactionHashDraft, setTransactionHashDraft] = useState("");
+  const [resultReviewed, setResultReviewed] = useState(false);
+  const [walletRequest, setWalletRequest] = useState<"connect" | "switch" | null>(null);
   const previousWallet = useRef<EoaWalletSnapshot | null>(null);
+  const previousJobState = useRef<string | null>(null);
+  const previousOperationState = useRef<string | null>(null);
   const logoutInFlight = useRef(false);
   const { address, chainId, isConnected } = useAccount();
   const { connectors, connectAsync, isPending: connectionPending } = useConnect();
@@ -154,6 +165,7 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
     address,
     chainId
   }), [address, chainId, isConnected]);
+  useEffect(() => { if (walletAuthenticated) onAuthenticated?.(); }, [walletAuthenticated, onAuthenticated]);
 
   const rememberOperation = useCallback((nextOperationId: string) => {
     setOperationId(nextOperationId);
@@ -195,11 +207,10 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
     if (connector === undefined) {
       throw new Error("WalletConnect is not configured for this preview. Set NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID and reload.");
     }
-    const connected = await connectAsync({ connector, chainId: EOA_BUYER_CHAIN_ID });
-    if (connected.chainId !== EOA_BUYER_CHAIN_ID) {
-      await switchChainAsync({ chainId: EOA_BUYER_CHAIN_ID });
-    }
-  }, [connectAsync, connectors, switchChainAsync]);
+    setWalletRequest("connect");
+    notify({ id: "wallet", tone: "info", title: "Confirm the connection in your wallet" });
+    await connectAsync({ connector, chainId: EOA_BUYER_CHAIN_ID });
+  }, [connectAsync, connectors, notify]);
 
   const signInWithWallet = useCallback(async () => {
     if (!isConnected || address === undefined) throw new Error("Connect a WalletConnect EOA before signing in.");
@@ -225,6 +236,7 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
       statement: challenge.statement
     });
     if (message !== challenge.message) throw new Error("The server SIWE challenge was not canonical.");
+    notify({ id: "wallet", tone: "info", title: "Sign in with your wallet", description: "This signature proves ownership. It is not a payment." });
     const signature = await signMessageAsync({ message });
     await parseResponse(await fetch("/api/auth/siwe/verify", {
       method: "POST",
@@ -246,11 +258,14 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
     }));
     setAuthority({ address, chainId: EOA_BUYER_CHAIN_ID, walletClient });
     setWalletAuthenticated(true);
-  }, [address, chainId, isConnected, signMessageAsync, walletClient]);
+    notify({ id: "wallet", tone: "success", title: "Wallet sign-in confirmed" });
+  }, [address, chainId, isConnected, signMessageAsync, walletClient, notify]);
 
   const switchToBuyerChain = useCallback(async () => {
+    setWalletRequest("switch");
+    notify({ id: "wallet", tone: "info", title: "Confirm BNB testnet in your wallet" });
     await switchChainAsync({ chainId: EOA_BUYER_CHAIN_ID });
-  }, [switchChainAsync]);
+  }, [switchChainAsync, notify]);
 
   const disconnectWallet = useCallback(() => {
     clearBrowserAuthority();
@@ -259,7 +274,7 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
   }, [clearBrowserAuthority, disconnect, logoutBrowserSession]);
 
   const loadOperation = useCallback(async (id: string) => {
-    const localHash = window.localStorage.getItem(`${storageKey}:tx:${id}`);
+    const localHash = resumeOperationId === null ? window.localStorage.getItem(`${storageKey}:tx:${id}`) : null;
     if (localHash !== null && /^0x[0-9a-f]{64}$/iu.test(localHash)) {
       try {
         const recovery = await fetch("/api/commerce/dispatch", {
@@ -278,12 +293,19 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
     }
     const response = await fetch(`/api/commerce/operation/${encodeURIComponent(id)}`, { cache: "no-store" });
     const body = await parseResponse<CommerceOperationStatusResponse>(response);
+    if (resumeOperationId !== null && !resumedOperationMatches(body, id, expectedProtocolJobId, identityKey)) throw new Error("The saved operation does not match this hired job. Return to Hired agents.");
     setOperation(body.operation);
     setJob(body.job);
     setDispatch(body.dispatch);
-  }, [applyAction, storageKey]);
+  }, [applyAction, storageKey, resumeOperationId, expectedProtocolJobId, identityKey]);
 
   useEffect(() => {
+    if (walletOnly) return;
+    if (resumeOperationId !== null) {
+      setOperationId(resumeOperationId);
+      void loadOperation(resumeOperationId).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "The hired job could not be loaded."));
+      return;
+    }
     const storedQuote = window.localStorage.getItem(quoteKey);
     if (storedQuote !== null) {
       try {
@@ -303,7 +325,29 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
       setOperationId(stored);
       void loadOperation(stored).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "The saved commerce operation could not be reloaded."));
     }
-  }, [loadOperation, quoteKey, storageKey]);
+  }, [loadOperation, quoteKey, storageKey, resumeOperationId, walletOnly]);
+
+  useEffect(() => {
+    if (walletRequest === "connect" && isConnected) { notify({ id: "wallet", tone: "success", title: "Wallet connected", description: chainId === 97 ? "Sign in to continue." : "Switch to BNB testnet to continue." }); setWalletRequest(null); }
+    if (walletRequest === "switch" && chainId === 97) { notify({ id: "wallet", tone: "success", title: "BNB testnet confirmed" }); setWalletRequest(null); }
+  }, [walletRequest, isConnected, chainId, notify]);
+
+  useEffect(() => {
+    if (error) notify({ id: "commerce-error", tone: /cancel|reject|denied/iu.test(error) ? "neutral" : "warning", title: /cancel|reject|denied/iu.test(error) ? "Wallet request canceled" : "Action needs attention", description: error });
+  }, [error, notify]);
+
+  useEffect(() => {
+    const state = job?.job.state ?? null;
+    if (previousJobState.current !== null && state !== previousJobState.current) {
+      if (state === "submitted") notify({ id: "job-result", tone: "info", title: "Your result is ready", description: "Inspect the exact evidence before deciding." });
+      if (state === "completed") notify({ id: "job-result", tone: "success", title: "Settlement confirmed" });
+      if (state === "funded") notify({ id: "job-result", tone: "success", title: "Escrow funded", description: "Awaiting the agent's result." });
+    }
+    previousJobState.current = state;
+    const operationState = operation ? `${operation.operationId}:${operation.status}` : null;
+    if (previousOperationState.current !== null && previousOperationState.current !== operationState && operation && ["unknown", "manual_review", "reverted"].includes(operation.status)) notify({ id: operation.operationId, tone: operation.status === "reverted" ? "danger" : "warning", title: operation.status === "reverted" ? "Transaction failed" : "Outcome unknown. Do not resend.", description: "Reload status and reconcile the public transaction evidence." });
+    previousOperationState.current = operationState;
+  }, [job, operation, notify]);
 
   useEffect(() => {
     if (operationId === null) return undefined;
@@ -365,6 +409,7 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
       setTask(parsed.task);
       setQuoteConfirmed(false);
       window.localStorage.setItem(quoteKey, JSON.stringify(parsed));
+      notify({ id: "quote", tone: "success", title: "Quote ready", description: "Review the task, price, provider, and expiry." });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The server quote could not be prepared.");
     } finally { setBusy(false); }
@@ -428,6 +473,7 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
         const live = liveWalletFor(current);
         let transactionHash: string;
         try {
+          notify({ id: current.operationId, tone: "info", title: `Confirm ${statusLabel(current.step ?? current.action)} in your wallet` });
           transactionHash = await live.walletClient.sendTransaction({
             account: live.address as `0x${string}`,
             to: current.to as `0x${string}`,
@@ -456,8 +502,9 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
         }
         inFlight = { operationId: current.operationId, transactionHash };
         window.localStorage.setItem(`${storageKey}:tx:${current.operationId}`, transactionHash);
+        notify({ id: current.operationId, tone: "info", title: "Transaction submitted", description: "Waiting for network confirmation." });
         const livePublicClient = publicClientRef.current;
-        if (livePublicClient !== undefined) await livePublicClient.waitForTransactionReceipt({ hash: transactionHash as `0x${string}` });
+        if (livePublicClient !== undefined) { await livePublicClient.waitForTransactionReceipt({ hash: transactionHash as `0x${string}` }); notify({ id: current.operationId, tone: "info", title: "Verifying transaction", description: "The server is checking the exact operation." }); }
         const response: Response = await fetch("/api/commerce/dispatch", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -465,6 +512,8 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
         });
         const result: CommerceActionResponse = await parseResponse<CommerceActionResponse>(response);
         applyAction(result);
+        const confirmedStep = result.job?.operations.find((entry) => entry.operationId === current?.operationId) ?? (result.operation?.operationId === current.operationId ? result.operation : null);
+        if (confirmedStep && ["confirmed", "reconciled"].includes(confirmedStep.status)) notify({ id: current.operationId, tone: "success", title: `${statusLabel(current.step ?? current.action)} confirmed` });
         window.localStorage.removeItem(`${storageKey}:tx:${current.operationId}`);
         inFlight = null;
         current = result.dispatch;
@@ -514,6 +563,7 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
   };
 
   const decide = async (action: "approve" | "dispute") => {
+    if (action === "approve" && !resultReviewed) { setError("Review and acknowledge the exact result before approving settlement."); return; }
     if (!walletAuthenticated) {
       setError("Connect and sign in with the buyer wallet before deciding this result.");
       return;
@@ -569,12 +619,13 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
       });
       await parseResponse(response);
       setReviewSent(true);
+      notify({ id: "review", tone: "success", title: "Verified-purchase review saved" });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "The verified-purchase review could not be saved.");
     } finally { setBusy(false); }
   };
 
-  if (!activation.enabled) return <p className="activation-panel__footnote">The paid browser journey is disabled until the authenticated browser authority and callable-result gate pass.</p>;
+  if (!activation.enabled && resumeOperationId === null && !walletOnly) return <p className="activation-panel__footnote">The paid browser journey is disabled until the authenticated browser authority and callable-result gate pass.</p>;
 
   const canDispatch = dispatch !== null && operation?.status === "awaiting_signature";
   const pending = operation !== null && ["awaiting_signature", "submitted", "unknown", "manual_review"].includes(operation.status);
@@ -588,9 +639,10 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
 
   return (
     <div className="commerce-journey" data-testid="commerce-journey">
-      <div className="commerce-journey__header"><strong>ERC-8183 paid task</strong>{operation !== null && <StatusBadge value={statusLabel(operation.status)} tone={operationStatusTone(operation.status)} />}</div>
+      <div className="commerce-journey__header"><strong>{walletOnly ? "Buyer wallet" : "Hire this agent"}</strong><StatusBadge value="BNB testnet · 97" tone="info" />{operation !== null && <StatusBadge value={statusLabel(operation.status)} tone={operationStatusTone(operation.status)} />}</div>
+      {!walletOnly && <ol className="journey-steps">{["Task", "Quote", "Fund escrow", "Review result", "Complete"].map((label, index) => <li key={label} aria-current={index === (completed ? 4 : submitted ? 3 : operationId ? 2 : quote ? 1 : 0) ? "step" : undefined}>{index + 1}. {label}</li>)}</ol>}
       <div className="commerce-journey__authority">
-        <p className="detail-section__lede">Connect your EOA through WalletConnect. It handles compatible browser and mobile wallets; BNBEra receives only the signed SIWE proof and public operation evidence.</p>
+        <p className="detail-section__lede">Connect through WalletConnect, then sign in to prove wallet ownership. Sign-in is gasless and does not approve a payment.</p>
         {!isConnected && <>
           {!walletConnectProjectConfigured && <p className="muted-label">WalletConnect is unavailable in this preview until <code>NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID</code> is configured. Marketplace browsing remains available.</p>}
           <button className="button button--primary" type="button" disabled={busy || connectionPending || !walletConnectProjectConfigured} onClick={() => {
@@ -618,6 +670,8 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
         </div>}
       </div>
       {error !== null && <Callout title="Commerce action stopped" tone="warning" icon="!">{error}</Callout>}
+      {!walletOnly && <>
+      {job && <div className="detail-kv"><span>Job {job.job.jobKey.jobId}</span><strong>{job.job.state === "funded" ? "Escrow funded · awaiting the agent" : job.job.state === "submitted" ? "Your result is ready" : statusLabel(job.job.state)}</strong></div>}
       {operationId === null && quote === null && <div className="commerce-journey__quote">
         <label htmlFor={`${identityKey}-task`}>Task</label>
         <textarea id={`${identityKey}-task`} value={task} maxLength={4_096} onChange={(event) => setTask(event.target.value)} placeholder="Describe the result you need" />
@@ -627,14 +681,17 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
       {operationId === null && quote !== null && <div className="commerce-journey__quote">
         <p className="eyebrow">Server quote</p>
         <div className="detail-kv"><span>Task</span><span>{quote.task}</span></div>
-        <div className="detail-kv"><span>Price</span><span>{quote.priceAtomic} atomic units{quote.tokenSymbol === null ? "" : ` · ${quote.tokenSymbol}`}</span></div>
+        <div className="detail-kv"><span>Price</span><span>{formatUnits(BigInt(quote.priceAtomic), quote.paymentDecimals)} {quote.tokenSymbol ?? "tokens"} · gas paid separately</span></div>
         <div className="detail-kv"><span>Provider</span><code>{quote.providerAddress}</code></div>
         <div className="detail-kv"><span>Quote expires</span><span>{new Date(quote.expiresAt).toLocaleString()}</span></div>
+        <details><summary>Exact quote details</summary><p>Chain {quote.chainId} · agent version {quote.agentVersion}</p><p>Service: {quote.service.url}</p><p>Token: <code>{quote.paymentToken}</code></p><p>Amount: {quote.priceAtomic} atomic units</p><p>Task digest: <code>{quote.taskDigest}</code></p></details>
         <label className="detail-actions"><input type="checkbox" checked={quoteConfirmed} onChange={(event) => setQuoteConfirmed(event.target.checked)} /> I reviewed this exact task and quote.</label>
         <button className="button button--primary" type="button" disabled={busy || !quoteConfirmed} onClick={() => void prepareHire()}>Prepare explicit funding</button>
         <button className="button button--ghost button--small" type="button" disabled={busy} onClick={() => { setQuote(null); setQuoteConfirmed(false); window.localStorage.removeItem(quoteKey); }}>Request a fresh quote</button>
       </div>}
-      {canDispatch && <button className="button button--primary" type="button" disabled={busy || authority === null || !walletAuthenticated || chainId !== EOA_BUYER_CHAIN_ID} onClick={() => void dispatchBrowser(dispatch)}>Explicitly fund / sign</button>}
+      {operationId && <><p>Funding uses five separate wallet confirmations. Each confirmed step is retained.</p><ol className="funding-steps">{["create", "register", "set_budget", "approve", "fund"].map((step) => { const record = job?.operations.findLast((entry) => entry.kind === step); return <li key={step}>{statusLabel(step)} · {record ? statusLabel(record.status) : dispatch?.step === step ? "Awaiting wallet" : "Not observed"}{record?.transactionHash && <details><summary>Transaction receipt</summary><code>{record.transactionHash}</code></details>}</li>; })}</ol></>}
+      {canDispatch && <><div className="detail-kv"><span>Next wallet call</span><strong>{statusLabel(dispatch.step ?? dispatch.action)}</strong></div><p>Recipient: <code>{dispatch.to}</code> · value {dispatch.valueAtomic} wei · chain {dispatch.chainId}</p><details><summary>Exact transaction data</summary><code>{dispatch.data}</code></details><button className="button button--primary" type="button" disabled={busy || authority === null || !walletAuthenticated || chainId !== EOA_BUYER_CHAIN_ID} onClick={() => void dispatchBrowser(dispatch)}>Review and sign {statusLabel(dispatch.step ?? dispatch.action)}</button></>}
+      {operationId && <button className="button button--ghost" type="button" onClick={() => void loadOperation(operationId).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "Status unavailable"))}>Reload status</button>}
       {pending && operation?.status !== "awaiting_signature" && <p className="muted-label">This operation is pending or ambiguous. It will not be resent. Reload or attach the same public transaction hash when available.</p>}
       {pending && operation?.status !== "awaiting_signature" && <div className="commerce-journey__recovery">
         <label htmlFor={`${identityKey}-transaction-hash`}>Public transaction hash (optional recovery)</label>
@@ -649,11 +706,13 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
         <div className="detail-kv"><span>Submission receipt</span><code>{submission.transactionHash}</code></div>
         {job?.job.completionTransactionHash !== null && job?.job.completionTransactionHash !== undefined && <div className="detail-kv"><span>Settlement receipt</span><code>{job.job.completionTransactionHash}</code></div>}
         {currentRunBundle !== null && <div className="detail-kv"><span>Greenfield run_bundle</span><span><StatusBadge value={statusLabel(currentRunBundle.status)} tone={currentRunBundle.status === "verified" ? "success" : currentRunBundle.status === "failed" ? "danger" : currentRunBundle.status === "pending" ? "warning" : "neutral"} />{currentRunBundle.status === "verified" && safeVerifiedEvidenceLink(currentRunBundle.readUrl) !== null ? <a href={safeVerifiedEvidenceLink(currentRunBundle.readUrl) ?? undefined} target="_blank" rel="noreferrer">Open verified JSON</a> : currentRunBundle.reason ?? "No verified Greenfield publication is available."}</span></div>}
-        {submission.manifestText !== null && <pre className="commerce-journey__manifest">{submission.manifestText}</pre>}
+        {submission.result !== null && <pre className="commerce-journey__manifest">{JSON.stringify(submission.result, null, 2)}</pre>}
+        {submission.manifestText !== null && <details><summary>Exact result manifest</summary><pre className="commerce-journey__manifest">{submission.manifestText}</pre></details>}
       </div>}
       {submitted && <div className="commerce-journey__decision">
         <p className="detail-section__lede">Inspect the exact bytes and digest, then choose one buyer decision.</p>
-        <div className="detail-actions"><button className="button button--primary" type="button" disabled={busy || authority === null || !walletAuthenticated || chainId !== EOA_BUYER_CHAIN_ID} onClick={() => void decide("approve")}>Approve and settle</button><button className="button button--ghost button--small" type="button" disabled={busy || authority === null || !walletAuthenticated || chainId !== EOA_BUYER_CHAIN_ID} onClick={() => void decide("dispute")}>Dispute result</button></div>
+        <label><input type="checkbox" checked={resultReviewed} onChange={(event) => setResultReviewed(event.target.checked)} /> I reviewed this result and its exact evidence.</label>
+        <div className="detail-actions"><button className="button button--primary" type="button" disabled={busy || !resultReviewed || authority === null || !walletAuthenticated || chainId !== EOA_BUYER_CHAIN_ID} onClick={() => void decide("approve")}>Approve and settle</button><button className="button button--ghost button--small" type="button" disabled={busy || authority === null || !walletAuthenticated || chainId !== EOA_BUYER_CHAIN_ID} onClick={() => void decide("dispute")}>Dispute result</button></div>
       </div>}
       {refundable && <div className="commerce-journey__decision"><p className="detail-section__lede">This funded job has expired without a completed result.</p><button className="button button--ghost button--small" type="button" disabled={busy || !walletAuthenticated || chainId !== EOA_BUYER_CHAIN_ID} onClick={() => void claimRefund()}>Claim refund</button></div>}
       {completed && !reviewSent && <div className="commerce-journey__review">
@@ -663,6 +722,7 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
         <button className="button button--ghost button--small" type="button" disabled={busy || !walletAuthenticated || (quote?.quoteId ?? commerceJobId) === null || (quote?.quoteId ?? commerceJobId) === undefined} onClick={() => void createReview()}>Save verified review</button>
       </div>}
       {completed && reviewSent && <p className="muted-label">Verified-purchase review saved for this completed job.</p>}
+      </>}
     </div>
   );
 }

@@ -28,7 +28,7 @@ export function CompareToggle({ slug }: { readonly slug: string }) {
     } else {
       params.delete("agents");
     }
-    const target = next.length > 0 ? `/compare?${params.toString()}` : pathname;
+    const target = `${pathname}${params.size ? `?${params.toString()}` : ""}`;
     router.push(target, { scroll: false });
   }
 
