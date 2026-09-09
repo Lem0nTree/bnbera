@@ -7,10 +7,14 @@ export function assertSameOriginJsonMutation(request: Request): void {
   assertSameOriginMutation(request);
 }
 export function assertSameOriginMutation(request: Request): void {
-  const expected = new URL(request.url).origin;
   const origin = request.headers.get("origin");
   const referer = request.headers.get("referer");
   let valid = request.headers.get("sec-fetch-site") !== "cross-site";
-  try { valid &&= origin !== null ? origin === expected : referer === null || new URL(referer).origin === expected; } catch { valid = false; }
+  try {
+    // Next's server Request URL can contain the loopback/upstream origin behind
+    // a trusted reverse proxy. APP_URL is the canonical browser origin.
+    const expected = process.env.APP_URL ? new URL(process.env.APP_URL).origin : new URL(request.url).origin;
+    valid &&= origin !== null ? origin === expected : referer === null || new URL(referer).origin === expected;
+  } catch { valid = false; }
   if (!valid) throw new AppError({ code: "REQUEST_ORIGIN_INVALID", safeMessage: "This action requires a same-origin JSON request.", requestId: "req_web_origin", nextAction: "retry_same_origin" });
 }

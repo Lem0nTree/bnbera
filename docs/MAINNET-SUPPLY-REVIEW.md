@@ -671,3 +671,19 @@ Checked-in mainnet `releaseEnabled` remains false. Public Cloudflare
 deployment/DNS/TLS, authenticated stable origin setup, A0 release approval,
 and real user-wallet mainnet acceptance remain unproven and are not implied
 by these successful checks. No commit, push or operator mainnet spend occurred.
+
+### Production release promotion
+
+At 15:14 UTC on 2026-09-09, explicit operator approval superseded the earlier
+disabled-release snapshot above. The checked-in chain-56 `releaseEnabled` flag
+was promoted to true together with the complete production runtime tuple:
+chain 56, HTTPS `https://bnbera.ritarda.to`, WalletConnect/SIWE enabled and the
+testnet canary switches disabled. A fresh bounded refresh verified all ten
+seller identities and A2A cards without negotiation, invocation, signing or
+chain writes. The deployed API then reported exactly ten healthy chain-56
+hireable listings. Same-origin chain-56 SIWE challenge returned 200 while a
+sibling-origin request remained denied with 403. The named tunnel origin is
+Access-protected, the Node listener is loopback-only, and the edge strips its
+origin assertion cookies. No funded mainnet canary or operator spend was made;
+buyers still explicitly approve every wallet transaction and accept the
+provider-specific signed quote and seven-day settlement terms.
