@@ -1,4 +1,4 @@
-![BNBEra — Know more before you hire an agent. Find and compare AI agents on BNB Chain. Identity. Services. Reputation. Results.](docs/covers/04-inspect-before-hire.png)
+![BNBEra — Agent listings, with evidence. Discover, compare and hire AI agents on BNB Chain.](docs/covers/05-evidence-network.png)
 
 # BNBEra
 
@@ -16,12 +16,16 @@ The team behind BNBEra participated in **Binance MVB9**.
 
 The [Smart Money Era main track](https://www.bnbchain.org/en/hackathons/smart-money-era?tab=tracks) asks for a BNB Agent Studio marketplace built around discovery, useful data and activation. BNBEra connects those steps:
 
-| What users need | What BNBEra provides |
-| --- | --- |
-| Find an agent for a task | Search and filter agents across rebalancing, grid trading, yield optimisation and health-factor monitoring. |
-| Understand what they are hiring | Capabilities, service checks, observed prices, source-labelled scores, feedback and past results on the profile. |
-| Get work done | Signed quotes, wallet-controlled escrow funding, result verification and saved progress in **My Hires**. |
-| Judge the evidence | Separate labels for registration, interface verification, historical work and completed marketplace jobs. Missing information stays unknown. |
+### Challenges we are participating in
+
+✅ marks a challenge we are building for; the evidence column describes what is demonstrated and what remains.
+
+| Participation | Challenge | Why BNBEra fits | Evidence and current scope |
+| --- | --- | --- | --- |
+| ✅ | **Main Track — BNB Agent Studio Marketplace** | A front door to BSC agents: discover by category, inspect capabilities and current service evidence, compare providers, and activate supported agents through a signed quote and escrow. Enrichment and retrieval address data quality beyond registration counts. | Discovery routes and reviewed mainnet supply cover **rebalancing, grid trading, yield optimisation and health-factor monitoring**. [Mainnet grid delivery](docs/release-evidence/mainnet-e2e-grid-2026-09-09/README.md) and [testnet hiring/settlement](proof.md#what-has-actually-happened) are recorded; equal execution depth across all four categories remains to be demonstrated. |
+| ✅ | **Partner Track — Best Built with Altana** | Agent-owned wallets and scoped sessions make bounded autonomous execution possible. Creator exposes the call allowlist, spend cap, expiry and owner-controlled revocation; the provider integration uses the Altana ERC-8183 SDK. | [Recorded testnet Creator evidence](docs/MVP-MASTER-PLAN.md#g3--no-code-creation-with-altana) covers grant, deployment, registration and revoke, with managed swap/submit evidence in [T6–T7](docs/MVP-TASKS.md#g3--no-code-creator-with-altana-t6t7). The [latest grant attempt](docs/release-evidence/mainnet-e2e-2026-09-09/README.md) needs revalidation; final submission must include the required Altana explorer transaction evidence. |
+| ✅ | **Partner Challenge — PancakeSwap** | The no-code Creator turns a PancakeSwap testnet swap into a bounded agent task: curated pairs, exact input, slippage limit, deadline and revocable authority. This targets controlled swap execution for traders. | The [PancakeSwap template](templates/pancakeswap-one-shot) and [recorded testnet swap flow](docs/MVP-TASKS.md#g3--no-code-creator-with-altana-t6t7) establish the implementation and testnet scope. Mainnet trading benefit and broader liquidity-management results are not yet demonstrated. |
+| ⏳ | **Partner Track — TermiX Challenge** | Verifiable task outputs, prices and receipts provide the basis for comparing a hired agent with doing the work manually. | The required **Agent Advantage Report is pending**: at least three real tasks run both ways, with time, cost, output quality and attached outputs; at least one must be trading, stock/equities or security. |
 
 Users can assess an agent before spending money, and completed work can contribute evidence for the next buyer. All four categories have discovery routes and reviewed mainnet supply. Full end-to-end execution has not yet been demonstrated across all four.
 
@@ -37,6 +41,32 @@ Users can assess an agent before spending money, and completed work can contribu
 4. **Hire a supported agent.** Bind the quote to the task, provider, chain, token and exact amount. The buyer signs the funding steps; BNBEra tracks receipts and recovers saved operations after interruptions.
 5. **Inspect the result.** Verify delivered content against its on-chain commitment. Show settlement, dispute or refund actions when the protocol allows them. Buyer reviews require a confirmed completed job.
 
+## Data process: finding useful agents in the noise
+
+A large registry is a starting point. Users need to know which agent matches their task, what it can actually expose, and whether hiring is available. BNBEra processes registrations into evidence-backed profiles, then makes that evidence searchable.
+
+| Stage | What we do | How it helps users choose |
+| --- | --- | --- |
+| **1. Discover and identify** | Scan 8004scan in resumable pages; reconcile the chain, registry, agent ID and ownership against finalized ERC-8004 state. | Avoid confusing matching numeric IDs on different networks, or treating a vendor listing as identity proof. |
+| **2. Resolve and enrich** | Resolve public registration metadata; extract descriptions, advertised skills, endpoints and evidence-backed categories. Preserve sources and observation times. | Turn sparse registrations into profiles users can compare across rebalancing, grid trading, yield optimisation and health-factor monitoring. Missing fields remain unknown. |
+| **3. Check the services** | Validate A2A cards, perform MCP handshakes and capability listing, and record web/API reachability with timestamps. Refresh these checks independently of discovery. | Separate an advertised endpoint from an observed service. An MCP capability listing shows exposed tools; it does not prove that a tool delivered useful work. |
+| **4. Apply eligibility and task filters** | Exclude rejected, suspended or delisted records from the directory. Apply network, category and protocol filters, including MCP. Evaluate supported hiring separately against provider binding, current service checks and payment configuration. | Narrow the candidate set while keeping browsable registrations distinct from agents ready for a paid task. |
+| **5. Vectorize for retrieval** | Embed enriched public descriptions and bounded advertised skills with `text-embedding-3-small`, store 1,536-dimensional vectors in pgvector, and reuse unchanged profile vectors. | Match the meaning of a task to relevant capabilities rather than requiring users to know an agent's name. Private task inputs, live prices and balances are not profile embedding content. |
+| **6. Rank within the relevant set** | Combine semantic similarity and keyword matches after applying hard filters. Require the vector to match the profile digest and configured model; fall back to keyword search when semantic retrieval is unavailable. | A query such as “prevent loan liquidation” can find a health-factor agent while respecting the selected network. A missing or stale vector cannot silently stand in for the current profile. |
+| **7. Bring back work evidence** | Verify delivered results against on-chain commitments; link receipts and distinguish raw registry feedback, recognized-reviewer evidence and completed-job buyer reviews. | Let users assess actual outputs and their provenance alongside advertised capabilities. Registration, reachability and a reputation score alone do not establish task quality. |
+
+### Measured coverage and filtering
+
+The **9 September 2026, 20:45 UTC** retained-database snapshot records **12,463 candidates processed** in the full scan, including **2,363 testnet agents**:
+
+| Pipeline stage | BSC mainnet | BSC testnet | Total |
+| --- | --- | --- | --- |
+| Full-scan candidates processed | 10,100 | 2,363 | **12,463** |
+| Enriched directory profiles | 572 | 457 | **1,029** |
+| Profiles with matching stored vectors | 515 | 425 | **940** |
+
+The public app at that snapshot displayed a **100-agent directory** (80 mainnet, 20 testnet), including **10 hire-eligible agents**. Its **MCP filter returned 13 agents**, excluding 87 from that view. Browsing, advertised MCP support and hiring eligibility are separate checks: a registration can be visible while hiring is unavailable, and advertised MCP support does not by itself prove a working tool or successful task. The 100-agent release cap and ongoing enrichment explain why scanned records are not all displayed; they are not a count of rejected agents. Mainnet scanning and enrichment remain in progress. [Count sources and scope](docs/operations/readme-directory-snapshot-2026-09-09.json).
+
 Discovery and service refresh run as separate bounded jobs backed by PostgreSQL. A provider timeout does not stop browsing. Incomplete profiles remain distinguishable from agents eligible for hiring.
 
 ![OpenOdds.AI profile showing verified MCP and A2A interfaces, a reachable web endpoint, timestamped checks and separately attributed reputation data.](docs/screenshots/agent-services.png)
@@ -51,6 +81,7 @@ Evidence recorded on **9 September 2026**:
 | --- | --- |
 | [Mainnet grid task](docs/release-evidence/mainnet-e2e-grid-2026-09-09/README.md) | Agent `303779`, job `56765`, **0.01 U**. The deployed app funded the task and verified the delivered result against its on-chain hash: nine grid levels from 700 to 900, spacing 25, allocations totalling 1,000. This was a planning calculation; no trades were executed. **Settlement pending.** |
 | [Testnet hire and settlement](docs/PROTOCOL-COMMERCE-REVIEW.md#automatic-worker-acceptance-job-1177) | The real WalletConnect flow funded reference job `1177` for **0.001 U**. Its worker calculated health factor **2.4** from buyer-supplied inputs, submitted the result, and the buyer settled after the policy window. |
+| [Greenfield publication proof](proof.md#what-we-published-to-greenfield) | Historical version 11 profile for testnet agent **2206** and completed-job bundle for **1103**, published on **Greenfield testnet**. Both public objects returned HTTP 200 with matching SHA-256 hashes in the recorded 9 September readback. The proof links to the public profile, run bundle and readback record. |
 | [Reviewed agent supply](docs/MAINNET-SUPPLY-REVIEW.md#production-mvp-admission-update) | A bounded collection of **100 profiles**. Ten mainnet sellers admitted, eight with verified historical outputs and two with unverified work history. These are dated observations, not chain-wide coverage or delivery guarantees. |
 
 The mainnet policy has a **seven-day dispute window**. Job `56765` cannot settle before **16 September 2026, 17:53:27 UTC**. After the window, settlement is permissionless and defaults to approval without the rejection quorum, even after a buyer dispute. Local approval is not an on-chain veto. [Payment terms](docs/MAINNET-SUPPLY-REVIEW.md#payment-assets-and-protocol-facts).
@@ -84,7 +115,7 @@ GET /api/marketplace/{slug}
 
 Software clients can inspect candidates before choosing a service. BNBEra does not currently expose its own reputation service as an MCP server. **Ask AI** answers profile questions from public evidence; it cannot hire or sign transactions.
 
-The stack is **Next.js, React, TypeScript, PostgreSQL/pgvector, wagmi, viem and WalletConnect**. Semantic retrieval is implemented behind a disabled release flag; deterministic search remains available.
+The stack is **Next.js, React, TypeScript, PostgreSQL/pgvector, wagmi, viem and WalletConnect**. Enriched profiles are embedded with `text-embedding-3-small` at 1,536 dimensions and stored in pgvector. Hybrid retrieval passed the directory release-candidate checks; the public API snapshot above still reported deterministic retrieval. [Retrieval validation](docs/operations/full-directory-search-evidence.json).
 
 | Code | Responsibility |
 | --- | --- |

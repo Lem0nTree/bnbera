@@ -1,0 +1,103 @@
+{
+  "observedAt": "2026-09-09T20:45:20.547Z",
+  "scope": "Retained database status and separately observed public API responses around 20:45 UTC; not an atomic cross-system snapshot. Counts change as backfill progresses.",
+  "databaseSource": "Read-only ops:marketplace-directory-status with the operator-owned environment",
+  "fullScan": {
+    "mainnet": {
+      "candidatesProcessed": 10100,
+      "pagesProcessed": 101,
+      "sourceReportedTotal": 311820,
+      "complete": false
+    },
+    "testnet": {
+      "candidatesProcessed": 2363,
+      "pagesProcessed": 24,
+      "sourceReportedTotal": 2363,
+      "completedAt": "2026-09-09T19:45:30.823Z"
+    }
+  },
+  "retainedCoverage": [
+    {
+      "chainId": 56,
+      "discovered": 10133,
+      "enriched": 572,
+      "metadataResolved": 386,
+      "vectorized": 515
+    },
+    {
+      "chainId": 97,
+      "discovered": 2363,
+      "enriched": 457,
+      "metadataResolved": 412,
+      "vectorized": 425
+    }
+  ],
+  "coverageNote": "Coverage includes earlier directory membership, so discovered mainnet identities exceed full-scan candidates processed by 33. Enriched counts are valid registered_directory_v1 observations; resolved metadata and matching stored vectors are separate counts. Vector coverage does not establish public semantic deployment.",
+  "publicDirectory": {
+    "url": "https://bnbera.ritarda.to/api/marketplace?limit=1",
+    "total": 100,
+    "directoryStats": {
+      "registered": 100,
+      "mainnet": 80,
+      "testnet": 20,
+      "hireEligible": 10,
+      "recentlyChecked": 36,
+      "cap": 100
+    },
+    "selection": {
+      "query": "",
+      "category": null,
+      "chainId": null,
+      "origin": null,
+      "verification": null,
+      "runtime": null,
+      "protocol": null,
+      "freshness": null,
+      "sort": "relevance"
+    },
+    "meta": {
+      "sourceStatus": "healthy",
+      "sourceName": "postgres-registered-directory",
+      "sourceKind": "ingestion",
+      "warning": null,
+      "refreshedAt": "2026-09-09T13:06:09.254Z",
+      "fixtureCount": 0,
+      "retrievalMode": "deterministic",
+      "semanticModelVersion": null
+    }
+  },
+  "publicMcpFilter": {
+    "url": "https://bnbera.ritarda.to/api/marketplace?protocol=mcp&limit=1",
+    "total": 13,
+    "directoryStats": {
+      "registered": 100,
+      "mainnet": 80,
+      "testnet": 20,
+      "hireEligible": 10,
+      "recentlyChecked": 36,
+      "cap": 100
+    },
+    "selection": {
+      "query": "",
+      "category": null,
+      "chainId": null,
+      "origin": null,
+      "verification": null,
+      "runtime": null,
+      "protocol": "mcp",
+      "freshness": null,
+      "sort": "relevance"
+    },
+    "meta": {
+      "sourceStatus": "healthy",
+      "sourceName": "postgres-registered-directory",
+      "sourceKind": "ingestion",
+      "warning": null,
+      "refreshedAt": "2026-09-09T13:06:09.254Z",
+      "fixtureCount": 0,
+      "retrievalMode": "deterministic",
+      "semanticModelVersion": null
+    }
+  },
+  "filterInterpretation": "MCP returns 13 of the displayed 100, excluding 87 from that view. Hire eligibility is 10 within the public directory. These groups may overlap. No global rejected-agent count is established by scan, cap or pending enrichment counts."
+}
