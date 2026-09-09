@@ -40,6 +40,8 @@ export type EightHundredFourScanQuery = {
   readonly isTestnet?: boolean;
   readonly supportedProtocol?: string;
   readonly search?: string;
+  readonly sortBy?: "created_at" | "total_score" | "quality_score" | "activity_score" | "total_feedbacks";
+  readonly sortOrder?: "asc" | "desc";
   /** Internal cancellation signal; never serialized into provider parameters. */
   readonly signal?: AbortSignal;
 };
@@ -303,6 +305,8 @@ export class EightHundredFourScanHttpClient implements ExtendedEightHundredFourS
     this.appendParam(params, "is_testnet", queryBoolean(query.isTestnet));
     this.appendParam(params, "supported_protocol", this.boundedText(query.supportedProtocol, 128, "supported protocol"));
     this.appendParam(params, "search", this.boundedText(query.search, 200, "search"));
+    this.appendParam(params, "sort_by", query.sortBy);
+    this.appendParam(params, "sort_order", query.sortOrder);
     const body = await this.getJson(`${officialEightHundredFourScanContract.listPath}?${params.toString()}`, query.signal);
     return this.mapPage(body, false, "agents");
   }

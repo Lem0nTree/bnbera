@@ -14,6 +14,7 @@ export default defineConfig({
       "zod": source("packages/domain/node_modules/zod/lib/index.mjs"),
       "@bnbera/domain": source("packages/domain/src/index.ts"),
       "@bnbera/config": source("packages/config/src/index.ts"),
+      "@bnbera/agent-ingestion/directory": source("packages/agent-ingestion/src/directory.ts"),
       "@bnbera/agent-ingestion": source("packages/agent-ingestion/src/index.ts"),
       "@bnbera/marketplace": source("packages/marketplace/src/index.ts"),
       "@/": source("apps/web/src/")

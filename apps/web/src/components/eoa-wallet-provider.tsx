@@ -1,7 +1,7 @@
 "use client";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { bscTestnet } from "viem/chains";
+import { bsc, bscTestnet } from "viem/chains";
 import { WagmiProvider, createConfig, http, type Config } from "wagmi";
 import { walletConnect } from "wagmi/connectors";
 import { useState, type ReactNode } from "react";
@@ -16,12 +16,14 @@ const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID?.trim() ?? ""
 export const walletConnectProjectConfigured = projectId.length > 0;
 
 export const eoaWagmiConfig: Config = createConfig({
-  chains: [bscTestnet],
-  connectors: walletConnectProjectConfigured
+  chains: [bscTestnet, bsc],
+  // WalletConnect's persistent browser storage must never initialize during SSR.
+  connectors: walletConnectProjectConfigured && typeof window !== "undefined"
     ? [walletConnect({ projectId, showQrModal: true })]
     : [],
   transports: {
-    [bscTestnet.id]: http()
+    [bscTestnet.id]: http(),
+    [bsc.id]: http()
   },
   // T5 intentionally exposes exactly one connector. Do not let wagmi add
   // injected providers (including MetaMask's extension) behind our back.

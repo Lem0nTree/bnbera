@@ -31,6 +31,7 @@ import {
   type VerificationStatus
 } from "@bnbera/domain";
 import { z } from "zod";
+import { directorySnapshotSchema } from "@bnbera/agent-ingestion/directory";
 
 /**
  * Web-only presentation adapter over the shared read model.
@@ -334,7 +335,8 @@ export const marketplaceAgentReadModelSchema = z.object({
   ownerAddress: evmAddressSchema.nullable(),
   agentWallet: evmAddressSchema.nullable(),
   services: z.array(advertisedServiceSchema).max(128),
-  capabilityManifest: capabilityManifestSchema,
+  // Registered directory profiles can lack an executable capability manifest.
+  capabilityManifest: capabilityManifestSchema.extend({ capabilities: capabilityManifestSchema.shape.capabilities.min(0) }),
   eligibility: marketplaceEligibilityResultSchema,
   freshness: dataFreshnessSchema,
   pricing: pricingSchema,
@@ -346,7 +348,8 @@ export const marketplaceAgentReadModelSchema = z.object({
   evidence: evidenceSummarySchema,
   activation: activationSummarySchema,
   scoreExplanation: marketplaceScoreExplanationSchema,
-  dataProvenance: marketplaceDataProvenanceSchema
+  dataProvenance: marketplaceDataProvenanceSchema,
+  directory: directorySnapshotSchema.optional()
 });
 
 export type MarketplaceAgentReadModel = z.infer<typeof marketplaceAgentReadModelSchema>;
@@ -377,7 +380,7 @@ export const marketplaceSearchInputSchema = z.object({
   protocol: z.string().trim().max(128).optional(),
   freshness: z.enum(["fresh", "stale", "unknown"]).optional(),
   sort: z.enum(["relevance", "freshness", "score"]).default("relevance"),
-  limit: z.coerce.number().int().min(1).max(50).default(12),
+  limit: z.coerce.number().int().min(1).max(100).default(100),
   preview: z.enum(marketplacePreviewStates).optional()
 });
 
@@ -404,6 +407,7 @@ export const marketplaceSearchResponseSchema = z.object({
   agents: z.array(marketplaceAgentReadModelSchema),
   excluded: z.array(marketplaceExcludedReadModelSchema),
   total: z.number().int().nonnegative(),
+  directoryStats: z.object({ registered: z.number().int().nonnegative(), mainnet: z.number().int().nonnegative(), testnet: z.number().int().nonnegative(), hireEligible: z.number().int().nonnegative(), recentlyChecked: z.number().int().nonnegative(), cap: z.number().int().positive() }).optional(),
   selection: searchSelectionSchema,
   /** Source and retrieval status are available even when no cards qualify. */
   meta: marketplaceReadSourceMetaSchema.nullable(),
@@ -431,7 +435,7 @@ export interface MarketplaceReadClient {
   getAgent(slug: string, input?: Partial<Pick<MarketplaceSearchInput, "preview">>): Promise<MarketplaceAgentReadResponse>;
 }
 
-function querySelection(input: MarketplaceSearchInput): MarketplaceSearchResponse["selection"] {
+export function querySelection(input: MarketplaceSearchInput): MarketplaceSearchResponse["selection"] {
   return {
     query: input.query ?? "",
     category: input.category ?? null,
@@ -803,7 +807,7 @@ export function mapMarketplaceDetailResponse(
   return mapCard(detail, mode, refreshedAt);
 }
 
-function selectionMatches(agent: MarketplaceAgentReadModel, input: MarketplaceSearchInput): boolean {
+export function selectionMatches(agent: MarketplaceAgentReadModel, input: MarketplaceSearchInput): boolean {
   if (input.category && agent.category !== input.category && !(agent.applicableCategories ?? []).includes(input.category)) {
     return false;
   }
@@ -833,6 +837,8 @@ function selectionMatches(agent: MarketplaceAgentReadModel, input: MarketplaceSe
       agent.category,
       ...(agent.applicableCategories ?? []),
       ...agent.protocols,
+      ...(agent.directory?.skills ?? []).flatMap(skill=>[skill.id,skill.name,skill.description]),
+      ...(agent.directory?.services ?? []).map(service=>service.name),
       ...agent.capabilityManifest.capabilities.flatMap((capability) => [capability.id, capability.description]),
       ...(agent.serviceEvidence ?? []).flatMap((service) => service.advertisedSkills.flatMap((skill) => [
         skill.id,
@@ -849,7 +855,7 @@ function selectionMatches(agent: MarketplaceAgentReadModel, input: MarketplaceSe
   return true;
 }
 
-function sortAgents(agents: MarketplaceAgentReadModel[], input: MarketplaceSearchInput): MarketplaceAgentReadModel[] {
+export function sortAgents(agents: MarketplaceAgentReadModel[], input: MarketplaceSearchInput): MarketplaceAgentReadModel[] {
   const sorted = [...agents];
   sorted.sort((left, right) => {
     if (input.sort === "freshness") {
@@ -860,7 +866,7 @@ function sortAgents(agents: MarketplaceAgentReadModel[], input: MarketplaceSearc
       }
     }
     if (input.sort === "score" || input.sort === "relevance") {
-      const scoreDifference = (right.eligibility.score ?? -1) - (left.eligibility.score ?? -1);
+      const scoreDifference = (right.directory?.scores.overall ?? right.eligibility.score ?? -1) - (left.directory?.scores.overall ?? left.eligibility.score ?? -1);
       if (scoreDifference !== 0) {
         return scoreDifference;
       }
@@ -933,14 +939,14 @@ async function localService(mode: Extract<MarketplaceDataMode, "fixture" | "degr
   }
   // Keep synthetic supply behind a runtime non-production branch. This makes
   // the production path fail closed even when the preview bundle is present.
-  const { developmentFixtureListings, developmentFixtureLabel } = await import("@bnbera/marketplace");
+  const { developmentFixtureListings, developmentFixtureLabel, developmentFixtureTimestamp } = await import("@bnbera/marketplace");
   return new MarketplaceReadService(new InMemoryMarketplaceSource(developmentFixtureListings, {
     status: mode === "degraded" ? "degraded" : "healthy",
     sourceName: mode === "degraded" ? "degraded-development-fixtures" : "development-fixtures",
     warning: mode === "degraded"
       ? `Upstream read degraded; ${developmentFixtureLabel} records are shown for preview only.`
       : null
-  }));
+  }), {now:()=>new Date(developmentFixtureTimestamp)});
 }
 
 async function localSearch(

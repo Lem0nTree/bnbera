@@ -27,6 +27,21 @@ function service(source: MarketplaceSource): MarketplaceReadService {
 }
 
 describe("MarketplaceReadService", () => {
+  it.each([
+    ["unknown", null, "ENDPOINT_UNVERIFIED"],
+    ["unhealthy", "2026-09-02T12:00:00.000Z", "ENDPOINT_UNHEALTHY"],
+    ["unhealthy", "2026-09-02T11:00:00.000Z", "ENDPOINT_STALE"],
+    ["healthy", "2026-09-02T11:00:00.000Z", "ENDPOINT_STALE"]
+  ] as const)("keeps %s health with observation %s distinct", async (endpointStatus, observedAt, expected) => {
+    const original = developmentFixtureListings[0]!;
+    const response = await service(new InMemoryMarketplaceSource([{
+      ...original,
+      health: {...original.health, endpointStatus, observedAt}
+    }])).search();
+    expect(response.results).toHaveLength(0);
+    expect(response.excluded[0]?.reasons.map(reason=>reason.code)).toContain(expected);
+  });
+
   it("returns an explicit empty state for an empty source", async () => {
     const response = await service(new InMemoryMarketplaceSource()).browse();
 
@@ -677,7 +692,7 @@ describe("MarketplaceReadService", () => {
     expect(response.meta.sourceStatus).toBe("healthy");
     expect(response.excluded[0]?.identityKey).toBe(fixture.identityKey);
     expect(response.excluded[0]?.reasons.map((reason) => reason.code)).toEqual([
-      "ENDPOINT_UNHEALTHY",
+      "ENDPOINT_UNVERIFIED",
       "LISTING_NOT_PUBLISHED",
       "VERIFICATION_PENDING"
     ]);

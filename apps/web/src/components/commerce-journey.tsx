@@ -24,7 +24,7 @@ import { commerceQuoteSnapshotSchema, type CommerceQuoteResponse, type CommerceQ
 import type { MarketplaceAgentReadModel } from "@/lib/marketplace-contract";
 import { isEoaDispatchGenerationCurrent, shouldInvalidateEoaAuthority, EOA_BUYER_CHAIN_ID, type EoaWalletSnapshot } from "@/lib/eoa-wallet";
 import { formatSiweMessage } from "@/lib/siwe-message";
-import { EoaWalletProvider, walletConnectProjectConfigured } from "./eoa-wallet-provider";
+import { walletConnectProjectConfigured } from "./eoa-wallet-provider";
 import { CommerceResultSummary } from "./commerce-result-summary";
 
 type BrowserAuthority = { readonly address: string; readonly chainId: number; readonly walletClient: WalletClient };
@@ -104,11 +104,7 @@ function safeVerifiedEvidenceLink(value: string | null): string | null {
 }
 
 export function CommerceJourney(props: JourneyProps) {
-  return (
-    <EoaWalletProvider>
-      <CommerceJourneyInner {...props} />
-    </EoaWalletProvider>
-  );
+  return <CommerceJourneyInner {...props} />;
 }
 
 function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, runBundle = undefined, resumeOperationId = null, expectedProtocolJobId = null, walletOnly = false, onAuthenticated }: JourneyProps) {

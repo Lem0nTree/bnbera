@@ -3,6 +3,7 @@ import {
   InMemoryMarketplaceSource,
   MarketplaceReadService,
   developmentFixtureListings,
+  developmentFixtureTimestamp,
   type MarketplaceListingInput
 } from "@bnbera/marketplace";
 import { normalizePersistedMarketplaceMetrics } from "./marketplace-server";
@@ -177,7 +178,7 @@ describe("marketplace web adapter", () => {
         testedAt: null
       }]
     };
-    const readModel = new MarketplaceReadService(new InMemoryMarketplaceSource([listing]));
+    const readModel = new MarketplaceReadService(new InMemoryMarketplaceSource([listing]), {now:()=>new Date(developmentFixtureTimestamp)});
     const searchInput = parseMarketplaceSearchParams(new URLSearchParams("q=grid-trading&limit=12"));
     const core = await readModel.search({ query: searchInput.query, limit: searchInput.limit });
     const projected = mapMarketplaceSearchResponse(searchInput, core, "fixture");

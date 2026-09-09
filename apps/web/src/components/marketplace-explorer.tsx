@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Callout, DataModeBadge, EmptyState, LoadingState, StatusBadge } from "@bnbera/ui";
+import { Callout, EmptyState, LoadingState, StatusBadge } from "@bnbera/ui";
 import type { MarketplaceSearchResponse } from "@/lib/marketplace-contract";
-import { categoryDescription, categoryLabel, titleCase } from "@/lib/presentation";
+import { categoryLabel, titleCase } from "@/lib/presentation";
 import { AgentCard } from "./agent-card";
 
 const categories = [
@@ -14,23 +15,10 @@ const categories = [
   "health-factor"
 ] as const;
 
-function modeTone(response: MarketplaceSearchResponse): "info" | "warning" | "danger" | "success" {
-  if (response.status === "error") {
-    return "danger";
-  }
-  if (response.status === "degraded") {
-    return "warning";
-  }
-  if (response.mode === "live") {
-    return "success";
-  }
-  return "info";
-}
-
 function paramsForCategory(searchString: string, category: string): string {
   const params = new URLSearchParams();
   const search = new URLSearchParams(searchString);
-  for (const key of ["q", "chainId", "origin", "verification", "runtime", "protocol", "freshness", "sort", "agents"]) {
+  for (const key of ["q", "chainId", "origin", "verification", "runtime", "protocol", "freshness", "sort"]) {
     const value = search.get(key);
     if (value) {
       params.set(key, value);
@@ -43,17 +31,21 @@ function paramsForCategory(searchString: string, category: string): string {
 function paramsForAllSupply(searchString: string): string {
   const params = new URLSearchParams(searchString);
   params.delete("category");
+  params.delete("agents");
   const query = params.toString();
   return `/marketplace${query ? `?${query}` : ""}`;
 }
 
 export function MarketplaceExplorer({ response }: { readonly response: MarketplaceSearchResponse }) {
+  const [visibleCount,setVisibleCount]=useState(20);
+  useEffect(()=>setVisibleCount(20),[response]);
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const currentCategory = response.selection.category;
-  const selectedCompare = searchParams.get("agents");
-  const searchString = searchParams.toString();
+  const cleanParams = new URLSearchParams(searchParams.toString());
+  cleanParams.delete("agents");
+  const searchString = cleanParams.toString();
 
   function submitFilters(formData: FormData): void {
     const next = new URLSearchParams();
@@ -67,7 +59,6 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
     if (currentCategory) {
       next.set("category", currentCategory);
     }
-    if (selectedCompare) next.set("agents", selectedCompare);
     router.push(`${pathname}${next.toString() ? `?${next.toString()}` : ""}`);
   }
 
@@ -84,22 +75,13 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
     <div className="explorer">
       <div className="explorer__status-row">
         <div className="explorer__status-copy">
-          <DataModeBadge mode={response.mode} label={response.dataLabel} />
           <span>
-            {response.total} eligible record{response.total === 1 ? "" : "s"}
-            {response.excluded.length > 0 ? ` · ${response.excluded.length} excluded before ranking` : ""}
+            {response.total} agent{response.total === 1 ? "" : "s"}{response.directoryStats?" in this collection":""}
           </span>
         </div>
-        {selectedCompare ? (
-          <Link className="compare-bar" href={`/compare?agents=${encodeURIComponent(selectedCompare)}`}>
-            Compare selected <span aria-hidden="true">→</span>
-          </Link>
-        ) : null}
       </div>
 
-      <Callout title="Read-only marketplace boundary" tone={modeTone(response)} icon={response.status === "error" ? "!" : "i"}>
-        {response.notice}
-      </Callout>
+      {response.mode !== "live" && <p className="preview-banner">{response.mode === "fixture" ? "Preview collection · Sample agents. Hiring is unavailable." : response.status === "degraded" ? "Degraded data · Check the latest status before hiring." : response.notice}</p>}
 
       <div className="category-tabs" aria-label="Marketplace categories">
         <Link
@@ -107,7 +89,7 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
           className={!currentCategory ? "category-tab category-tab--active" : "category-tab"}
           href={paramsForAllSupply(searchString)}
         >
-          All agents <span>⌁</span>
+          All agents
         </Link>
         {categories.map((category) => (
           <Link
@@ -117,7 +99,6 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
             key={category}
           >
             <span>{categoryLabel(category)}</span>
-            <small>{categoryDescription(category).split(" ").slice(0, 2).join(" ")}…</small>
           </Link>
         ))}
       </div>
@@ -199,13 +180,13 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
           <span>Sort</span>
           <select name="sort" defaultValue={selectedSort}>
             <option value="relevance">Relevance</option>
-            <option value="score">Eligibility score</option>
+            <option value="score">{response.directoryStats?"8004scan score":"Eligibility score"}</option>
             <option value="freshness">Freshness</option>
           </select>
         </label>
         <button className="button button--primary filter-panel__submit" type="submit">Apply filters</button>
       </form>
-      <div className="applied-filters">{["q", "chainId", "origin", "verification", "runtime", "protocol", "freshness"].filter((key) => searchParams.has(key)).map((key) => { const params = new URLSearchParams(searchString); params.delete(key); return <Link key={key} href={`${pathname}?${params}`} aria-label={`Remove ${key} filter`}>{titleCase(key)}: {searchParams.get(key)} ×</Link>; })}<Link href={`${pathname}${selectedCompare ? `?agents=${encodeURIComponent(selectedCompare)}` : ""}`}>Clear filters</Link></div>
+      {["q", "chainId", "origin", "verification", "runtime", "protocol", "freshness"].some(key => searchParams.has(key)) && <div className="applied-filters">{["q", "chainId", "origin", "verification", "runtime", "protocol", "freshness"].filter((key) => searchParams.has(key)).map((key) => { const params = new URLSearchParams(searchString); params.delete(key); return <Link key={key} href={`${pathname}?${params}`} aria-label={`Remove ${key} filter`}>{titleCase(key)}: {searchParams.get(key)} ×</Link>; })}<Link href={pathname}>Clear filters</Link></div>}
 
       {response.status === "loading" ? <LoadingState label={response.notice} /> : null}
       {response.status === "error" && response.error ? (
@@ -218,17 +199,19 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
           {response.notice} Try a wider filter, or connect the read-model API. Fixture data is never used as a production fallback.
         </EmptyState>
       ) : null}
-      {response.status === "degraded" ? (
-        <Callout title="Degraded data" tone="warning" icon="!">
-          Browse the labelled preview if useful, but do not interpret runtime, freshness, eligibility, or evidence fields as live proof.
-        </Callout>
+      {response.status === "degraded" && response.agents.length === 0 ? (
+        <EmptyState title="No agents are currently available">
+          The connected collection has no listings that meet the current availability checks. Try again later or explore the recorded candidate details below. No sample agents have been substituted.
+        </EmptyState>
       ) : null}
 
       {response.agents.length > 0 ? (
         <div className="agent-grid">
-          {response.agents.map((agent) => <AgentCard agent={agent} key={agent.id} />)}
+          {response.agents.slice(0,visibleCount).map((agent) => <AgentCard agent={agent} key={agent.id} />)}
         </div>
       ) : null}
+
+      {response.agents.length>visibleCount&&<div className="directory-load-more"><p>Showing {visibleCount} of {response.total} agents</p><button className="button" onClick={()=>setVisibleCount(count=>Math.min(count+20,100))}>Explore more agents ↓</button></div>}
 
       {response.excluded.length > 0 ? (
         <details className="excluded-panel"><summary>Excluded candidates ({response.excluded.length})</summary><section aria-labelledby="excluded-heading">
@@ -265,7 +248,7 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
       ) : null}
 
       {response.mode !== "live" ? (
-        <div className="state-preview-panel">
+        <details className="state-preview-panel"><summary>Preview tools & data source</summary>
           <div>
             <p className="eyebrow">QA-friendly state previews</p>
             <h3>Every read state has a truthful UI path</h3>
@@ -278,7 +261,7 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
               </Link>
             ))}
           </div>
-        </div>
+        </details>
       ) : null}
     </div>
   );

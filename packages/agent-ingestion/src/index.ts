@@ -32,3 +32,4 @@ export * from "./semantic-discovery.js";
 export * from "./marketplace-state.js";
 export * from "./marketplace-retry.js";
 export * from "./reputation.js";
+export * from "./directory.js";

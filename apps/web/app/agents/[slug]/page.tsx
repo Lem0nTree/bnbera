@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { Callout, EmptyState, LoadingState } from "@bnbera/ui";
@@ -31,10 +32,10 @@ export default async function AgentPage({
   const input = parseMarketplacePageParams(await searchParams);
   const response = await readMarketplaceAgentForPage(slug, { preview: input.preview });
 
-  if (response.status === "ready" && response.agent) {
+  if ((response.status === "ready" || response.status === "degraded") && response.agent) {
     return (
       <Suspense fallback={<div className="page-shell page-shell--tight"><LoadingState label="Loading agent detail" /></div>}>
-        <AgentDetailView agent={response.agent} />
+        <AgentDetailView agent={response.agent} sourceNotice={response.notice} />
       </Suspense>
     );
   }
@@ -43,17 +44,13 @@ export default async function AgentPage({
   }
   return (
     <div className="page-shell page-shell--tight">
+      <Link className="button button--ghost" href="/marketplace">← Back to marketplace</Link>
       {response.status === "error" && response.error ? (
         <Callout title={response.error.error.code} tone="danger" icon="!">
           {response.error.error.message} Next action: <code>{response.error.error.nextAction}</code>.
         </Callout>
       ) : response.status === "loading" ? (
         <LoadingState label={response.notice} />
-      ) : response.status === "degraded" && response.agent ? (
-        <>
-          <Callout title="Degraded detail preview" tone="warning" icon="!">{response.notice}</Callout>
-          <div className="section-block section-block--flush"><AgentDetailView agent={response.agent} /></div>
-        </>
       ) : (
         <EmptyState title="Agent detail is unavailable">{response.notice} No fixture fallback is used in production.</EmptyState>
       )}

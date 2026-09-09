@@ -83,12 +83,15 @@ export function evaluateListing(
     addReason("PROTOCOL_UNSUPPORTED", `The listing does not advertise required protocol ${unsupportedProtocol}.`);
   }
 
-  if (listing.health.endpointStatus !== "healthy" || listing.state.runtimeStatus !== "live") {
+  const observedAt = listing.health.observedAt === null ? Number.NaN : Date.parse(listing.health.observedAt);
+  const stale = Number.isFinite(observedAt) && now.getTime() - observedAt > 120_000;
+  if (stale || listing.health.endpointStatus !== "healthy" || listing.state.runtimeStatus !== "live") {
+    const unhealthy = listing.health.endpointStatus === "unhealthy" && Number.isFinite(observedAt) && !stale;
     addReason(
-      "ENDPOINT_UNHEALTHY",
-      listing.health.endpointStatus === "unknown"
-        ? "No healthy endpoint probe is available for this listing."
-        : "The advertised endpoint or runtime is not currently healthy and live."
+      stale ? "ENDPOINT_STALE" : unhealthy ? "ENDPOINT_UNHEALTHY" : "ENDPOINT_UNVERIFIED",
+      stale ? "The last service observation is stale; current availability is unknown."
+        : unhealthy ? "The latest service probe failed."
+        : "A current callable service and live runtime have not been verified."
     );
   }
 

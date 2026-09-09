@@ -20,6 +20,7 @@ import {
   PostgresIngestionRepository,
   createEmbeddingProviderFromRuntimeConfig,
   semanticDocumentSchemaVersion,
+  classifyAgent,
   type IngestionRepository
 } from "@bnbera/agent-ingestion";
 import {
@@ -48,6 +49,7 @@ import {
   type MarketplaceListingMetadata,
   type MarketplaceSearchRequest
 } from "@bnbera/marketplace";
+import { directoryObservationType, directorySnapshotSchema, directorySlug, publicHttpsUrl } from "@bnbera/agent-ingestion/directory";
 import {
   configuredMarketplaceDataMode,
   mapMarketplaceDetailResponse,
@@ -57,6 +59,11 @@ import {
   marketplaceReadContractVersion,
   isSelfReferentialMarketplaceApiUrl,
   marketplaceSearchInputSchema,
+  marketplaceAgentReadModelSchema,
+  marketplaceSearchResponseSchema as webSearchResponseSchema,
+  selectionMatches,
+  sortAgents,
+  querySelection,
   readMarketplace as readRemoteMarketplace,
   readMarketplaceAgent as readRemoteMarketplaceAgent,
   readMarketplaceAgentApi as readLocalMarketplaceAgentApi,
@@ -1069,6 +1076,95 @@ type LiveReadContext = {
   readonly metadataSource: PostgresMarketplaceMetadataSource;
 };
 
+let directoryCache: {key:string; expiresAt:number; promise:ReturnType<typeof loadRegisteredDirectory>} | undefined;
+
+/** Coalesce concurrent page/API reads; do not run 100 commerce projections per visitor. */
+async function readRegisteredDirectory() {
+  const runtime=loadRuntimeConfig(process.env);
+  const key=connectionKey(runtime.databaseUrl??"",runtime.databaseSsl);
+  if(directoryCache?.key===key&&directoryCache.expiresAt>Date.now())return directoryCache.promise;
+  const promise=loadRegisteredDirectory();
+  directoryCache={key,expiresAt:Number.POSITIVE_INFINITY,promise};
+  try {
+    const result=await promise;
+    if(directoryCache?.promise===promise)directoryCache.expiresAt=Date.now()+15_000;
+    return result;
+  }catch(error){if(directoryCache?.promise===promise)directoryCache=undefined;throw error;}
+}
+
+/** Registered supply is a directory, independently of the execution/publication gate. */
+async function loadRegisteredDirectory() {
+  const runtime = loadRuntimeConfig(process.env);
+  if (!runtime.databaseUrl) throw configurationError(new Error("Database not configured"));
+  const pool = getPool(runtime.databaseUrl, runtime.databaseSsl);
+  const rows = await pool.query(`SELECT * FROM (
+    SELECT DISTINCT ON (i.id) i.namespace, i.chain_id, i.identity_registry, i.agent_id, i.owner_address, i.agent_wallet,
+      i.observed_block, i.observed_block_hash, i.read_consistency, i."updatedAt" AS identity_observed_at,
+      a.origin_type, a.claim_status, a.verification_status, a.runtime_status, a.authority_status, a.listing_status,
+      eo.normalized_payload, eo.payload_digest, eo.source_timestamp
+    FROM agent_enrichment_observations eo JOIN agent_versions v ON v.id=eo.agent_version_id
+    JOIN agents a ON a.id=v.agent_id JOIN erc8004_identities i ON i.id=a.identity_id
+    WHERE eo.observation_type=$1 AND eo.provider='8004scan' AND eo.validation_state='valid'
+      AND i.chain_id IN (56,97) AND i.read_consistency='finalized'
+      AND a.listing_status NOT IN ('delisted','suspended') AND a.verification_status <> 'rejected'
+    ORDER BY i.id, eo.source_timestamp DESC, eo."createdAt" DESC
+  ) directory ORDER BY chain_id, agent_id::numeric LIMIT 100`, [directoryObservationType]);
+  const commerce = new PostgresErc8183MarketplaceProjection(pool);
+  const agents: z.infer<typeof marketplaceAgentReadModelSchema>[] = [];
+  for (let start=0;start<rows.rows.length;start+=8) {
+    await Promise.all(rows.rows.slice(start,start+8).map(async row=>{
+    const parsed = directorySnapshotSchema.safeParse(row.normalized_payload);
+    if (!parsed.success) return;
+    const snapshot = parsed.data;
+    const identityKey = erc8004IdentityKey(snapshot.identity);
+    if (identityKey !== `${row.namespace}:${row.chain_id}:${row.identity_registry}:${row.agent_id}`) return;
+    const metrics = unknownMetrics();
+    try {
+      const read = await commerce.readForIdentity({identity:snapshot.identity, limit:100});
+      const verified = read.verifiedReviews.filter(review=>review.state === "active" && erc8004IdentityKey(review.providerBinding.identity)===identityKey);
+      metrics.completedJobs = {status:"available",completedCount:read.completedJobs.length,source:"bnbera-erc8183-settled",observedAt:read.observedAtUnix?new Date(read.observedAtUnix*1000).toISOString():null};
+      metrics.reputation.verifiedPurchases = {status:"available",count:verified.length,feedback:[],source:"bnbera-erc8183-verified-purchase",observedAt:verified[0]?new Date(verified[0].updatedAtUnix*1000).toISOString():null,reason:null};
+      metrics.reputation.verifiedReviews = verified.map(review=>({reviewId:review.reviewId,commerceJobId:review.commerceJobId,reviewerAddress:review.buyerAddress,identity:review.providerBinding.identity,agentVersionId:review.providerBinding.agentVersionId,agentVersion:review.providerBinding.agentVersion,resultSha256:review.resultSha256,resultKeccak:review.resultKeccak,settlementTransactionHash:review.settlementTransactionHash,score:review.score,comment:review.comment,observedAt:new Date(review.updatedAtUnix*1000).toISOString()}));
+    } catch { /* Keep the explicit unavailable state if commerce reads fail. */ }
+    const age = Date.now()-Date.parse(snapshot.fetchedAt);
+    const freshness = age < 24*60*60*1000 ? "fresh" : "stale";
+    const reason = "Registered agent. Hiring requires a separately verified callable service and supported payment offer.";
+    const uri=snapshot.registration.uri;
+    const publicUri=uri?.startsWith("data:") ? "Inline on-chain registration (data URI); content digest recorded" : uri?.startsWith("ipfs:") && !/[?#@]/u.test(uri) ? uri : publicHttpsUrl(uri);
+    const snapshotForBrowser = {...snapshot, renderedAt:new Date().toISOString(), registration:{...snapshot.registration,uri:publicUri}};
+    const category = classifyAgent({name:snapshot.name,description:snapshot.description,supportedProtocols:snapshot.protocols,advertisedSkills:snapshot.skills}).category;
+    agents.push(marketplaceAgentReadModelSchema.parse({
+      id:identityKey,slug:directorySlug(snapshot),name:snapshot.name,description:snapshot.description,tagline:snapshot.description.slice(0,237),category,protocols:snapshot.protocols,
+      identity:snapshot.identity, ownerAddress:row.owner_address,agentWallet:row.agent_wallet,
+      stateAxes:{originType:row.origin_type,claimStatus:row.claim_status,verificationStatus:row.verification_status,runtimeStatus:row.runtime_status,authorityStatus:row.authority_status,listingStatus:row.listing_status},
+      services:[],capabilityManifest:{schemaVersion:"bnbera-directory-v1",capabilities:[]},
+      eligibility:{eligible:false,score:null,components:null,reasons:[{code:"LISTING_NOT_PUBLISHED",message:reason}]},
+      freshness:{status:freshness,label:`Metadata ${freshness}`,observedAt:snapshot.fetchedAt,blockNumber:Number(row.observed_block),source:"8004scan + finalized ERC-8004 registry"},
+      pricing:{availability:"unknown",activationMethod:"none",label:"Contact agent",currency:null,amountAtomic:null,explanation:"No executable price quote has been verified by BNBEra."},
+      authority:{status:row.authority_status,summary:"Registration does not grant BNBEra execution authority.",executionWallet:null,provider:"unknown",expiry:null,spendCap:null},
+      currentData:metrics.currentData,health:{endpointStatus:"unknown",observedAt:null,latencyMs:null,source:null},metrics,serviceEvidence:[],
+      evidence:{status:"unavailable",summary:"Registry identity was checked at a finalized block. No new Greenfield publication is claimed.",ipfsUri:null,greenfieldUri:null,lastVerifiedAt:null},
+      activation:{enabled:false,availability:"unavailable",method:"none",title:"Explore registered services",reason,nextAction:"inspect_services"},
+      scoreExplanation:{score:null,components:null,factors:["The displayed score is attributed to 8004scan; it is separate from BNBEra hire eligibility."]},
+      dataProvenance:{mode:"live",label:"Registered directory",details:"8004scan public profile, resolved registration metadata and independently finalized registry identity. Service execution remains unverified.",sourceKind:"ingestion",sources:[{source:"8004scan",sourceReference:snapshot.sourceUrl,firstObservedAt:snapshot.fetchedAt,lastObservedAt:snapshot.fetchedAt,rawResponseDigest:row.payload_digest,normalizedIngestionVersion:"bnbera-directory-v1"}],identityRead:{observedBlock:Number(row.observed_block),observedBlockHash:row.observed_block_hash,readConsistency:"finalized",observedAt:new Date(row.identity_observed_at).toISOString()},refreshedAt:snapshot.fetchedAt},
+      directory:snapshotForBrowser
+    }));
+    }));
+  }
+  // The directory snapshot digest is not a raw vendor-response digest.
+  for (const agent of agents) for (const source of agent.dataProvenance.sources) source.rawResponseDigest = null;
+  const refreshedAt = agents.map(agent=>agent.directory!.fetchedAt).sort().at(-1) ?? null;
+  const meta = {sourceStatus:agents.length?"healthy" as const:"empty" as const,sourceName:"postgres-registered-directory",sourceKind:"ingestion" as const,warning:null,refreshedAt,fixtureCount:0,retrievalMode:"deterministic" as const,semanticModelVersion:null};
+  return {agents,meta};
+}
+
+async function readRegisteredDirectorySearch(input: MarketplaceSearchInput) {
+  const {agents,meta}=await readRegisteredDirectory();
+  const sorted=sortAgents(agents.filter(agent=>selectionMatches(agent,input)),input);
+  return webSearchResponseSchema.parse({contractVersion:marketplaceReadContractVersion,status:sorted.length?"ready":"empty",mode:"live",dataLabel:"Registered agents",notice:"A capped directory of real mainnet and testnet registrations. Service availability and hiring are evaluated separately.",agents:sorted.slice(0,input.limit),excluded:[],total:sorted.length,selection:querySelection(input),meta,error:null,
+    directoryStats:{registered:agents.length,mainnet:agents.filter(a=>a.identity.chainId===56).length,testnet:agents.filter(a=>a.identity.chainId===97).length,hireEligible:agents.filter(a=>a.activation.enabled).length,recentlyChecked:agents.filter(a=>a.directory?.cardCheck.status==="reachable"&&a.directory.cardCheck.observedAt&&Date.now()-Date.parse(a.directory.cardCheck.observedAt)<120000).length,cap:100}});
+}
+
 async function createLiveReadService(): Promise<LiveReadContext> {
   let runtime;
   try {
@@ -1174,6 +1270,7 @@ export async function readMarketplaceApi(input: Partial<MarketplaceSearchInput> 
   const mode = configuredMarketplaceDataMode();
   if (mode !== "live") return readLocalMarketplaceApi(parsedInput);
   try {
+    if (process.env.MARKETPLACE_DIRECTORY_ENABLED === "true") return await readRegisteredDirectorySearch(parsedInput);
     const { service } = await createLiveReadService();
     const result = await service.safeSearch(coreSearchInput(parsedInput));
     if (!result.ok) {
@@ -1199,6 +1296,24 @@ export async function readMarketplaceAgentApi(
   const mode = configuredMarketplaceDataMode();
   if (mode !== "live") return readLocalMarketplaceAgentApi(slug, input);
   try {
+    if (process.env.MARKETPLACE_DIRECTORY_ENABLED === "true") {
+      const directory = await readRegisteredDirectory();
+      const agent = directory.agents.find(item=>item.slug === normalizedSlug);
+      if (agent) {
+        let detailAgent=agent;
+        try {
+          const runtime=loadRuntimeConfig(process.env);
+          if(runtime.databaseUrl) {
+            const source=await new PostgresMarketplaceMetadataSource(getPool(runtime.databaseUrl,runtime.databaseSsl)).readEvidenceForIdentity(agent.identity);
+            const profile=marketplaceAgentReadModelSchema.shape.evidence.shape.profile.parse(source.profile);
+            const runBundle=marketplaceAgentReadModelSchema.shape.evidence.shape.runBundle.parse(source.runBundle);
+            const primary=profile.status!=="unavailable"?profile:runBundle;
+            detailAgent={...agent,evidence:marketplaceAgentReadModelSchema.shape.evidence.parse({...agent.evidence,status:primary.status,summary:primary.summary,currentVersion:source.currentVersion,profile,runBundle,greenfieldUri:profile.readUrl,greenfieldLocator:profile.locator,lastVerifiedAt:primary.verifiedAt})};
+          }
+        }catch{ /* Optional publication evidence never removes a registered profile. */ }
+        return {contractVersion:marketplaceReadContractVersion,status:"ready",mode:"live",dataLabel:"Registered agent",notice:"Real ERC-8004 registration with attributed public evidence.",meta:directory.meta,agent:detailAgent,error:null};
+      }
+    }
     const { service, metadataSource } = await createLiveReadService();
     const result = await service.readAgent(normalizedSlug);
     const effectiveMode = result.meta.sourceStatus === "degraded"

@@ -463,7 +463,7 @@ describe("marketplace read service acceptance boundary", () => {
     expect(response.excluded).toHaveLength(1);
     expect(response.excluded[0]?.slug).toBe("pending-agent");
     expect(response.excluded[0]?.reasons.map((reason) => reason.code)).toEqual(expect.arrayContaining([
-      "ENDPOINT_UNHEALTHY",
+      "ENDPOINT_UNVERIFIED",
       "IDENTITY_UNRESOLVED",
       "LISTING_NOT_PUBLISHED",
       "VERIFICATION_PENDING"

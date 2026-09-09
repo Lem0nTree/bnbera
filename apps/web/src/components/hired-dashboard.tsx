@@ -8,10 +8,9 @@ import { Callout, EmptyState, LoadingState, StatusBadge } from "@bnbera/ui";
 import type { BuyerJobSummary, CommerceJobsResponse } from "@/lib/commerce-job-list";
 import { CommerceJourney } from "./commerce-journey";
 import { buyerHistoryResponseCurrent, buyerSessionKey, hiredJobMatches } from "@/lib/hired-presentation";
-import { EoaWalletProvider } from "./eoa-wallet-provider";
 const activation = { enabled: false, availability: "unavailable", method: "erc8183", title: "Persisted hire", reason: "Resume an existing buyer-owned job.", nextAction: "Inspect persisted status" } as const;
 export function HiredDashboard() {
-  return <EoaWalletProvider><HiredDashboardInner /></EoaWalletProvider>;
+  return <HiredDashboardInner />;
 }
 function HiredDashboardInner() {
   const { address, chainId, isConnected } = useAccount();

@@ -35,6 +35,17 @@ const summary = {
 } as const;
 
 describe("reviewed 8004scan contract boundary", () => {
+  it("preserves network and bounded sorted-page selection", async () => {
+    const fetcher=vi.fn<typeof fetch>(async input=>{
+      const url=new URL(String(input));
+      expect(Object.fromEntries(url.searchParams)).toMatchObject({chain_id:"56",is_testnet:"false",limit:"20",offset:"40",sort_by:"total_score",sort_order:"desc"});
+      return new Response(JSON.stringify({items:[],total:310000,limit:20,offset:40}),{status:200,headers:{"content-type":"application/json"}});
+    });
+    const client=new EightHundredFourScanHttpClient({baseUrl:"https://scan.example/api/v1",fetch:fetcher,minRequestIntervalMs:0});
+    await client.listCandidates({chainId:56,isTestnet:false,limit:20,offset:40,sortBy:"total_score",sortOrder:"desc"});
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("maps the complete provider identity tuple and keeps owner non-authoritative", () => {
     const mapped = mapOfficialEightHundredFourScanCandidate(summary);
     expect(mapped.identity).toEqual({ namespace: "eip155", chainId: 97, identityRegistry: address, agentId: "900719925474099312345" });

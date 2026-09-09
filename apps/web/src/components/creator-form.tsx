@@ -293,9 +293,9 @@ export function CreatorForm() {
   return <form ref={formRef} onSubmit={submitForReview} className="activation-panel creator-wizard" noValidate>
     <ol className="journey-steps">{["Describe", "Configure", "Review permissions", "Deploy & publish"].map((label, index) => <li key={label} aria-current={step === index ? "step" : undefined}>{index + 1}. {label}</li>)}</ol>
     <fieldset data-step="0" hidden={step !== 0}><legend data-step-heading="0" tabIndex={-1}>Describe your agent</legend><p>This name and description become public. Keep private information out.</p>
-    <label>Name<input name="name" required minLength={3} maxLength={80} disabled={controlsDisabled} /></label>
-    <label>Public slug<input name="slug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" minLength={3} maxLength={80} disabled={controlsDisabled} /></label>
-    <label>Description<textarea name="description" required minLength={20} maxLength={500} disabled={controlsDisabled} /></label>
+    <label>Agent name<input name="name" placeholder="e.g. My swap assistant" required minLength={3} maxLength={80} disabled={controlsDisabled} /></label>
+    <label>Profile name<input name="slug" placeholder="my-swap-assistant" required pattern="[a-z0-9]+(-[a-z0-9]+)*" minLength={3} maxLength={80} disabled={controlsDisabled} /><small>Use lowercase letters, numbers, and hyphens.</small></label>
+    <label>What does your agent do?<textarea name="description" placeholder="Describe the task your agent helps with…" required minLength={20} maxLength={500} disabled={controlsDisabled} /></label>
     <label><input name="publicationConsent" type="checkbox" required disabled={controlsDisabled} /> I consent to publish this fixed-template agent after verification.</label>
     </fieldset><fieldset data-step="1" hidden={step !== 1}><legend data-step-heading="1" tabIndex={-1}>Configure one-shot swap</legend><p>BNB Smart Chain testnet · Choose the pair and maximum size for one bounded swap.</p>
     <label>Trading pair<select name="tradingPair" defaultValue="tbnb-cake" disabled={controlsDisabled}><option value="tbnb-cake">tBNB → CAKE</option><option value="tbnb-busd">tBNB → BUSD</option></select></label>
