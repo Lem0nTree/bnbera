@@ -33,6 +33,21 @@ const enabled = {
 } as const;
 
 describe("bounded resumable 8004scan discovery job", () => {
+  it("resumes when the live catalog total changes between pages", async () => {
+    const repository = new InMemoryIngestionRepository();
+    const adapter = adapterFor(async (query) => {
+      const offset = Number(query.offset ?? 0);
+      return { candidates: [candidate(String(offset + 1))], nextOffset: offset + 1, nextCursor: null, total: [10, 12, 11][offset] };
+    });
+    for (const total of [10, 12, 11]) {
+      const job = new Erc8004ScanJob({ repository, adapter, gates: enabled });
+      const result = await job.run({ scope: "live-total", query: { chainId: 97, limit: 1 }, maxPages: 1 });
+      expect(result.total).toBe(total);
+    }
+    expect((await repository.getScanDiscoveryCheckpoint("live-total"))?.nextOffset).toBe(3);
+    expect(await repository.listIdentities()).toHaveLength(3);
+  });
+
   it("no-ops before touching the adapter when either gate is disabled", async () => {
     const adapter = adapterFor(async () => {
       throw new Error("provider must not be called");

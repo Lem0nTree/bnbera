@@ -732,9 +732,7 @@ export class InMemoryIngestionRepository implements IngestionRepository, ScanDis
     if (input.pagesProcessed !== existing.pagesProcessed + 1 || input.candidatesProcessed < existing.candidatesProcessed) {
       throw scanCheckpointConflict("The 8004scan checkpoint counters must advance monotonically.", { existing, input });
     }
-    if (existing.total !== null && input.total !== null && input.total !== existing.total) {
-      throw scanCheckpointConflict("The 8004scan total changed within one query stream.", { existing, input });
-    }
+    // A live catalog's total is an observation, not a cursor invariant.
     if (
       (existing.nextOffset !== null && input.nextCursor !== null) ||
       (existing.nextCursor !== null && input.nextOffset !== null)
