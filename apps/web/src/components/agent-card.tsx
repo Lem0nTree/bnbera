@@ -10,7 +10,7 @@ export function AgentCard({ agent }: { readonly agent: MarketplaceAgentReadModel
   if (agent.directory) return <DirectoryAgentRow agent={agent}/>;
   const heartbeat = heartbeatLabel(agent);
   return <article className="agent-row agent-row--marketplace">
-    <Link className="agent-row__art" href={`/agents/${agent.slug}`} aria-label={`View ${agent.name}`}><AgentAvatar category={agent.category} /></Link>
+    <Link className="agent-row__art" href={`/agents/${agent.slug}`} aria-label={`View ${agent.name}`}><AgentAvatar category={agent.category} name={agent.name} /></Link>
     <div className="agent-row__content">
       <h3><Link href={`/agents/${agent.slug}`}>{agent.name}</Link></h3>
       <p className="agent-row__description">{agent.description}</p>

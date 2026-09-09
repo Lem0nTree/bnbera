@@ -28,7 +28,7 @@ export function CompareTable({ agents }: { readonly agents: readonly Agent[] }) 
     <div className="compare-table-wrap" role="region" aria-label="Agent comparison; scroll horizontally to inspect all agents" tabIndex={0}>
       <table className="comparison-table" style={{ minWidth: `${10 + agents.length * 18}rem` }}>
         <caption className="sr-only">Agent capabilities, prices, and evidence comparison</caption>
-        <thead><tr><th scope="col">Your shortlist</th>{agents.map((a) => <th scope="col" key={a.id}><AgentAvatar category={a.category} /><h2>{a.name}</h2><p>BNB {a.identity.chainId === 97 ? "Testnet" : "Mainnet"}</p>{a.dataProvenance.mode !== "live" && <StatusBadge value={a.dataProvenance.mode === "fixture" ? "Development fixture" : "Degraded data"} tone="warning" />}<Link className="button button--small" href={`/agents/${a.slug}`}>View agent ↗</Link></th>)}</tr></thead>
+        <thead><tr><th scope="col">Your shortlist</th>{agents.map((a) => <th scope="col" key={a.id}><AgentAvatar category={a.category} imageUrl={a.directory?.imageUrl} name={a.name} /><h2>{a.name}</h2><p>BNB {a.identity.chainId === 97 ? "Testnet" : "Mainnet"}</p>{a.dataProvenance.mode !== "live" && <StatusBadge value={a.dataProvenance.mode === "fixture" ? "Development fixture" : "Degraded data"} tone="warning" />}<Link className="button button--small" href={`/agents/${a.slug}`}>View agent ↗</Link></th>)}</tr></thead>
         <tbody>{rows.map(({label, render}) => <tr key={label}><th scope="row">{label}</th>{agents.map((a) => <td key={a.id}>{render(a)}</td>)}</tr>)}</tbody>
       </table>
     </div>
