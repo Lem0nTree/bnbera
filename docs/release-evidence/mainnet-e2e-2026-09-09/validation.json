@@ -1,0 +1,18 @@
+{
+  "observedAt": "2026-09-09T16:41:07.579Z",
+  "tests": {
+    "command": "pnpm --filter @bnbera/web exec vitest run src/lib/commerce-server.test.ts src/components/eoa-wallet-rpc.test.ts",
+    "passed": 29,
+    "failed": 0
+  },
+  "lint": "passed",
+  "secretScan": "passed: configured sensitive values and sensitive field names absent from text artifacts",
+  "mainnetReceiptCount": 8,
+  "totalTransactionGasWei": "120570600000000",
+  "currentJobStatus": "FUNDED",
+  "submissionVerified": false,
+  "acceptanceVerified": false,
+  "settlementVerified": false,
+  "creatorDeploymentVerified": false,
+  "newMainnetGreenfieldPublicationVerified": false
+}

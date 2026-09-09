@@ -10,6 +10,7 @@ import { testnetCommercePreviewEnabled, mainnetBrowserCommerceEnabled } from "@b
 import { evmAddressSchema, type CommerceJobStatus } from "@bnbera/domain";
 import { readCheckedInStandardsLock } from "./checked-in-lock";
 import { privateKeyToAddress } from "viem/accounts";
+import { BNB, BNB_TESTNET } from "@altananetwork/sdk";
 import type { Hex } from "viem";
 import { AppError } from "@bnbera/config";
 import {
@@ -193,6 +194,8 @@ export interface Erc8183CommerceCompositionOptions {
   /** Explicit constructor-only development/test canary opt-in. */
   readonly developmentCanaryEnabled?: boolean;
   readonly externalMainnetBrowserEnabled?: boolean;
+  /** Trusted server RPC configuration, never taken from a browser request. */
+  readonly publicRpcUrl?: string;
   readonly runtimeEnvironment?: "development" | "test" | "preview" | "production";
 }
 
@@ -507,6 +510,10 @@ export class Erc8183CommerceComposition {
     this.adapter = new Erc8183AltanaAdapter({
       pin: options.pin,
       standardsLock: options.standardsLock,
+      ...(options.publicRpcUrl ? { network: {
+        ...(options.pin.chainId === 56 ? BNB : BNB_TESTNET),
+        publicRpcUrl: options.publicRpcUrl
+      } } : {}),
       ...(options.developmentCanaryEnabled === undefined ? {} : { developmentCanaryEnabled: options.developmentCanaryEnabled }),
       ...(options.externalMainnetBrowserEnabled === undefined ? {} : { externalMainnetBrowserEnabled: options.externalMainnetBrowserEnabled }),
       ...(options.runtimeEnvironment === undefined ? {} : { runtimeEnvironment: options.runtimeEnvironment })
@@ -526,7 +533,7 @@ export class Erc8183CommerceComposition {
     };
     this.service = new Erc8183CommerceService(serviceOptions);
     this.reads = new Erc8183CommerceReadService(this.jobs, this.operations);
-    this.externalSellerLifecycle = options.externalMainnetBrowserEnabled === true ? new ExternalSellerLifecycle({ pool: options.pool, chain: this.adapter, service: this.service, operations: this.operations, rpcUrl: process.env.BSC_MAINNET_RPC_URL ?? "" }) : undefined;
+    this.externalSellerLifecycle = options.externalMainnetBrowserEnabled === true ? new ExternalSellerLifecycle({ pool: options.pool, chain: this.adapter, service: this.service, operations: this.operations, rpcUrl: this.adapter.network.publicRpcUrl }) : undefined;
   }
 
   public async notifyExternalSeller(request: Request, jobId: string) {
@@ -945,6 +952,11 @@ export class Erc8183CommerceComposition {
       if (step === "claim_refund") await this.service.persistEoaTerminal(current, verified.job, verified.receipt, "expired");
       return await this.advanceEoa(current, verified);
     } catch (cause) {
+      // A later RPC outage does not invalidate an already verified receipt.
+      // Keep its evidence and allow another read; never dispatch another call.
+      if (cause instanceof CommerceError && cause.code === "CHAIN_PROVIDER_INVALID" && (operation.status === "confirmed" || operation.status === "reconciled")) {
+        return { operation, replayed: true, dispatch: null, read: await this.optionalJob(operation.jobId) };
+      }
       if (cause instanceof CommerceError && cause.code === "TRANSACTION_UNKNOWN") {
         if (operation.status === "confirmed" || operation.status === "manual_review" || operation.status === "reconciled") return { operation, replayed: false, dispatch: null, read: await this.optionalJob(operation.jobId) };
         const unknown = await this.operations.markUnknown({ operationId: operation.operationId, failureCode: "EOA_RECEIPT_PENDING" });
@@ -1338,6 +1350,7 @@ export async function getCommerceComposition(request?: Request): Promise<Erc8183
       // use a separately authenticated authority boundary before enablement.
       developmentCanaryEnabled: chainId === 97 && process.env.T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED === "true",
       externalMainnetBrowserEnabled: chainId === 56,
+      publicRpcUrl: (chainId === 56 ? process.env.BSC_MAINNET_RPC_URL : process.env.BSC_TESTNET_RPC_URL) || (chainId === 56 ? BNB : BNB_TESTNET).publicRpcUrl,
       runtimeEnvironment: nodeEnvironment
     });
   } catch (cause) {

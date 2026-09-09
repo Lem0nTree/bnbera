@@ -1,0 +1,28 @@
+[
+  {
+    "object_type": "agent_profile",
+    "resource_id": "be822771-38ed-5349-887c-f5735b7ee700",
+    "version": 11,
+    "state": "verified",
+    "greenfield_bucket": "bnbera-t8-230072625f8090d5271c5f882748ce11134ac2ba",
+    "greenfield_object": "bnbera-t8-230072625f8090d5271c5f882748ce11134ac2ba/evidence/hackathon/agent_profile/agent-2206/versions/11/agent_profile.json",
+    "creation_transaction_hash": "0x682adae35dee6ba597606f277a8aa86ecfb8eac84955220c2758531734d6efd4",
+    "seal_transaction_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "sha256_digest": "69e0294f83908f355a1a883c98768b52786a3f88439cf6f02fcd5b63e70279d8",
+    "size_bytes": "1989",
+    "readback_verified_at": "2026-09-08T20:42:20.661Z"
+  },
+  {
+    "object_type": "run_bundle",
+    "resource_id": "695c1be6-a6bb-4deb-b9b8-9eabd60b0ae7",
+    "version": 11,
+    "state": "verified",
+    "greenfield_bucket": "bnbera-t8-230072625f8090d5271c5f882748ce11134ac2ba",
+    "greenfield_object": "bnbera-t8-230072625f8090d5271c5f882748ce11134ac2ba/evidence/hackathon/run_bundle/run-b5a033ff-f4a9-5622-97c6-d0594a501db8/versions/11/run_bundle.json",
+    "creation_transaction_hash": "0x66469ec0e8e0dc081b0cc6c2fad25f19a2b978c2e5f5708d92003235f87d30e5",
+    "seal_transaction_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "sha256_digest": "12cba7d6a989d2603a525bb4965d84fe5bff4569f106a0ce3decb84d56e24446",
+    "size_bytes": "1186",
+    "readback_verified_at": "2026-09-08T20:48:51.760Z"
+  }
+]

@@ -135,17 +135,23 @@ export class ExternalErc8183SellerAdapter {
   async notifyFunded(input: { quote: ExternalSellerQuote; jobId: string; buyerAddress: string }): Promise<{ status: "notified"; responseDigest: string }> {
     const quote = externalSellerQuoteSchema.parse(input.quote);
     await this.assertJob(quote, input.jobId, input.buyerAddress, ["FUNDED"]);
+    const wireJobId = Number(input.jobId);
+    if (!Number.isSafeInteger(wireJobId)) fail("The seller JSON protocol cannot represent this job ID exactly.");
     const id = this.deps.randomId();
     let response: Record<string, unknown>;
     try {
       response = record(await this.deps.transport.request(quote.endpoint, { jsonrpc: "2.0", id, method: "message/send", params: { message: {
-        messageId: id, role: "user", parts: [{ kind: "data", data: { skill: "notify_funded", job_id: input.jobId } }] } } }));
+        messageId: id, role: "user", parts: [{ kind: "data", data: { skill: "notify_funded", job_id: wireJobId } }] } } }));
     } catch (cause) {
       throw new CommerceError({ code: "RECONCILIATION_REQUIRED", message: "The seller notification outcome is unknown. Check the saved job before retrying.", nextAction: "reconcile_job", cause });
     }
     const reply = record(response.result);
-    const candidates = Array.isArray(reply.parts) ? reply.parts.map(part => record(record(part).data)).filter(data => data.status !== undefined) : [reply];
-    if (response.jsonrpc !== "2.0" || response.id !== id || response.error !== undefined || candidates.length !== 1 || candidates[0]!.status !== "accepted" || String(candidates[0]!.job_id) !== input.jobId) throw new CommerceError({ code: "RECONCILIATION_REQUIRED", message: "The seller has not acknowledged this funded job. Check the saved job and result before any retry.", nextAction: "reconcile_job" });
+    const candidates = Array.isArray(reply.parts) ? reply.parts.map(part => record(record(part).data)).filter(data => data.status !== undefined || data.acknowledged !== undefined) : [reply];
+    const candidate = candidates[0];
+    const accepted = candidate && (candidate.status === "accepted" || candidate.acknowledged === true)
+      && (candidate.status === undefined || candidate.status === "accepted")
+      && (candidate.acknowledged === undefined || candidate.acknowledged === true);
+    if (response.jsonrpc !== "2.0" || response.id !== id || response.error !== undefined || candidates.length !== 1 || !accepted || String(candidate!.job_id) !== input.jobId) throw new CommerceError({ code: "RECONCILIATION_REQUIRED", message: "The seller has not acknowledged this funded job. Check the saved job and result before any retry.", nextAction: "reconcile_job" });
     assertPublicPayloadSafe(response);
     return { status: "notified", responseDigest: canonicalSha256Hex(response) };
   }

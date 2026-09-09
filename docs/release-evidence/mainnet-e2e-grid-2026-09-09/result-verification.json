@@ -1,0 +1,93 @@
+{
+  "observedAt": "2026-09-09T17:57:09.412Z",
+  "jobId": "56765",
+  "chainId": 56,
+  "keccak": "0x3184a55488c862c06aa2feb8c58646604b88c89b7218c960b38502fed29ce7b4",
+  "sha256": "b08e20f96debc6c016616ea5df1b4df1983cf74311fd36d4fc63f8cd2eec8ed0",
+  "manifestHashMatchesOnchain": true,
+  "contentChecks": [
+    "exact hypothetical task inputs",
+    "nine inclusive levels at 25 spacing",
+    "allocation sums to 1000 with final-level rounding remainder",
+    "sides split at midpoint 800",
+    "5 percent outer rebalance triggers",
+    "no execution"
+  ],
+  "result": {
+    "schemaVersion": 1,
+    "pair": "BNB/USDT",
+    "lowerPrice": "700",
+    "upperPrice": "900",
+    "capital": "1000",
+    "gridCount": 9,
+    "spacing": "25",
+    "levels": [
+      {
+        "index": 1,
+        "price": "700",
+        "side": "buy",
+        "capital": "111.11111111"
+      },
+      {
+        "index": 2,
+        "price": "725",
+        "side": "buy",
+        "capital": "111.11111111"
+      },
+      {
+        "index": 3,
+        "price": "750",
+        "side": "buy",
+        "capital": "111.11111111"
+      },
+      {
+        "index": 4,
+        "price": "775",
+        "side": "buy",
+        "capital": "111.11111111"
+      },
+      {
+        "index": 5,
+        "price": "800",
+        "side": "buy",
+        "capital": "111.11111111"
+      },
+      {
+        "index": 6,
+        "price": "825",
+        "side": "sell",
+        "capital": "111.11111111"
+      },
+      {
+        "index": 7,
+        "price": "850",
+        "side": "sell",
+        "capital": "111.11111111"
+      },
+      {
+        "index": 8,
+        "price": "875",
+        "side": "sell",
+        "capital": "111.11111111"
+      },
+      {
+        "index": 9,
+        "price": "900",
+        "side": "sell",
+        "capital": "111.11111112"
+      }
+    ],
+    "rebalanceTriggers": {
+      "below": "665",
+      "above": "945"
+    },
+    "assumptions": [
+      "Arithmetic price spacing with inclusive lower and upper bounds.",
+      "Capital is allocated evenly; rounding remainder is assigned to the final level.",
+      "Buy levels are at or below the range midpoint and sell levels are above it.",
+      "Rebalance triggers sit five percent outside the configured range.",
+      "This plan performs no order placement, custody or financial execution."
+    ],
+    "execution": "none"
+  }
+}

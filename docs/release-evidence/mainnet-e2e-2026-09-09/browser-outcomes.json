@@ -1,0 +1,193 @@
+{
+  "observedAt": "2026-09-09T16:36:45.543Z",
+  "delivery": {
+    "url": "https://bnbera.ritarda.to/api/commerce/56764/deliver",
+    "status": 409,
+    "body": {
+      "contractVersion": "bnbera.erc8183-commerce/v1",
+      "status": "error",
+      "error": {
+        "code": "RECONCILIATION_REQUIRED",
+        "message": "The seller delivery outcome is unknown. The saved claim prevents duplicate work; refresh the job and result.",
+        "requestId": "902328fd-e135-4f89-9900-462032461ac2",
+        "retriable": false,
+        "nextAction": "reconcile_job"
+      },
+      "job": null,
+      "operation": null
+    }
+  },
+  "refresh": {
+    "url": "https://bnbera.ritarda.to/api/commerce/56764/refresh-result",
+    "status": 200,
+    "body": {
+      "status": "awaiting_provider"
+    }
+  },
+  "operation": {
+    "url": "https://bnbera.ritarda.to/api/commerce/operation/2016ae8f-32a0-430c-8818-e62e6d0d0ba1",
+    "status": 200,
+    "body": {
+      "contractVersion": "bnbera.erc8183-commerce/v1",
+      "status": "ready",
+      "operation": {
+        "operationId": "2016ae8f-32a0-430c-8818-e62e6d0d0ba1",
+        "jobId": "56764",
+        "kind": "fund",
+        "signerRole": "client",
+        "status": "manual_review",
+        "callsId": null,
+        "transactionHash": "0x467b2877cb32b3b17ddbcf4d34c270ebafc2b274aadc9cd87c2f9c1a3fee5f1a",
+        "blockNumber": "120910463",
+        "blockHash": "0x229793df6e098466e0d12d2b9c1096a4ce6093283dbe09f4033197bdf29878c3",
+        "failureCode": "CHAIN_PROVIDER_INVALID",
+        "createdAtUnix": 1788971373,
+        "updatedAtUnix": 1788971569
+      },
+      "job": {
+        "job": {
+          "jobKey": {
+            "chainId": 56,
+            "commerceContract": "0xea4daa3100a767e86fded867729ae7446476eba6",
+            "jobId": "56764"
+          },
+          "terms": {
+            "chainId": 56,
+            "commerceContract": "0xea4daa3100a767e86fded867729ae7446476eba6",
+            "paymentToken": "0xce24439f2d9c6a2289f741120fe202248b666666",
+            "paymentDecimals": 18,
+            "clientAddress": "0x230072625f8090d5271c5f882748ce11134ac2ba",
+            "providerAddress": "0x3230768bd8ec81c1764974cf813a7ebc248cdaff",
+            "evaluatorAddress": "0x51895229e12f9876011789b04f8698af06ccd6da",
+            "hookAddress": "0x51895229e12f9876011789b04f8698af06ccd6da",
+            "budgetAtomic": "10000000000000000",
+            "descriptionDigest": "a9ec6323aaaa99f35ac26873b9d4c707bb56d02865987a6c9aa474cc9dfd7739",
+            "expiresAtUnix": 1789577755
+          },
+          "deploymentPin": {
+            "enabled": true,
+            "chainId": 56,
+            "specRevision": "a078cab5cc8e9581c15f76c091ed96eed28f02f7",
+            "commerceContract": "0xea4daa3100a767e86fded867729ae7446476eba6",
+            "paymentToken": "0xce24439f2d9c6a2289f741120fe202248b666666",
+            "paymentDecimals": 18,
+            "abiHash": "4d8ac8b406dff522f1b9066eb3e00e2c8e491d4d09df2564ede124220b623ede",
+            "evaluatorProfile": "verified-policy-v1",
+            "confirmationThreshold": 1,
+            "minExpiryLeadSeconds": 60,
+            "maxExpiryHorizonSeconds": 691200,
+            "minBudgetAtomic": "1",
+            "maxBudgetAtomic": "115792089237316195423570985008687907853269984665640564039457584007913129639934"
+          },
+          "deploymentPinDigest": "970c870550b3a9d1f4dd7313efbcdead3799ecd8b9fb7110c2e811a297fd0a4b",
+          "state": "funded",
+          "createdAtUnix": 1788971373,
+          "updatedAtUnix": 1788971403,
+          "deliverableDigest": null,
+          "providerBinding": {
+            "identity": {
+              "namespace": "eip155",
+              "chainId": 56,
+              "identityRegistry": "0x8004a169fb4a3325136eb29fa0ceb6d2e539a432",
+              "agentId": "341565"
+            },
+            "agentVersionId": "c328f784-ded3-423f-b661-cb3fa1379161",
+            "agentVersion": 2
+          },
+          "buyerApproval": null,
+          "fundingTransactionHash": "0x467b2877cb32b3b17ddbcf4d34c270ebafc2b274aadc9cd87c2f9c1a3fee5f1a",
+          "submissionTransactionHash": null,
+          "completionTransactionHash": null,
+          "rejectionTransactionHash": null,
+          "refundTransactionHash": null,
+          "lastObservedBlock": "120910463",
+          "lastObservedBlockHash": "0x229793df6e098466e0d12d2b9c1096a4ce6093283dbe09f4033197bdf29878c3",
+          "lastObservedAtUnix": 1788971403
+        },
+        "submission": null,
+        "operations": [
+          {
+            "operationId": "49075c69-51de-4a47-b54e-349a709adb52",
+            "jobId": "56764",
+            "kind": "create",
+            "signerRole": "client",
+            "status": "confirmed",
+            "callsId": null,
+            "transactionHash": "0x282fdd387f0a97067251a7d2dc7db77540567563bae3c2ddbb578fb0cca1cd39",
+            "blockNumber": "120910213",
+            "blockHash": "0x7e076117ab19f3de3397ddb0567f4afe80e21bd27d0cb87f0ff27eb7f2ff4290",
+            "failureCode": null,
+            "createdAtUnix": 1788971155,
+            "updatedAtUnix": 1788971291
+          },
+          {
+            "operationId": "ec4f10da-9619-40a9-a13a-88abc74cdd91",
+            "jobId": "56764",
+            "kind": "register",
+            "signerRole": "client",
+            "status": "confirmed",
+            "callsId": null,
+            "transactionHash": "0x49483bd0f79835a192fe2f5f41bbe9c02efcfe415d9a670e7dd8a8ed8c2a6049",
+            "blockNumber": "120910277",
+            "blockHash": "0xb72747ad4654860b635261a8fcbd59903852e519ee8bfdd0e3557b865a41cbaa",
+            "failureCode": null,
+            "createdAtUnix": 1788971291,
+            "updatedAtUnix": 1788971322
+          },
+          {
+            "operationId": "e8725462-032a-460e-809a-5e474ce9cbad",
+            "jobId": "56764",
+            "kind": "set_budget",
+            "signerRole": "client",
+            "status": "confirmed",
+            "callsId": null,
+            "transactionHash": "0xc76366ceeee9463ca49d432a94c7f2d7278fec1ad9afd5af66d4b88b917836dc",
+            "blockNumber": "120910333",
+            "blockHash": "0x9e41bc5844d43108f96570c16509800e237004da8f222a01f255e52325838599",
+            "failureCode": null,
+            "createdAtUnix": 1788971322,
+            "updatedAtUnix": 1788971345
+          },
+          {
+            "operationId": "44aaac86-3b02-47c4-bc60-f3a1b501258c",
+            "jobId": "56764",
+            "kind": "approve",
+            "signerRole": "client",
+            "status": "confirmed",
+            "callsId": null,
+            "transactionHash": "0x56aa3c5ef596f77aa7f689680da53244815c69bd5ad80100fcdd222a641e7c0d",
+            "blockNumber": "120910389",
+            "blockHash": "0xe6b2100ca388df6be46aacfe1320d8c093449bcbd4b6cf8f0b8a7f7b058763b7",
+            "failureCode": null,
+            "createdAtUnix": 1788971345,
+            "updatedAtUnix": 1788971373
+          },
+          {
+            "operationId": "2016ae8f-32a0-430c-8818-e62e6d0d0ba1",
+            "jobId": "56764",
+            "kind": "fund",
+            "signerRole": "client",
+            "status": "manual_review",
+            "callsId": null,
+            "transactionHash": "0x467b2877cb32b3b17ddbcf4d34c270ebafc2b274aadc9cd87c2f9c1a3fee5f1a",
+            "blockNumber": "120910463",
+            "blockHash": "0x229793df6e098466e0d12d2b9c1096a4ce6093283dbe09f4033197bdf29878c3",
+            "failureCode": "CHAIN_PROVIDER_INVALID",
+            "createdAtUnix": 1788971373,
+            "updatedAtUnix": 1788971569
+          }
+        ],
+        "approvalRequired": false
+      },
+      "dispatch": null,
+      "error": null
+    }
+  },
+  "creator": [
+    {
+      "url": "https://bnbera.ritarda.to/api/creator/authority/options",
+      "status": 200,
+      "error": null
+    }
+  ]
+}

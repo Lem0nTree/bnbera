@@ -133,7 +133,7 @@ function testComposition(overrides: Record<string, unknown> = {}): Erc8183Commer
   return composition;
 }
 
-function eoaOperation(step: "create" | "register" | "set_budget" | "approve" | "fund", status: "awaiting_signature" | "confirmed", jobId: string | null): Record<string, unknown> {
+function eoaOperation(step: "create" | "register" | "set_budget" | "approve" | "fund", status: "awaiting_signature" | "confirmed" | "reconciled", jobId: string | null): Record<string, unknown> {
   const expiry = 2_000_600;
   const parameters = {
     eoaStep: step,
@@ -177,6 +177,30 @@ function eoaOperation(step: "create" | "register" | "set_budget" | "approve" | "
 }
 
 describe("T5 commerce server composition", () => {
+  it("reads mainnet recovery receipts through the operator RPC instead of the SDK default", async () => {
+    vi.stubEnv("EXTERNAL_ERC8183_MAINNET_ENABLED", "true");
+    const fetchRpc = vi.fn(async () => new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: null }), { headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchRpc);
+    try {
+      const composition = createProductionCommerceComposition({
+        standardsLock: STANDARDS_LOCK,
+        pin: { ...PIN, chainId: 56, commerceContract: "0xEa4DAa3100A767e86FDed867729ae7446476EBA6", paymentToken: "0xcE24439F2D9C6a2289F741120FE202248B666666", maxExpiryHorizonSeconds: 691_200 },
+        pool: PERSISTENT_POOL as never,
+        identityResolver,
+        externalMainnetBrowserEnabled: true,
+        runtimeEnvironment: "production",
+        publicRpcUrl: "https://operator-rpc.example/56"
+      });
+      await expect(composition.adapter.getTransactionReceipt(`0x${"a".repeat(64)}`)).resolves.toBeNull();
+      expect(fetchRpc).toHaveBeenCalledOnce();
+      const [url, request] = fetchRpc.mock.calls[0] as unknown as [string, RequestInit];
+      expect(url).toBe("https://operator-rpc.example/56");
+      expect(JSON.parse(request.body as string)).toMatchObject({ method: "eth_getTransactionReceipt", params: [`0x${"a".repeat(64)}`] });
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
   it("reports the conservative dispute deadline and fails closed on policy failure", async () => {
     const observedAtUnix=Math.floor(Date.now()/1000);
     const read={job:{state:"submitted"},submission:{observedAtUnix}};
@@ -212,9 +236,12 @@ describe("T5 commerce server composition", () => {
     vi.stubEnv("T5_COMMERCE_DEVELOPMENT_CANARY_ENABLED", "true");
     vi.stubEnv("T5_REFERENCE_PROVIDER_WORKER_ENABLED", "false");
     vi.stubEnv("DATABASE_URL", "postgresql://localhost/bnbera");
+    vi.stubEnv("BSC_TESTNET_RPC_URL", "https://operator-rpc.example/97");
     try {
       const composition = await getCommerceComposition();
       expect(composition).toBeInstanceOf(Erc8183CommerceComposition);
+      expect(composition.adapter.network.publicRpcUrl).toBe("https://operator-rpc.example/97");
+      expect(composition.adapter.network.chainId).toBe(97);
       expect((composition as unknown as { readonly providerReadinessResolver?: CommerceProviderReadinessResolver }).providerReadinessResolver).toBeUndefined();
     } finally {
       await closeCommerceAuthDatabaseForTests();
@@ -505,6 +532,35 @@ describe("T5 commerce server composition", () => {
     expect(verifyEoaReceipt).toHaveBeenCalledWith(expect.objectContaining({ step: "fund", jobId: "7" }));
     expect(persistEoaFunding).toHaveBeenCalledOnce();
     expect(prepareEoaStep).toHaveBeenCalledTimes(4);
+  });
+
+  it.each(["confirmed", "reconciled"] as const)("preserves %s funding evidence when a later RPC read fails", async (status) => {
+    const persisted = eoaOperation("fund", status, "7");
+    const markManualReview = vi.fn();
+    const persistEoaFunding = vi.fn();
+    const composition = testComposition({
+      adapter: { pin: PIN, verifyEoaReceipt: vi.fn(async () => { throw new CommerceError({ code: "CHAIN_PROVIDER_INVALID", message: "Receipt RPC unavailable" }); }) },
+      operations: { get: vi.fn(async () => persisted), markManualReview },
+      service: { persistEoaFunding },
+      reads: { get: vi.fn(async () => null) }
+    });
+    const result = await composition.operationStatus(new Request("http://localhost"), persisted.operationId as string);
+    expect(result.operation).toBe(persisted);
+    expect(result.dispatch).toBeNull();
+    expect(markManualReview).not.toHaveBeenCalled();
+    expect(persistEoaFunding).not.toHaveBeenCalled();
+  });
+
+  it("still flags a contradictory confirmed funding receipt for review", async () => {
+    const persisted = eoaOperation("fund", "confirmed", "7");
+    const markManualReview = vi.fn();
+    const composition = testComposition({
+      adapter: { pin: PIN, verifyEoaReceipt: vi.fn(async () => { throw new CommerceError({ code: "ONCHAIN_MISMATCH", message: "Receipt actor mismatch" }); }) },
+      operations: { get: vi.fn(async () => persisted), markManualReview },
+      reads: { get: vi.fn(async () => null) }
+    });
+    await expect(composition.operationStatus(new Request("http://localhost"), persisted.operationId as string)).rejects.toMatchObject({ code: "ONCHAIN_MISMATCH" });
+    expect(markManualReview).toHaveBeenCalledWith({ operationId: persisted.operationId, failureCode: "ONCHAIN_MISMATCH" });
   });
 
   it("rechecks a confirmed create when receipt persistence preceded job ID attachment", async () => {
