@@ -61,7 +61,7 @@ export function PublicWalletFunding({
         </button>
       </div>
       <p className="commerce-journey__wallet-funding-help" id={helpId}>
-        Fund this public address with a small amount of BNB testnet gas and U testnet funds before activating. If clipboard copy is unavailable, focus the address and press Ctrl+C or Cmd+C.
+        Fund this public address with a small amount of BNB testnet gas and United Dollars testnet funds before activating. If clipboard copy is unavailable, focus the address and press Ctrl+C or Cmd+C.
       </p>
       <p className="commerce-journey__wallet-copy-status" id={statusId} role="status" aria-live="polite" aria-atomic="true">
         {status}
