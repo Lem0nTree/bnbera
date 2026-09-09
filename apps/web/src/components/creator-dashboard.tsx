@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { CreatorRegistrationSummary } from "./creator-registration-summary";
 import {
   registerCreatorErc8004Agent,
   authenticateCreatorPasskey,
@@ -56,6 +57,7 @@ export function CreatorDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [registrationRevision, setRegistrationRevision] = useState(0);
 
   const loadDrafts = useCallback(async () => {
     const response = await fetch("/api/creator/drafts", { cache: "no-store", credentials: "same-origin" });
@@ -148,6 +150,7 @@ export function CreatorDashboard() {
     setMessage("Recover the Creator passkey to register this agent on BNB Smart Chain testnet…");
     try {
       const status = await registerCreatorErc8004Agent({ deploymentId: draft.deploymentId });
+      setRegistrationRevision((value) => value + 1);
       if (status.state === "registered") {
         setMessage(`ERC-8004 identity ${status.agentId ?? ""} is registered and its finalized service binding is recorded. Marketplace listing and paid-hire state remain separate.`);
       } else if (status.state === "mint_confirmed" || status.state === "uri_pending") {
@@ -171,6 +174,7 @@ export function CreatorDashboard() {
       const busy = busyId !== null && (busyId === draft.authorityId || busyId === draft.id);
       return <li key={draft.id}>
         <h2>{draft.name}</h2><div className="detail-kv"><span>Draft</span><span>{draft.status}</span></div><div className="detail-kv"><span>Deployment</span><span>{draft.deploymentState ?? "Not queued"}{draft.currentStep === null ? "" : ` · ${draft.currentStep}`}</span></div><div className="detail-kv"><span>Registration & listing</span><span>Separate verification steps; use registration below to read or reconcile its status.</span></div>
+        {draft.deploymentId !== null && <CreatorRegistrationSummary deploymentId={draft.deploymentId} revision={registrationRevision} />}
         {draft.configuration === undefined ? null : <small>Bounded configuration: {pairLabel(draft.configuration.tradingPair)} · {amountLabel(draft.configuration.inputAmountWei)} · {draft.configuration.slippageBps ?? "unknown"} bps max slippage · quote ≤ {draft.configuration.quoteMaxAgeSeconds ?? "unknown"} seconds · deadline {draft.configuration.deadlineSeconds ?? "unknown"} seconds.</small>}<br />
         {draft.configurationDigest === undefined ? null : <small>Runtime configuration digest: <code>{draft.configurationDigest}</code></small>}<br />
         {draft.authorityId === null ? <small>No delegated authority is recorded.</small> : <>
