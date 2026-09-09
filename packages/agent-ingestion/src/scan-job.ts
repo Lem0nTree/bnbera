@@ -166,7 +166,9 @@ function normalizeQuery(query: EightHundredFourScanQuery | undefined): Normalize
   }
   const pageSize = boundedInteger(input.limit, DEFAULT_PAGE_SIZE, 1, MAX_PAGE_SIZE, "page size");
   const explicitStart = input.offset !== undefined || input.cursor !== undefined;
-  const initialOffset = input.offset === undefined
+  const initialCursor = input.cursor !== undefined && !/^[0-9]+$/u.test(input.cursor.trim()) ? input.cursor.trim() : null;
+  if (initialCursor !== null && (initialCursor.length === 0 || initialCursor.length > MAX_CURSOR_LENGTH)) throw ingestionError("SCAN_JOB_CONFIG_INVALID", "The traversal cursor exceeds the checkpoint bound.", "fix_scan_pagination");
+  const initialOffset = initialCursor !== null ? null : input.offset === undefined
     ? normalizeCursor(input.cursor)
     : normalizeOffset(input.offset);
   const base: EightHundredFourScanQuery = {
@@ -193,7 +195,7 @@ function normalizeQuery(query: EightHundredFourScanQuery | undefined): Normalize
     base,
     pageSize,
     initialOffset,
-    initialCursor: null,
+    initialCursor,
     queryDigest,
     explicitStart
   };
@@ -411,8 +413,8 @@ export class Erc8004ScanJob {
     if (persisted !== null && persisted.completedAt !== null) {
       return this.resultFromCheckpoint(persisted, startedAt, [], 0, 0, 0, 0, []);
     }
-    let nextOffset = persisted?.nextOffset ?? initialOffset;
-    let nextCursor = persisted?.nextCursor ?? initialCursor;
+    let nextOffset = persisted === null ? initialOffset : persisted.nextOffset;
+    let nextCursor = persisted === null ? initialCursor : persisted.nextCursor;
     let checkpoint = persisted;
     let pagesFetched = 0;
     let candidatesFetched = 0;

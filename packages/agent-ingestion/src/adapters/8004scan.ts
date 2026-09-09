@@ -25,7 +25,7 @@ export const officialEightHundredFourScanContract = Object.freeze({
   fullDetailPath: "/agents/{chain_id}/{registry_address}/{token_id}",
   chainsPath: "/chains",
   authenticationHeader: "X-API-Key",
-  pagination: "offset",
+  pagination: "offset-or-cursor",
   anonymousRequestsPerMinute: 30,
   anonymousRequestsPerDay: 1_000,
   maxPageSize: 100
@@ -33,7 +33,7 @@ export const officialEightHundredFourScanContract = Object.freeze({
 
 export type EightHundredFourScanQuery = {
   readonly chainId?: number;
-  /** Current API pagination. `cursor` remains accepted for the old adapter API. */
+  /** Shallow offset or opaque full-traversal cursor; never combine them. */
   readonly offset?: number;
   readonly cursor?: string;
   readonly limit?: number;
@@ -139,7 +139,9 @@ const officialListResponseSchema = z.object({
   items: z.array(z.unknown()),
   total: z.number().int().nonnegative(),
   limit: z.number().int().positive().max(officialEightHundredFourScanContract.maxPageSize),
-  offset: z.number().int().nonnegative()
+  offset: z.number().int().nonnegative(),
+  next_cursor: z.string().trim().min(1).max(1024).nullable().optional(),
+  has_more: z.boolean().optional()
 }).passthrough();
 
 const officialSemanticResponseSchema = officialListResponseSchema;
@@ -300,9 +302,21 @@ export class EightHundredFourScanHttpClient implements ExtendedEightHundredFourS
   }
 
   public async listCandidates(query: EightHundredFourScanQuery = {}): Promise<EightHundredFourScanPage> {
-    const offset = parseOffset(query);
+    if (query.cursor !== undefined && query.offset !== undefined) throw ingestionError("SCAN_CONFIG_INVALID", "Offset and cursor cannot be combined.", "fix_scan_pagination");
     const limit = boundedInteger(query.limit, 20, 1, officialEightHundredFourScanContract.maxPageSize, "page size");
-    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    // Resume old checkpoints just beyond the shallow window by rereading only
+    // their preceding page to recover its cursor. Do not re-ingest that page.
+    if (query.offset !== undefined && query.offset > 10000) {
+      const previousOffset = query.offset - limit;
+      if (previousOffset < 0 || previousOffset > 10000) throw ingestionError("SCAN_CONFIG_INVALID", "The legacy offset cannot be bridged safely.", "fix_scan_pagination");
+      const previous = await this.listCandidates({ ...query, offset: previousOffset });
+      if (previous.nextOffset !== null || !previous.nextCursor) throw ingestionError("SCAN_CONTRACT_INVALID", "The provider omitted the handoff cursor.", "review_scan_contract");
+      const { offset: _offset, ...base } = query;
+      return this.listCandidates({ ...base, cursor: previous.nextCursor });
+    }
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (query.cursor !== undefined) params.set("cursor", this.boundedText(query.cursor, 1024, "cursor")!);
+    else params.set("offset", String(boundedInteger(query.offset, 0, 0, 10000, "offset")));
     this.appendParam(params, "chain_id", queryNumber(query.chainId, "chain ID", 2_147_483_647));
     this.appendParam(params, "is_testnet", queryBoolean(query.isTestnet));
     if (query.isActive !== undefined && !["true", "false", "any"].includes(query.isActive)) throw ingestionError("SCAN_CONFIG_INVALID", "Invalid availability filter.", "fix_scan_query");
@@ -497,10 +511,12 @@ export class EightHundredFourScanHttpClient implements ExtendedEightHundredFourS
     const parsed = (semantic ? officialSemanticResponseSchema : officialListResponseSchema).safeParse(body);
     if (!parsed.success) throw ingestionError("SCAN_CONTRACT_INVALID", "The 8004scan page does not match the reviewed OpenAPI response.", "review_scan_contract", parsed.error);
     const page = parsed.data;
+    const cursorPage = route === "agents" && page.has_more !== undefined;
+    if (cursorPage && page.has_more && !page.next_cursor) throw ingestionError("SCAN_CONTRACT_INVALID", "The provider omitted the next traversal cursor.", "review_scan_contract");
     return {
       items: page.items,
-      nextCursor: page.offset + page.limit < page.total ? String(page.offset + page.limit) : null,
-      nextOffset: page.offset + page.limit < page.total ? page.offset + page.limit : null,
+      nextCursor: cursorPage ? (page.has_more ? page.next_cursor! : null) : page.offset + page.limit < page.total ? String(page.offset + page.limit) : null,
+      nextOffset: cursorPage ? null : page.offset + page.limit < page.total ? page.offset + page.limit : null,
       total: page.total,
       limit: page.limit,
       offset: page.offset,
@@ -851,19 +867,20 @@ export class EightHundredFourScanAdapter {
   }
 
   async *iterate(query: EightHundredFourScanQuery = {}): AsyncGenerator<IdentityCandidate, void, void> {
-    let offset = query.offset ?? (query.cursor === undefined ? undefined : Number(query.cursor));
-    let first = true;
+    let offset = query.offset;
+    let cursor = query.cursor;
+    const { offset: _offset, cursor: _cursor, ...base } = query;
     do {
       const pageQuery: EightHundredFourScanQuery = {
-        ...query,
-        ...(offset === undefined ? {} : { offset })
+        ...base,
+        ...(offset === undefined ? {} : { offset }),
+        ...(cursor === undefined ? {} : { cursor })
       };
-      if (!first) delete (pageQuery as { cursor?: string }).cursor;
       const page = await this.fetchPage(pageQuery);
       for (const candidate of page.candidates) yield candidate;
-      first = false;
       offset = page.nextOffset ?? undefined;
-    } while (offset !== undefined);
+      cursor = offset === undefined ? page.nextCursor ?? undefined : undefined;
+    } while (offset !== undefined || cursor !== undefined);
   }
 
   /** Stable key used by ingestion callers for idempotent page replay. */
