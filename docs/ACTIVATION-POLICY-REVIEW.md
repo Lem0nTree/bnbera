@@ -81,4 +81,4 @@ Web lint and TypeScript checks also passed for the panel changes.
 
 ## Follow-up: minimal verdict display
 
-PR #50 adds a direct read of the pinned policy’s `check(jobId, "0x")` for submitted jobs and displays Pending, Approve, Reject or Unavailable with the latest status read. This addresses the missing verdict display described above. Exact dispute deadlines, vote/quorum presentation and action availability remain separate follow-up work; the conservative timing gate and approval/settlement coupling are unchanged.
+PR #52 adds a direct read of the pinned policy’s `check(jobId, "0x")` for submitted jobs and displays Pending, Approve, Reject or Unavailable with the latest status read. This addresses the missing verdict display described above. Exact dispute deadlines, vote/quorum presentation and action availability remain separate follow-up work; the conservative timing gate and approval/settlement coupling are unchanged.
