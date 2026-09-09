@@ -1,8 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { hiredJobMatches, resumedOperationMatches } from "./hired-presentation";
+import { buyerHistoryResponseCurrent, buyerSessionKey, hiredJobMatches, resumedOperationMatches } from "./hired-presentation";
 import type { BuyerJobSummary } from "./commerce-job-list";
 import type { CommerceOperationStatusResponse } from "./commerce-contract";
 describe("buyer history presentation guards", () => {
+  it("rejects stale account responses and mixed-session pagination", () => {
+    expect(buyerHistoryResponseCurrent(1, 2, "buyer-a-session", "buyer-a-session")).toBe(false);
+    expect(buyerHistoryResponseCurrent(2, 2, "buyer-a-session", "buyer-b-session")).toBe(false);
+    expect(buyerHistoryResponseCurrent(2, 2, "buyer-a-session", null)).toBe(false);
+    expect(buyerHistoryResponseCurrent(2, 2, "buyer-a-session", "buyer-a-session")).toBe(true);
+  });
+  it("binds history to the connected account, chain, and unexpired session", () => {
+    const session = { authenticated: true, walletAddress: "0xaaaa", chainId: 97, expiresAt: "2026-09-09T12:00:00Z" };
+    const now = Date.parse("2026-09-09T11:00:00Z");
+    expect(buyerSessionKey(session, "0xAAAA", 97, now)).not.toBeNull();
+    expect(buyerSessionKey(session, "0xbbbb", 97, now)).toBeNull();
+    expect(buyerSessionKey(session, "0xaaaa", 56, now)).toBeNull();
+    expect(buyerSessionKey(session, undefined, 97, now)).toBeNull();
+    expect(buyerSessionKey(session, "0xaaaa", 97, Date.parse(session.expiresAt))).toBeNull();
+  });
   it("requires canonical completion rather than application acceptance", () => {
     const job = { lifecycle: { status: "accepted", canonicalState: "funded" }, nextAction: "wait_for_agent" } as BuyerJobSummary;
     expect(hiredJobMatches(job, "Completed")).toBe(false);

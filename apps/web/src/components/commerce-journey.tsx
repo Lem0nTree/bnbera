@@ -34,6 +34,7 @@ type JourneyProps = {
   readonly resumeOperationId?: string | null;
   readonly expectedProtocolJobId?: string | null;
   readonly walletOnly?: boolean;
+  readonly onAuthenticated?: () => void;
   /** A server-created parent quote/reservation. Never generated client-side. */
   readonly commerceJobId?: string | null;
   /** Detail-read evidence, bound to the same persisted commerce job. */
@@ -109,7 +110,7 @@ export function CommerceJourney(props: JourneyProps) {
   );
 }
 
-function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, runBundle = undefined, resumeOperationId = null, expectedProtocolJobId = null, walletOnly = false }: JourneyProps) {
+function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, runBundle = undefined, resumeOperationId = null, expectedProtocolJobId = null, walletOnly = false, onAuthenticated }: JourneyProps) {
   const { notify } = useToast();
   const storageKey = useMemo(() => publicStorageKey(identityKey), [identityKey]);
   const quoteKey = useMemo(() => quoteStorageKey(identityKey), [identityKey]);
@@ -164,6 +165,7 @@ function CommerceJourneyInner({ activation, identityKey, commerceJobId = null, r
     address,
     chainId
   }), [address, chainId, isConnected]);
+  useEffect(() => { if (walletAuthenticated) onAuthenticated?.(); }, [walletAuthenticated, onAuthenticated]);
 
   const rememberOperation = useCallback((nextOperationId: string) => {
     setOperationId(nextOperationId);
