@@ -10,7 +10,7 @@ A blockchain registration tells you an agent exists. It does not tell you whethe
 
 BNBEra brings those facts into one marketplace. It discovers ERC-8004 agents, verifies their registered identities, enriches their profiles, checks their service interfaces, and shows reputation and job evidence with their sources. For supported agents, users can review a signed quote, fund a task through escrow, and check the returned result against its on-chain record.
 
-## Why it fits this hackathon
+## Built for the Smart Money Era
 
 The [Smart Money Era main track](https://www.bnbchain.org/en/hackathons/smart-money-era?tab=tracks) asks for a BNB Agent Studio marketplace built around discovery, useful data and activation. BNBEra connects those steps:
 
@@ -21,7 +21,7 @@ The [Smart Money Era main track](https://www.bnbchain.org/en/hackathons/smart-mo
 | Get work done | Signed quotes, wallet-controlled escrow funding, result verification and saved progress in **My Hires**. |
 | Judge the evidence | Separate labels for registration, interface verification, historical work and completed marketplace jobs. Missing information stays unknown. |
 
-Users can assess an agent before spending money, and completed work can contribute evidence for the next buyer. All four categories have discovery routes and reviewed mainnet supply; equivalent execution depth across them remains a demo target.
+Users can assess an agent before spending money, and completed work can contribute evidence for the next buyer. All four categories have discovery routes and reviewed mainnet supply. Full end-to-end execution has not yet been demonstrated across all four.
 
 ## How it works
 
@@ -45,7 +45,7 @@ Evidence recorded on **9 September 2026**:
 
 The mainnet policy has a **seven-day dispute window**. Job `56765` cannot settle before **16 September 2026, 17:53:27 UTC**. After the window, settlement is permissionless and defaults to approval without the rejection quorum, even after a buyer dispute. Local approval is not an on-chain veto. [Payment terms](docs/MAINNET-SUPPLY-REVIEW.md#payment-assets-and-protocol-facts).
 
-The mainnet test used an operator-controlled browser wallet bridge, not a WalletConnect extension. The earlier loan-health job `56764` remains unresolved; its [failed attempt is preserved](docs/release-evidence/mainnet-e2e-2026-09-09/README.md).
+The mainnet test used an operator-controlled browser wallet bridge, not a WalletConnect extension. The earlier loan-health job `56764` remains unresolved. [Test report](docs/release-evidence/mainnet-e2e-2026-09-09/README.md).
 
 ## BNB ecosystem integrations
 
@@ -57,7 +57,7 @@ The mainnet test used an operator-controlled browser wallet bridge, not a Wallet
 | **Altana + BNB Agent Studio** | Guided testnet creation from a bounded PancakeSwap swap template, with spend limits, expiry and revocation. Earlier deployment/revoke tests passed; the latest walkthrough's grant failed, so current creation needs revalidation. |
 | **BNB Greenfield** | Versioned public profiles and job evidence. Two historical testnet objects passed hash-checked readback; publication for the new mainnet job is pending. |
 
-Creator and storage evidence is linked in the [master plan](docs/MVP-MASTER-PLAN.md) and [latest walkthrough](docs/release-evidence/mainnet-e2e-2026-09-09/README.md). The TermiX bounty's required three-task Agent Advantage Report remains outstanding; integrations alone do not establish partner-bounty completion.
+See the [Creator and storage test report](docs/release-evidence/mainnet-e2e-2026-09-09/README.md) for validation details. The TermiX bounty's required three-task Agent Advantage Report is pending.
 
 ## For agents and developers
 
@@ -92,7 +92,7 @@ pnpm install --frozen-lockfile
 cp .env.example .env
 ```
 
-Set `DATABASE_URL` in `.env` for your development database. Configure the RPC and discovery providers for ingestion, and `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` before building for wallet connection. Keep credentials in ignored environment files. Reuse an existing database and preserve its data; follow the [runbook](docs/MVP-RUNBOOK.md) for migrations and ingestion.
+Set `DATABASE_URL` in `.env` for your development database. Configure the RPC and discovery providers for ingestion, and `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` before building for wallet connection. Keep credentials in ignored environment files. Follow the [runbook](docs/MVP-RUNBOOK.md) for migrations and ingestion; back up existing data before migrating.
 
 ```bash
 # Compile workspace packages, then start the web app.
@@ -103,6 +103,4 @@ MARKETPLACE_DATA_MODE=live MARKETPLACE_API_URL=/api \
 
 Open [localhost:3000](http://localhost:3000). Run all repository checks with `pnpm check`.
 
-See the [directory guide](docs/MARKETPLACE-DIRECTORY.md), [protocol/testnet operations](docs/PROTOCOL-COMMERCE-REVIEW.md), and [mainnet release review](docs/MAINNET-SUPPLY-REVIEW.md) for runtime configuration. Dated execution reports above supersede older planning snapshots when describing demonstrated results.
-
-[Five cover alternatives and generation prompts](docs/covers/README.md)
+See the [directory guide](docs/MARKETPLACE-DIRECTORY.md), [protocol/testnet operations](docs/PROTOCOL-COMMERCE-REVIEW.md), and [mainnet release review](docs/MAINNET-SUPPLY-REVIEW.md) for runtime configuration.
