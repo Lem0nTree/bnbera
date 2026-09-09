@@ -18,6 +18,13 @@ export default {
       const response = await fetch(upstream, { method: request.method, headers, body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body, redirect: "manual", cf: { cacheEverything: false, cacheTtl: 0 } });
       const output = new Response(response.body, response);
       output.headers.set("Cache-Control", "private, no-store");
+      // Access authenticates the Worker to the private origin. Its assertion
+      // cookies are edge credentials and must never be forwarded to browsers.
+      const responseCookies = typeof output.headers.getSetCookie === "function" ? output.headers.getSetCookie() : [];
+      if (responseCookies.length) {
+        output.headers.delete("Set-Cookie");
+        for (const cookie of responseCookies) if (!/^CF_(?:Authorization|AppSession)=/iu.test(cookie)) output.headers.append("Set-Cookie", cookie);
+      }
       const location = output.headers.get("Location");
       if (location) {
         const redirect = new URL(location, upstream);
