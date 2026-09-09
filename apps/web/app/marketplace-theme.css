@@ -629,7 +629,7 @@ code, pre { background: #25252c; color: #dedee6; }
 .commerce-policy-verdict { display: grid; gap: 6px; padding: 14px 16px; border: 1px solid #51405d; border-radius: 12px; background: #251f2c; }
 .commerce-policy-verdict > span { color: #c1b6cb; font-size: .82rem; line-height: 1.5; }
 .hired-dashboard { display: grid; gap: 20px; }
-.hired-signin { max-width: 620px; }
+.hired-signin { width: 100%; }
 .hired-signin .commerce-journey { margin: 0; border-radius: 16px; background: #211d28; border-color: #44384f; }
 .hired-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 18px 20px; border: 1px solid #44384f; border-radius: 16px; background: linear-gradient(115deg,#211d28,#1b1922); }
 .hired-buyer { display: flex; align-items: center; gap: 14px; min-width: 0; }
@@ -658,3 +658,40 @@ code, pre { background: #25252c; color: #dedee6; }
   .directory-row__score .directory-score > strong { font-size: .94rem; }
   .hired-dashboard .hired-card { padding: 16px; }
 }
+
+/* The same account hierarchy before connection, before SIWE and after sign-in. */
+.commerce-journey--wallet-only { padding: 0; border: 0; background: transparent; }
+.commerce-wallet-panel { min-width: 0; padding: 22px; border: 1px solid #44384f; border-radius: 16px; background: linear-gradient(115deg,#211d28,#1b1922); }
+.commerce-wallet-panel__heading { display: flex; align-items: center; gap: 14px; }
+.commerce-wallet-panel__icon { display: grid; place-items: center; width: 44px; height: 44px; flex: 0 0 44px; border: 1px solid #574164; border-radius: 12px; background: #33273e; color: #dfb6ef; }
+.commerce-wallet-panel__icon svg { width: 23px; height: 23px; }
+.commerce-wallet-panel__eyebrow { font-size: .7rem; color: #b7a8c3; }
+.commerce-wallet-panel h3 { margin: 5px 0 0; font-size: 1.05rem; line-height: 1.4; color: #f0e5f6; }
+.commerce-wallet-panel__identity { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin-top: 18px; }
+.commerce-wallet-panel__identity strong { font-size: .88rem; letter-spacing: .015em; }
+.commerce-wallet-panel__identity > span { border: 1px solid #51415d; border-radius: 6px; padding: 4px 8px; color: #cbb9d7; font-size: .68rem; }
+.commerce-wallet-panel__identity small { color: #b7acbf; font-size: .7rem; }
+.commerce-wallet-panel > p { margin: 14px 0 18px; color: #bfb3ca; font-size: .84rem; line-height: 1.65; max-width: 65ch; }
+.commerce-wallet-panel__actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.commerce-wallet-panel__actions > .button { border-radius: 10px; min-height: 44px; padding: 11px 18px; }
+.commerce-wallet-panel__note { display: block; margin-top: 14px; color: #aa9ab6; font-size: .7rem; line-height: 1.6; }
+.commerce-journey--compact .commerce-journey__authority { padding: 0; border: 0; background: transparent; }
+.commerce-journey--compact .commerce-wallet-panel { padding: 16px; }
+.commerce-journey--compact .commerce-wallet-panel h3 { font-size: .95rem; }
+.hired-signin .commerce-journey--wallet-only { padding: 0; border: 0; background: transparent; }
+@media (max-width: 600px) { .commerce-wallet-panel { padding: 18px; }.commerce-wallet-panel__heading { gap: 12px; }.commerce-wallet-panel__actions > .button { width: 100%; } }
+
+.agent-row-skeletons { display: grid; gap: 14px; width: 100%; }
+.directory-row-skeleton { pointer-events: none; }
+.directory-row-skeleton__avatar { width: 64px; height: 64px; border-radius: 16px; align-self: start; }
+.directory-row-skeleton__copy { display: grid; gap: 12px; min-width: 0; }
+.directory-row-skeleton__title { width: 55%; height: 20px; }
+.directory-row-skeleton__line { width: 100%; height: 12px; }
+.directory-row-skeleton__tags { width: 65%; height: 14px; }
+.directory-row-skeleton__score { width: 70px; height: 70px; border-radius: 50%; justify-self: center; }
+.directory-row-skeleton__action { display: grid; gap: 16px; padding-left: 18px; border-left: 1px solid #43344e; }
+.directory-row-skeleton__button { width: 100%; height: 42px; border-radius: 10px; }
+.directory-row-skeleton__footer { grid-column: 1/-1; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 24px; border-top: 1px solid #3c3046; padding-top: 18px; }
+.marketplace-skeleton-heading { display: grid; gap: 16px; padding: 16px 0 32px; }
+@media (max-width: 1000px) { .directory-row-skeleton__action { grid-column: 2/-1; border-left: 0; padding: 0; } }
+@media (max-width: 760px) { .directory-row-skeleton__avatar { width: 52px; height: 52px; }.directory-row-skeleton__score { width: 57px; height: 57px; }.directory-row-skeleton__title { width: 85%; }.directory-row-skeleton__action { grid-column: 1/-1; }.directory-row-skeleton__footer { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; } }
