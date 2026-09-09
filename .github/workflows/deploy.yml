@@ -1,0 +1,69 @@
+name: Deploy production
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: bnbera-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Select current main with successful CI
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/$REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          [[ "$sha" =~ ^[a-f0-9]{40}$ ]]
+          if [[ "$EVENT_NAME" == workflow_run && "$sha" != "$TESTED_SHA" ]]; then
+            echo 'A newer main commit exists; its CI will trigger deployment.'
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh api "repos/$REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&head_sha=$sha&per_page=1" \
+            --jq '.workflow_runs[0] | .status == "completed" and .conclusion == "success"' | grep -qx true
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+      - name: Deploy exact commit over restricted SSH
+        if: steps.release.outputs.ready == 'true'
+        env:
+          DEPLOY_SHA: ${{ steps.release.outputs.sha }}
+          DEPLOY_HOST: ${{ secrets.BNBERA_DEPLOY_HOST }}
+          DEPLOY_KEY: ${{ secrets.BNBERA_DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.BNBERA_DEPLOY_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          key_file=$(mktemp)
+          hosts_file=$(mktemp)
+          trap 'rm -f "$key_file" "$hosts_file"' EXIT
+          printf '%s\n' "$DEPLOY_KEY" > "$key_file"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$hosts_file"
+          ssh -i "$key_file" -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$hosts_file" \
+            -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+            "ubuntu@$DEPLOY_HOST" "$DEPLOY_SHA"
+          echo "Deployed main commit: $DEPLOY_SHA" >> "$GITHUB_STEP_SUMMARY"

@@ -241,6 +241,12 @@ Health observations expire from browse projections after two minutes, with real 
 
 ## Verification and rollback
 
+Production updates use the [GitHub Actions deployment procedure](../deploy/origin/README.md).
+Successful push CI on `main` triggers an exact-commit build on the existing
+origin, candidate health checks, service promotion and rollback on failure.
+Use `gh workflow run deploy.yml --ref main` for a manual deployment of current
+green `main`. Database migrations retain the backed-up procedure below.
+
 Run focused package tests plus real DB/API/browser checks for changed behavior. `pnpm evidence:release-check` checks historical artifacts, not current gate completion. Never run synthetic cleanup or migration failure tests against the retained data; use an explicitly disposable DB. Back up retained data before any migration and preserve existing fresh/legacy forward-repair behavior.
 
 For public deployment, build/start an immutable artifact from the accepted SHA and use authorized HTTPS API or private DB networking; a remote Vercel process cannot reach this host's loopback DB. Keep server credentials out of browser bundles.
