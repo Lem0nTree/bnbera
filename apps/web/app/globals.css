@@ -1293,6 +1293,7 @@ code {
   border-radius: 1rem;
 }
 
+.callout > div { min-width: 0; overflow-wrap: anywhere; }
 .compare-scroll-hint { color: var(--bnbera-muted); font-size: 0.875rem; line-height: 1.5; }
 .compare-column__identity { position: sticky; top: 0; z-index: 1; display: grid; gap: 0.25rem; padding: 0.75rem 1rem; background: var(--bnbera-elevated); border-bottom: 1px solid var(--bnbera-border); overflow-wrap: anywhere; }
 .compare-column__identity span { color: var(--bnbera-muted); font-size: 0.8125rem; }
