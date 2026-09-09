@@ -88,6 +88,17 @@ describe("bounded resumable 8004scan discovery job", () => {
     expect(adapter.fetchPage.mock.calls.map(([query]) => query.offset)).toEqual([0, 1, 2]);
   });
 
+  it("preserves full-scan availability and ordering across resumable pages", async () => {
+    const adapter=adapterFor(async () => ({candidates:[candidate("1001")],nextOffset:1,nextCursor:null,total:2}));
+    const repository=new InMemoryIngestionRepository();
+    const job=new Erc8004ScanJob({repository,adapter,gates:enabled});
+    const query={chainId:97,isTestnet:true,isActive:"any" as const,sortBy:"created_at" as const,sortOrder:"asc" as const,limit:1};
+    await job.run({scope:"all-agents",query,maxPages:1});
+    expect(adapter.fetchPage.mock.calls[0]?.[0]).toMatchObject(query);
+    await expect(job.run({scope:"all-agents",query:{...query,isActive:"true"},maxPages:1})).rejects.toThrow();
+    await expect(job.run({scope:"all-agents",query:{...query,sortOrder:"desc"},maxPages:1})).rejects.toThrow();
+  });
+
   it("rolls back the page and leaves the prior checkpoint when persistence fails", async () => {
     class FailingCheckpointRepository extends InMemoryIngestionRepository {
       private failed = false;

@@ -385,6 +385,7 @@ export const marketplaceSearchInputSchema = z.object({
   freshness: z.enum(["fresh", "stale", "unknown"]).optional(),
   sort: z.enum(["relevance", "freshness", "score"]).default("relevance"),
   limit: z.coerce.number().int().min(1).max(100).default(100),
+  offset: z.coerce.number().int().min(0).max(10000000).optional(),
   preview: z.enum(marketplacePreviewStates).optional()
 });
 
@@ -411,7 +412,7 @@ export const marketplaceSearchResponseSchema = z.object({
   agents: z.array(marketplaceAgentReadModelSchema),
   excluded: z.array(marketplaceExcludedReadModelSchema),
   total: z.number().int().nonnegative(),
-  directoryStats: z.object({ registered: z.number().int().nonnegative(), mainnet: z.number().int().nonnegative(), testnet: z.number().int().nonnegative(), hireEligible: z.number().int().nonnegative(), recentlyChecked: z.number().int().nonnegative(), cap: z.number().int().positive() }).optional(),
+  directoryStats: z.object({ registered: z.number().int().nonnegative(), mainnet: z.number().int().nonnegative(), testnet: z.number().int().nonnegative(), hireEligible: z.number().int().nonnegative().nullable(), recentlyChecked: z.number().int().nonnegative().nullable(), cap: z.number().int().positive().nullable() }).optional(),
   selection: searchSelectionSchema,
   /** Source and retrieval status are available even when no cards qualify. */
   meta: marketplaceReadSourceMetaSchema.nullable(),
@@ -1160,7 +1161,8 @@ function appendSearch(url: URL, input: MarketplaceSearchInput): void {
     ["protocol", input.protocol],
     ["freshness", input.freshness],
     ["sort", input.sort],
-    ["limit", input.limit?.toString()]
+    ["limit", input.limit?.toString()],
+    ["offset", input.offset?.toString()]
   ];
   for (const [key, value] of entries) {
     if (value) {
@@ -1438,7 +1440,7 @@ export async function readMarketplaceAgentApi(
 
 export function parseMarketplaceSearchParams(params: URLSearchParams): MarketplaceSearchInput {
   const values: Record<string, string> = {};
-  const keys = ["q", "category", "chainId", "origin", "verification", "runtime", "protocol", "freshness", "sort", "limit", "preview"];
+  const keys = ["q", "category", "chainId", "origin", "verification", "runtime", "protocol", "freshness", "sort", "limit", "offset", "preview"];
   for (const key of keys) {
     const value = params.get(key);
     if (value !== null && value.length > 0) {
@@ -1456,6 +1458,7 @@ export function parseMarketplaceSearchParams(params: URLSearchParams): Marketpla
     freshness: values.freshness,
     sort: values.sort,
     limit: values.limit,
+    offset: values.offset,
     preview: values.preview
   });
 }
@@ -1464,7 +1467,7 @@ export function parseMarketplacePageParams(
   params: Readonly<Record<string, string | string[] | undefined>>
 ): MarketplaceSearchInput {
   const search = new URLSearchParams();
-  const pageKeys = ["q", "category", "chainId", "origin", "verification", "runtime", "protocol", "freshness", "sort", "limit", "preview"];
+  const pageKeys = ["q", "category", "chainId", "origin", "verification", "runtime", "protocol", "freshness", "sort", "limit", "offset", "preview"];
   for (const key of pageKeys) {
     const value = params[key];
     if (typeof value === "string") {

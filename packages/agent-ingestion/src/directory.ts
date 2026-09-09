@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { erc8004IdentitySchema } from "@bnbera/domain";
+import { agentCategorySchema, erc8004IdentitySchema } from "@bnbera/domain";
 
 /** Public, attributed directory evidence. This does not grant invocation eligibility. */
 export const directoryObservationType = "registered_directory_v1";
@@ -26,6 +26,8 @@ export const directoryServiceSchema = z.object({
 export const directorySnapshotSchema = z.object({
   schemaVersion: z.literal("bnbera-directory-v1"),
   identity: erc8004IdentitySchema,
+  category: agentCategorySchema.optional(),
+  semanticDigest: z.string().regex(/^[0-9a-f]{64}$/u).optional(),
   name: z.string().min(1).max(160), description: z.string().min(1).max(2000),
   imageUrl: z.string().url().nullable(), sourceUrl: z.string().url(),
   sourceLabel: z.string().min(1).max(100).optional(),

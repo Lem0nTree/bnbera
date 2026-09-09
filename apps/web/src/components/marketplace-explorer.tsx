@@ -31,6 +31,7 @@ function paramsForCategory(searchString: string, category: string): string {
 function paramsForAllSupply(searchString: string): string {
   const params = new URLSearchParams(searchString);
   params.delete("category");
+  params.delete("offset");
   params.delete("agents");
   const query = params.toString();
   return `/marketplace${query ? `?${query}` : ""}`;
@@ -43,6 +44,7 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const currentCategory = response.selection.category;
+  const pageSize=Number(searchParams.get("limit")??100);
   const cleanParams = new URLSearchParams(searchParams.toString());
   cleanParams.delete("agents");
   const searchString = cleanParams.toString();
@@ -81,10 +83,12 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
         </div>
       </div>
 
+      {response.mode === "live" && response.meta?.warning && <p className="preview-banner">{response.meta.warning}</p>}
+
       {response.mode !== "live" && <p className="preview-banner">{response.mode === "fixture" ? "Preview collection · Sample agents. Hiring is unavailable." : response.status === "degraded" ? "Degraded data · Check the latest status before hiring." : response.notice}</p>}
 
       <div className="category-tabs" aria-label="Marketplace categories">
-        <Link
+        <Link prefetch={false}
           aria-current={!currentCategory ? "page" : undefined}
           className={!currentCategory ? "category-tab category-tab--active" : "category-tab"}
           href={paramsForAllSupply(searchString)}
@@ -92,7 +96,7 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
           All agents
         </Link>
         {categories.map((category) => (
-          <Link
+          <Link prefetch={false}
             aria-current={currentCategory === category ? "page" : undefined}
             className={currentCategory === category ? "category-tab category-tab--active" : "category-tab"}
             href={paramsForCategory(searchString, category)}
@@ -211,7 +215,11 @@ export function MarketplaceExplorer({ response }: { readonly response: Marketpla
         </div>
       ) : null}
 
-      {response.agents.length>visibleCount&&<div className="directory-load-more"><p>Showing {visibleCount} of {response.total} agents</p><button className="button" onClick={()=>setVisibleCount(count=>Math.min(count+20,100))}>Explore more agents ↓</button></div>}
+      {response.agents.length>visibleCount&&<div className="directory-load-more"><p>Showing {visibleCount} of {response.total} agents</p><button className="button" onClick={()=>setVisibleCount(count=>Math.min(count+20,response.agents.length))}>Explore more agents ↓</button></div>}
+      {response.directoryStats && response.total>response.agents.length && <nav className="directory-load-more" aria-label="Result pages">
+        {Number(searchParams.get("offset")??0)>0 && <Link prefetch={false} className="button" href={`${pathname}?${new URLSearchParams({...Object.fromEntries(searchParams),offset:String(Math.max(0,Number(searchParams.get("offset")??0)-pageSize))})}`}>Previous page</Link>}
+        {Number(searchParams.get("offset")??0)+response.agents.length<response.total && <Link prefetch={false} className="button" href={`${pathname}?${new URLSearchParams({...Object.fromEntries(searchParams),offset:String(Number(searchParams.get("offset")??0)+pageSize)})}`}>Next page</Link>}
+      </nav>}
 
       {response.excluded.length > 0 ? (
         <details className="excluded-panel"><summary>Excluded candidates ({response.excluded.length})</summary><section aria-labelledby="excluded-heading">
