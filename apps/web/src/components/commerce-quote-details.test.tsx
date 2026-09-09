@@ -26,12 +26,34 @@ describe("explicit signed-offer quote presentation", () => {
     expect(html).toContain("0.0001 United Dollars");
     expect(html).toContain("gas paid separately");
     expect(html).toContain("seven-day dispute window");
+    expect(html).toContain("starting at on-chain submission");
+    expect(html).toContain("read and review the delivery immediately");
+    expect(html).toContain("cannot release the seller&#x27;s payment early");
+    expect(html).toContain("reject the job earlier");
     expect(html).toContain("Anyone can settle");
     expect(html).toContain("not an on-chain veto");
     expect(html).toContain("never automatically sends");
     expect(html).toContain("18 decimals");
     expect(html).not.toContain("opaque envelope");
     expect(html).not.toContain("<button");
+  });
+
+  it("shows the signed seller limits before raw evidence without substituting catalog terms", () => {
+    const html = renderToStaticMarkup(<CommerceQuoteDetails quote={{ ...quote, task: JSON.stringify({
+      terms: { deliverables: "A one-time loan report", quality_standards: "No monitoring, transactions or custody", success_criteria: ["Use the supplied snapshot"] }
+    }) }} />);
+    expect(html).toContain("A one-time loan report");
+    expect(html).toContain("No monitoring, transactions or custody");
+    expect(html).toContain("Use the supplied snapshot");
+    expect(html.indexOf("A one-time loan report")).toBeLessThan(html.indexOf("<details>"));
+    expect(html.indexOf("No monitoring, transactions or custody")).toBeLessThan(html.indexOf("<details>"));
+    expect(html).not.toContain("Seller terms could not be summarized");
+  });
+
+  it.each(["invalid JSON", JSON.stringify({ terms: { deliverables: "Incomplete" } })])("does not invent seller terms when their display projection fails", (task) => {
+    const html = renderToStaticMarkup(<CommerceQuoteDetails quote={{ ...quote, task }} />);
+    expect(html).toContain("Seller terms could not be summarized");
+    expect(html).not.toContain("Quality requirements");
   });
 
   it("keeps reference quotes unchanged and displays their actual price", () => {
@@ -43,5 +65,8 @@ describe("explicit signed-offer quote presentation", () => {
     expect(html).toContain("0.001 United Dollars");
     expect(html).not.toContain("Experimental");
     expect(html).not.toContain("7-day");
+    expect(html).not.toContain("seven-day");
+    expect(html).not.toContain("APEX OptimisticPolicy");
+    expect(html).not.toContain("Seller terms could not be summarized");
   });
 });

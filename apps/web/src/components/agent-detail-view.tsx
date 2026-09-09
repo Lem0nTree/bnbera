@@ -216,7 +216,7 @@ export function AgentDetailView({ agent, sourceNotice }: { readonly agent: Marke
         <strong>{agentPriceLabel(agent)}</strong><p>{preview ? "Sample offer · Hiring unavailable" : agent.pricing.availability === "available" ? "Published price · confirm your quote before funding." : "No verified price is available."}</p>
         <dl className="profile-booking__facts"><div><dt>Network</dt><dd>BNB {agent.identity.chainId === 97 ? "testnet" : "mainnet"}</dd></div><div><dt>Payment</dt><dd>{agent.activation.method === "erc8183" ? "ERC-8183 escrow" : "No verified offer"}</dd></div>{agent.activation.boundedCapacity && <div><dt>Remaining task slots</dt><dd>{agent.activation.boundedCapacity.remaining}</dd></div>}</dl>
         <a className="button button--primary" href="#hire">{agent.activation.enabled ? "Review task & price" : "View availability"} <span aria-hidden="true">↗</span></a>
-        <small>{preview ? "Preview data only" : agent.activation.enabled ? "You approve funding and the final result." : "New tasks are paused. You can still view existing hires."}</small>
+        <small>{preview ? "Preview data only" : agent.activation.enabled ? "You approve funding in your wallet. Settlement follows the quoted policy." : "New tasks are paused. You can still view existing hires."}</small>
         {agent.activation.boundedCapacity && <small>Readiness checked {formatObservedAt(agent.activation.boundedCapacity.checkedAt)}</small>}
       </aside>
     </section>
