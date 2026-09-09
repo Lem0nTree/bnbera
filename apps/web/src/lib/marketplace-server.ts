@@ -1,3 +1,4 @@
+import { searchDirectoryCatalog } from "./directory-search";
 /**
  * Server-only marketplace read wiring.
  *
@@ -52,7 +53,7 @@ import {
   type MarketplaceListingMetadata,
   type MarketplaceSearchRequest
 } from "@bnbera/marketplace";
-import { directoryObservationType, directorySnapshotSchema, directorySlug, publicHttpsUrl, serviceVerificationObservationType, serviceVerificationSchema, serviceVerificationState } from "@bnbera/agent-ingestion/directory";
+import { directoryObservationType, directorySnapshotSchema, directorySlug, publicHttpsUrl, serviceVerificationObservationType, serviceVerificationSchema } from "@bnbera/agent-ingestion/directory";
 import {
   configuredMarketplaceDataMode,
   mapMarketplaceDetailResponse,
@@ -64,8 +65,6 @@ import {
   marketplaceSearchInputSchema,
   marketplaceAgentReadModelSchema,
   marketplaceSearchResponseSchema as webSearchResponseSchema,
-  selectionMatches,
-  sortAgents,
   querySelection,
   readMarketplace as readRemoteMarketplace,
   readMarketplaceAgent as readRemoteMarketplaceAgent,
@@ -1099,11 +1098,11 @@ async function freshReferenceCapacity(directory: Awaited<ReturnType<typeof loadR
 }
 
 /** Coalesce concurrent page/API reads; do not run 100 commerce projections per visitor. */
-async function readRegisteredDirectory() {
+async function readRegisteredDirectory(ids?: string[]) {
   const runtime=loadRuntimeConfig(process.env);
-  const key=connectionKey(runtime.databaseUrl??"",runtime.databaseSsl);
+  const key=connectionKey(runtime.databaseUrl??"",runtime.databaseSsl)+JSON.stringify(ids??[]);
   if(directoryCache?.key===key&&directoryCache.expiresAt>Date.now())return freshReferenceCapacity(await directoryCache.promise);
-  const promise=loadRegisteredDirectory();
+  const promise=loadRegisteredDirectory(ids);
   directoryCache={key,expiresAt:Number.POSITIVE_INFINITY,promise};
   try {
     const result=await promise;
@@ -1113,7 +1112,7 @@ async function readRegisteredDirectory() {
 }
 
 /** Registered supply is a directory, independently of the execution/publication gate. */
-async function loadRegisteredDirectory() {
+async function loadRegisteredDirectory(ids?: string[]) {
   const runtime = loadRuntimeConfig(process.env);
   if (!runtime.databaseUrl) throw configurationError(new Error("Database not configured"));
   const pool = getPool(runtime.databaseUrl, runtime.databaseSsl);
@@ -1129,13 +1128,13 @@ async function loadRegisteredDirectory() {
       eo.normalized_payload, eo.payload_digest, eo.source_timestamp,eo.provider AS snapshot_provider
     FROM agent_enrichment_observations eo JOIN agent_versions v ON v.id=eo.agent_version_id
     JOIN agents a ON a.id=v.agent_id JOIN erc8004_identities i ON i.id=a.identity_id
-    WHERE eo.observation_type=$1 AND eo.provider IN ('8004scan','bnbera-registry-review') AND eo.validation_state='valid'
+    WHERE ($2::uuid[] IS NULL OR i.id=ANY($2::uuid[])) AND eo.observation_type=$1 AND eo.provider IN ('8004scan','bnbera-registry-review') AND eo.validation_state='valid'
       AND EXISTS (SELECT 1 FROM agent_discovery_sources membership WHERE membership.identity_id=i.id
-        AND membership.normalized_ingestion_version='bnbera-directory-v1')
+        AND membership.normalized_ingestion_version in ('bnbera-directory-v1','bnbera-directory-full-v1'))
       AND i.chain_id IN (56,97) AND i.read_consistency='finalized'
       AND a.listing_status NOT IN ('delisted','suspended') AND a.verification_status <> 'rejected'
     ORDER BY i.id, eo.source_timestamp DESC, eo."createdAt" DESC
-  ) directory ORDER BY chain_id, agent_id::numeric LIMIT 100`, [directoryObservationType]);
+  ) directory ORDER BY chain_id, agent_id::numeric `, [directoryObservationType,ids??null]);
   const checks = (await pool.query(`select distinct on(i.id) i.namespace,i.chain_id,i.identity_registry,i.agent_id,eo.normalized_payload
     from agent_enrichment_observations eo join agent_versions v on v.id=eo.agent_version_id join agents a on a.id=v.agent_id join erc8004_identities i on i.id=a.identity_id
     where eo.observation_type=$1 and eo.provider='bnbera-protocol-verifier' and eo.validation_state='valid'
@@ -1179,7 +1178,7 @@ async function loadRegisteredDirectory() {
     const uri=snapshot.registration.uri;
     const publicUri=uri?.startsWith("data:") ? "Inline on-chain registration (data URI); content digest recorded" : uri?.startsWith("ipfs:") && !/[?#@]/u.test(uri) ? uri : publicHttpsUrl(uri);
     const snapshotForBrowser = {...snapshot, renderedAt:new Date().toISOString(), registration:{...snapshot.registration,uri:publicUri}};
-    const category = classifyAgent({name:snapshot.name,description:snapshot.description,supportedProtocols:snapshot.protocols,advertisedSkills:snapshot.skills}).category;
+    const category = snapshot.category ?? classifyAgent({name:snapshot.name,description:snapshot.description,supportedProtocols:snapshot.protocols,advertisedSkills:snapshot.skills}).category;
     agents.push(marketplaceAgentReadModelSchema.parse({
       id:identityKey,slug:directorySlug(snapshot),name:snapshot.name,description:snapshot.description,tagline:snapshot.description.slice(0,237),category,protocols:snapshot.protocols,
       identity:snapshot.identity, ownerAddress:row.owner_address,agentWallet:row.agent_wallet,
@@ -1206,6 +1205,8 @@ async function loadRegisteredDirectory() {
   if(referenceId && /^[1-9][0-9]*$/u.test(referenceId)) {
     try {
     const identity = erc8004IdentitySchema.parse({namespace:"eip155",chainId:97,identityRegistry:process.env.T5_REFERENCE_PROVIDER_IDENTITY_REGISTRY,agentId:referenceId});
+    const referenceIncluded=ids===undefined || (await pool.query("select id from erc8004_identities where id=any($1::uuid[]) and namespace=$2 and chain_id=$3 and identity_registry=$4 and agent_id=$5",[ids,identity.namespace,identity.chainId,identity.identityRegistry,identity.agentId])).rows.length>0;
+    if(referenceIncluded) {
     const {service}=await createLiveReadService(identity);
     const identifier=erc8004IdentityKey(identity);
     const read=await service.readAgent(identifier);
@@ -1213,9 +1214,8 @@ async function loadRegisteredDirectory() {
       const mapped=mapMarketplaceDetailResponse(read.agent.agent,"live",new Date().toISOString());
       const prior=agents.findIndex(agent=>agent.id===mapped.id);
       if(prior>=0)agents.splice(prior,1);
-      // Display cap remains 100; retained external observations are not removed.
       agents.unshift(mapped);
-      if(agents.length>100)agents.pop();
+    }
     }
     } catch { /* Optional reference-provider projection must not erase the public directory. */ }
   }
@@ -1225,10 +1225,30 @@ async function loadRegisteredDirectory() {
 }
 
 async function readRegisteredDirectorySearch(input: MarketplaceSearchInput) {
-  const {agents,meta}=await readRegisteredDirectory();
-  const sorted=sortAgents(agents.filter(agent=>selectionMatches(agent,input)),input);
-  return webSearchResponseSchema.parse({contractVersion:marketplaceReadContractVersion,status:sorted.length?"ready":"empty",mode:"live",dataLabel:"Registered agents",notice:"A capped directory of real mainnet and testnet registrations. Service availability and hiring are evaluated separately.",agents:sorted.slice(0,input.limit),excluded:[],total:sorted.length,selection:querySelection(input),meta,error:null,
-    directoryStats:{registered:agents.length,mainnet:agents.filter(a=>a.identity.chainId===56).length,testnet:agents.filter(a=>a.identity.chainId===97).length,hireEligible:agents.filter(a=>a.activation.enabled).length,recentlyChecked:agents.filter(a=>a.directory?.serviceVerifications.some(s=>serviceVerificationState(s)==="verified")).length,cap:100}});
+  const runtime=loadRuntimeConfig(process.env);
+  if(!runtime.databaseUrl)throw configurationError(new Error("Database not configured"));
+  const pool=getPool(runtime.databaseUrl,runtime.databaseSsl);
+  let semantic:Parameters<typeof searchDirectoryCatalog>[2];
+  let warning:string|null=null;
+  if(input.query?.trim() && runtime.marketplaceSemanticRetrievalEnabled) {
+    try {
+      validateSemanticEmbeddingLock(readCheckedInStandardsLock(),runtime);
+      const provider=createEmbeddingProviderFromRuntimeConfig(runtime,ref=>process.env[ref]);
+      const vector=await provider.embed(input.query.trim());
+      if(vector.length!==provider.dimension || vector.some(v=>!Number.isFinite(v)) || !vector.some(v=>v!==0))throw new Error("INVALID_QUERY_VECTOR");
+      semantic={vector,provider:provider.provider,model:provider.model,modelVersion:provider.modelVersion,dimension:provider.dimension,schema:semanticDocumentSchemaVersion};
+    }catch{warning="Semantic search is unavailable; keyword search is active.";}
+  }
+  const page=await searchDirectoryCatalog(pool,input,semantic);
+  if(semantic && page.vector_matches===0 && !warning)warning="No compatible vectors matched; keyword search is active.";
+  const {agents,meta}=await readRegisteredDirectory(page.ids??[]);
+  const order=new Map((page.ids??[]).map((id,index)=>[id,index]));
+  // Projection order is asynchronous. Restore SQL's deterministic page order by identity.
+  const identityRows=page.ids?.length ? (await pool.query("select id,namespace,chain_id,identity_registry,agent_id from erc8004_identities where id=any($1::uuid[])",[page.ids])).rows : [];
+  const positions=new Map(identityRows.map(row=>[`${row.namespace}:${row.chain_id}:${row.identity_registry}:${row.agent_id}`,order.get(row.id)??0]));
+  agents.sort((a,b)=>(positions.get(a.id)??0)-(positions.get(b.id)??0));
+  return webSearchResponseSchema.parse({contractVersion:marketplaceReadContractVersion,status:page.total?"ready":"empty",mode:"live",dataLabel:"Registered agents",notice:"Real mainnet and testnet registrations. Service availability and hiring are evaluated separately.",agents,excluded:[],total:page.total,selection:querySelection(input),meta:{...meta,warning,retrievalMode:semantic&&page.vector_matches>0?"hybrid":"deterministic",semanticModelVersion:semantic&&page.vector_matches>0?semantic.modelVersion:null},error:null,
+    directoryStats:{registered:page.registered,mainnet:page.mainnet,testnet:page.testnet,hireEligible:null,recentlyChecked:null,cap:null}});
 }
 
 async function createLiveReadService(identity?: Erc8004Identity): Promise<LiveReadContext> {
@@ -1364,7 +1384,10 @@ export async function readMarketplaceAgentApi(
   if (mode !== "live") return readLocalMarketplaceAgentApi(slug, input);
   try {
     if (process.env.MARKETPLACE_DIRECTORY_ENABLED === "true") {
-      const directory = await readRegisteredDirectory();
+      const suffix=/-(56|97)-([0-9]+)$/u.exec(normalizedSlug);
+      const runtime=loadRuntimeConfig(process.env);
+      const ids=suffix&&runtime.databaseUrl ? (await getPool(runtime.databaseUrl,runtime.databaseSsl).query("select id from erc8004_identities where chain_id=$1 and agent_id=$2",[Number(suffix[1]),suffix[2]])).rows.map(row=>row.id as string)  : runtime.databaseUrl && process.env.T5_REFERENCE_PROVIDER_AGENT_ID ? (await getPool(runtime.databaseUrl,runtime.databaseSsl).query("select id from erc8004_identities where chain_id=97 and identity_registry=$1 and agent_id=$2",[process.env.T5_REFERENCE_PROVIDER_IDENTITY_REGISTRY,process.env.T5_REFERENCE_PROVIDER_AGENT_ID])).rows.map(row=>row.id as string) : [];
+      const directory = await readRegisteredDirectory(ids);
       const agent = directory.agents.find(item=>item.slug === normalizedSlug);
       if (agent) {
         let detailAgent=agent;

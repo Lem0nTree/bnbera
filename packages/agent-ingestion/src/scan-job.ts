@@ -173,12 +173,18 @@ function normalizeQuery(query: EightHundredFourScanQuery | undefined): Normalize
     limit: pageSize,
     ...(input.chainId === undefined ? {} : { chainId: input.chainId }),
     ...(input.isTestnet === undefined ? {} : { isTestnet: input.isTestnet }),
+    ...(input.isActive === undefined ? {} : { isActive: input.isActive }),
+    ...(input.sortBy === undefined ? {} : { sortBy: input.sortBy }),
+    ...(input.sortOrder === undefined ? {} : { sortOrder: input.sortOrder }),
     ...(input.supportedProtocol === undefined ? {} : { supportedProtocol: input.supportedProtocol }),
     ...(input.search === undefined ? {} : { search: input.search })
   };
   const queryDigest = canonicalSha256Hex({
     ...(base.chainId === undefined ? {} : { chainId: base.chainId }),
     ...(base.isTestnet === undefined ? {} : { isTestnet: base.isTestnet }),
+    ...(base.isActive === undefined ? {} : { isActive: base.isActive }),
+    ...(base.sortBy === undefined ? {} : { sortBy: base.sortBy }),
+    ...(base.sortOrder === undefined ? {} : { sortOrder: base.sortOrder }),
     ...(base.supportedProtocol === undefined ? {} : { supportedProtocol: base.supportedProtocol }),
     ...(base.search === undefined ? {} : { search: base.search }),
     limit: pageSize

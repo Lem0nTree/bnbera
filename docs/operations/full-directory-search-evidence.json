@@ -1,0 +1,60 @@
+{
+  "observedAt": "2026-09-09T20:12:00Z",
+  "scope": "directory release candidate; live provider and retained database",
+  "baseSha": "3b672708e6298a51361fa69955e6a26f86070564",
+  "embedding": {
+    "provider": "openrouter",
+    "model": "openai/text-embedding-3-small",
+    "modelVersion": "openrouter-openai-text-embedding-3-small-v1",
+    "dimension": 1536,
+    "schema": "bnbera-agent-semantic-v1"
+  },
+  "checks": {
+    "mainnetSemantic": {
+      "query": "prevent loan liquidation",
+      "chainId": 56,
+      "agentId": "341565",
+      "mode": "hybrid"
+    },
+    "testnetSemantic": {
+      "query": "concentrated liquidity range management",
+      "chainId": 97,
+      "agentId": "2017",
+      "mode": "hybrid"
+    },
+    "emptyQuery": {
+      "query": "zzzz-no-such-agent-918273",
+      "total": 0
+    },
+    "pagination": {
+      "offset": 100,
+      "limit": 20,
+      "totalAtCheck": 155,
+      "returned": 20
+    },
+    "credentialFailureFallback": {
+      "query": "Venus",
+      "chainId": 56,
+      "total": 3,
+      "mode": "deterministic",
+      "warning": "Semantic search is unavailable; keyword search is active."
+    },
+    "unchangedVectorReplay": {
+      "selected": 54,
+      "generated": 0,
+      "reused": 54,
+      "failed": 0
+    },
+    "browserForms": "passed mainnet/testnet/empty cases",
+    "focusedTests": {
+      "scanAndVectors": 12,
+      "directoryAndScan": 14,
+      "webContractsAndMembership": 9
+    },
+    "productionBuild": "passed",
+    "typecheck": "passed",
+    "lint": "passed"
+  },
+  "publicDeployment": "pending",
+  "backfillComplete": false
+}

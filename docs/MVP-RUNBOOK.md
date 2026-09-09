@@ -255,3 +255,15 @@ Disable vendor discovery with `ERC8004SCAN_DISCOVERY_ENABLED=false`, direct even
 <!-- Bounded provider continuation: operational source of truth is linked below. -->
 
 The chain-97 reference provider's three-slot lifetime allowance, exact gas caps, systemd service, readiness, recovery and disable commands are documented in [PROTOCOL-COMMERCE-REVIEW.md](PROTOCOL-COMMERCE-REVIEW.md#three-slot-supervised-allowance-continuation). Never recycle its persisted slots or run the legacy signer to bypass admission.
+
+## Full directory update — 2026-09-09
+
+The full-directory operation supersedes the capped G1 sample and the older
+semantic canary-only status above. The reviewed semantic provider is enabled
+for the directory release after pinned-model, digest reuse, network-isolation,
+pagination, candidate-browser and failure-fallback checks. See
+[the current backfill runbook](operations/full-directory.md) and
+[release evidence](operations/full-directory-search-evidence.json).
+Keep `MARKETPLACE_SEMANTIC_CANARY_ENABLED=false` in production; disabling
+`MARKETPLACE_SEMANTIC_RETRIEVAL_ENABLED` restores deterministic keyword search.
+Full-catalog completion remains separate from release/search acceptance.
