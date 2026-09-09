@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import Link from "next/link";
+import Image from "next/image";
 import type { ReactNode } from "react";
-import { BrandMark } from "@bnbera/ui";
 import { AppNavigation } from "@/components/app-navigation";
 import { ToastProvider } from "@/components/toast-provider";
 import { EoaWalletProvider } from "@/components/eoa-wallet-provider";
@@ -36,7 +36,7 @@ export default function RootLayout({ children }: { readonly children: ReactNode 
           <header className="topbar">
             <div className="topbar__inner">
               <Link href="/" aria-label="BNBEra home">
-                <BrandMark />
+                <Image className="platform-logo" src="/bnbera-logo.png" alt="BNBEra" width={180} height={60} unoptimized />
               </Link>
               <AppNavigation />
               <GlobalWallet />
@@ -44,7 +44,7 @@ export default function RootLayout({ children }: { readonly children: ReactNode 
           </header>
           <main id="main-content">{children}</main>
           <footer className="footer">
-            <BrandMark /> <span>A new era of onchain agents.</span><div className="footer__links"><Link href="/marketplace">Explore</Link><Link href="/create">Create</Link></div>
+            <Image className="platform-logo" src="/bnbera-logo.png" alt="BNBEra" width={180} height={60} unoptimized /> <span>A new era of onchain agents.</span><div className="footer__links"><Link href="/marketplace">Explore</Link><Link href="/create">Create</Link></div>
           </footer>
         </div></ToastProvider></EoaWalletProvider>
       </body>
