@@ -37,6 +37,8 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Verify deployment guards and rollback
+        run: python3 -m unittest discover -s deploy/origin -p 'test_*.py'
       - name: Build database test dependencies
         run: pnpm --filter @bnbera/domain --filter @bnbera/config build
       - name: Wait for disposable PostgreSQL service
