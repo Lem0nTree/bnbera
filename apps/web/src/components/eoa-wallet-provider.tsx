@@ -22,7 +22,9 @@ export const eoaWagmiConfig: Config = createConfig({
     : [])],
   transports: {
     [bscTestnet.id]: http(),
-    [bsc.id]: http()
+    // The chain-library default currently points at an endpoint that rejects
+    // browser CORS requests, stranding receipt waits after a wallet broadcast.
+    [bsc.id]: http(process.env.NEXT_PUBLIC_BSC_MAINNET_RPC_URL?.trim() || "https://bsc-dataseed.bnbchain.org")
   },
   // EIP-6963 gives each extension its own connector, including MetaMask/Rabby.
   multiInjectedProviderDiscovery: true,
