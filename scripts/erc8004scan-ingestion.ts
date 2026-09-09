@@ -67,7 +67,7 @@ async function main(): Promise<void> {
   const maxCandidates = boundedNumber("ERC8004SCAN_MAX_CANDIDATES", 500, 1, 10_000);
   const maxRunMs = boundedNumber("ERC8004SCAN_MAX_RUN_MS", 120_000, 250, 600_000);
   const fullDirectory = optionalBoolean("MARKETPLACE_DIRECTORY_FULL_SCAN") === true;
-  const client = EightHundredFourScanHttpClient.fromEnvironment(process.env, fullDirectory ? {maxRetries:0} : {});
+  const client = EightHundredFourScanHttpClient.fromEnvironment(process.env, fullDirectory ? {maxRetries:0,timeoutMs:60000} : {});
   const adapter = createEightHundredFourScanAdapter(fullDirectory ? {listCandidates:query=>client.listCandidates(query)} : client, fullDirectory ? raw => { const mapped=mapOfficialEightHundredFourScanCandidate(raw); return {...mapped,sourceReference:`${mapped.sourceReference}|directory-full-v1`}; } : undefined, fullDirectory ? "bnbera-directory-full-v1" : undefined);
   const repository = new PostgresIngestionRepository(runtime.databaseUrl, { ssl: runtime.databaseSsl });
   try {

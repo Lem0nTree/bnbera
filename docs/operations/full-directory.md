@@ -7,6 +7,8 @@ never invokes agents or writes chain transactions.
 Discovery uses `directory-full-v1:56` and `directory-full-v1:97` in
 `scan_discovery_checkpoints`: 100 records/page, ascending creation time,
 transactional page checkpoints, bounded runs and resume after restart.
+Live provider totals may change between pages without invalidating the cursor.
+Full-page requests have a 60-second timeout within the bounded job deadline.
 Completion means this source sweep ended, not that enrichment finished or that
 later registrations are included. Use a new explicitly named scope for a
 subsequent sweep; never delete checkpoints to restart work.
@@ -38,6 +40,7 @@ bash ops/marketplace-cron/full-directory.sh vectors
 Run stages as separate supervised services. Process locks and independent
 PostgreSQL advisory locks prevent overlap. On this host the initial services
 are `bnbera-directory-scan.service` and `bnbera-directory-enrich.service`.
+The embedding stage is `bnbera-directory-vectors.service`.
 `systemctl --user stop <service>` stops a stage; `disable` prevents its next
 boot/login start. Restart preserves cursors, observations and retry state.
 
@@ -58,3 +61,9 @@ require one vendor detail request per agent. Existing attributed vendor scores
 are retained with their observation timestamps; new primary-source profiles
 show unavailable vendor metrics honestly. This keeps registry enrichment and
 vectors progressing during an 8004scan cooldown.
+
+The scan service can load a temporary key from the owner-only file
+`~/.config/bnbera/full-scan.env` using systemd `EnvironmentFile`. This overrides
+only that worker's credential. After rotating this file, remove only
+`.runtime/full-directory/provider-cooldown.json` and restart the scan service
+to recheck access immediately; preserve database checkpoints.
