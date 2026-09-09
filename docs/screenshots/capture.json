@@ -1,0 +1,57 @@
+{
+  "source": "Live deployed site; native Chromium screenshots captured with Playwright.",
+  "branding": {
+    "scope": "Browser-only CSS replacement of the header placeholder; no live deployment or application source change.",
+    "asset": "01-open-cube-binance-orange.png",
+    "sha256": "57791b1be06187d5da56551b1095ff6eaa3d15ebfa540cbcc3d9c13040f96969"
+  },
+  "content": "Existing live content, without substituted data. No project build, wallet connection, payment, authority grant or deployment.",
+  "creatorState": {
+    "step": "Configure",
+    "tradingPair": "tBNB → CAKE",
+    "input": "0.0005 tBNB",
+    "maximumSlippage": "0.25%",
+    "persistence": "Example form values entered locally; no submission."
+  },
+  "captures": [
+    {
+      "file": "marketplace.png",
+      "url": "https://bnbera.ritarda.to/marketplace",
+      "capturedAt": "2026-09-09T19:58:07.462Z",
+      "scrollY": 0,
+      "viewport": {
+        "width": 1440,
+        "height": 1030
+      },
+      "deviceScaleFactor": 2,
+      "horizontalOverflow": false,
+      "sha256": "eaafca46381f6f27d9019af9473b4d3e9513f6aaa6881fbf0c4bd91193f276e4"
+    },
+    {
+      "file": "agent-services.png",
+      "url": "https://bnbera.ritarda.to/agents/openodds-ai-56-49637",
+      "capturedAt": "2026-09-09T19:56:52.554Z",
+      "scrollY": 0,
+      "viewport": {
+        "width": 1440,
+        "height": 1310
+      },
+      "deviceScaleFactor": 2,
+      "horizontalOverflow": false,
+      "sha256": "4267d89259e5606991873337940a06a0012a0fcc1f1963142735799651251906"
+    },
+    {
+      "file": "creator-configure.png",
+      "url": "https://bnbera.ritarda.to/create",
+      "capturedAt": "2026-09-09T19:56:56.042Z",
+      "scrollY": 0,
+      "viewport": {
+        "width": 1440,
+        "height": 1030
+      },
+      "deviceScaleFactor": 2,
+      "horizontalOverflow": false,
+      "sha256": "20250cf60bd216a47c8499a5e028fae91c9f383a8c0bfe4175e887a3be8d73c5"
+    }
+  ]
+}
