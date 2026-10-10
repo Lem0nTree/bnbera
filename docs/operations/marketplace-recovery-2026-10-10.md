@@ -85,3 +85,45 @@ no reader uses them. Reset database work_mem/enable_parallel_hash to restore
 original defaults. Do not restore an older dump over later writes.
 Crontab backup `crontab.before` and worker enablement permit operational rollback,
 but keep heavy scans off until resource limits and bounded refresh are reviewed.
+
+## Ready-to-hire recovery
+
+The 18 September seller refresh ceased passing because mainnet Commerce's UUPS
+implementation changed from `0xd5f9b570c96b5d67702d508c0BFb8B3b09209787`
+to `0xe8d47866e2cc3dcaa50f0ad980355695b2f1d533`. Two independent public RPCs
+confirmed the current implementation; Router, Policy and U implementation pins
+remain unchanged. The official APEX source at
+`f6a3c4ff337158a8a66281c565f3f1562e1287b7`, compiled with solc 0.8.28,
+optimizer 200, viaIR and Cancun, matched every executable byte after linking
+only the two compiler-declared UUPS `__self` immutables. Compiler metadata
+is excluded from that source comparison; the entire live runtime is hashed
+and strictly pinned. All old reviewed ABI entries remain exact compatible
+entries in the new ABI. The global baseline and testnet source pins are retained.
+
+The new implementation supports multiple tokens; BNBEra keeps only its reviewed
+U path and checks `isPaymentTokenSupported(U)` before new hires and health
+admission. Governance denial and RPC failure fail closed. Disputes, reads and
+existing-job refunds do not depend on the new-token allowlist. No protocol
+transaction, signed wallet request, funded notification or paid canary occurred.
+
+The existing refresh-only seller job passed actual finalized identity, registered
+card and supported endpoint checks for eight previously admitted sellers. Two
+remaining providers were unavailable; no fresh success is fabricated for them.
+Use the immutable repaired release's `ops/marketplace-cron/mainnet-sellers.sh`
+with `BNBERA_ENV_FILE=/home/ubuntu/bnbera-w0-w1/.env` every minute. Heavy directory
+scan/enrichment/vector jobs and the broad protocol refresh remain disabled.
+Rollback both application release and seller cron together; restoring the old
+pin makes health refresh fail safely and offers expire after two minutes.
+
+Documentation gate reused from this same checkout: `AGENTS.md`,
+`docs/MVP-MASTER-PLAN.md`, `docs/MVP-TASKS.md`, `docs/MVP-RUNBOOK.md`,
+`config/standards.lock.json`, `docs/archive/2026-09-05/04-bnbera-master-implementation-plan.md`,
+`docs/archive/2026-09-05/05-subagent-delivery-plan.md`,
+`docs/archive/2026-09-05/01-marketplace-donor-merge-plan.md`,
+`docs/archive/2026-09-05/03-no-code-agent-deployer-plan.md`,
+`docs/archive/2026-09-05/adr/0003-wave1-legacy-migration-repair.md`,
+`docs/MAINNET-SUPPLY-REVIEW.md`, `docs/PROTOCOL-COMMERCE-REVIEW.md`,
+and shared directory, commerce deployment/readiness interfaces. G2 Activation +
+Commerce / QA + Deployment; payment-boundary risk tier. Existing release-owner
+authority covers this repair; release flags, U addresses, buyer confirmation and
+all unresolved disabled integrations are preserved.

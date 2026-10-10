@@ -20,6 +20,7 @@ async function main() {
   const rpcUrl = process.env.BSC_MAINNET_RPC_URL ?? "";
   const chain = new Erc8183AltanaAdapter({ pin, standardsLock: lock, externalMainnetBrowserEnabled: true, runtimeEnvironment: "preview" });
   await chain.verifyNetwork();
+  await chain.verifyBrowserNewHireTokenSupported();
   const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 3 });
   const guard = await pool.connect();
   const results: Record<string, unknown>[] = [];

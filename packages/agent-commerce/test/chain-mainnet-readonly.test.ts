@@ -26,6 +26,7 @@ function fixture() {
     getStorageAt: async ({ address, slot }) => `0x${"0".repeat(24)}${(slot.startsWith("0xb531") ? deployment.paymentTokenProxyAdmin : implementations[address.toLowerCase()]!).slice(2)}` as Hex,
     readContract: async ({ functionName }) => {
       if (functionName === "paymentToken") return a.paymentToken;
+      if (functionName === "isPaymentTokenSupported") return true;
       if (functionName === "decimals") return 18;
       if (functionName === "symbol") return "U";
       if (functionName === "name") return "United Stables";
@@ -141,6 +142,24 @@ describe("reviewed mainnet browser-only adapter", () => {
     const frozen = new Erc8183AltanaAdapter({ ...o, deploymentReader: { ...o.deploymentReader, readContract: async input => ["paused", "frozen"].includes(input.functionName) ? true : readContract(input) } });
     await expect(frozen.verifyBrowserPaymentParticipants({ buyer, step: "dispute" })).resolves.toBeUndefined();
     await expect(frozen.verifyBrowserPaymentParticipants({ buyer, step: "claim_refund" })).rejects.toMatchObject({ code: "COMMERCE_DISABLED" });
+  });
+
+  it("blocks new hires when upgraded Commerce disables U while preserving reads and recovery", async () => {
+    enable(); const o = options();
+    o.standardsLock.networks["56"].erc8183.releaseEnabled = true;
+    o.standardsLock.networks["56"].erc8183.paymentTokenSupportRequired = true;
+    const readContract = o.deploymentReader.readContract;
+    const reader = { ...o.deploymentReader, readContract: vi.fn(async (input: Parameters<Erc8183DeploymentReader["readContract"]>[0]) => input.functionName === "isPaymentTokenSupported" ? false : readContract(input)) };
+    const instance = new Erc8183AltanaAdapter({ ...o, deploymentReader: reader });
+    const buyer = "0x4444444444444444444444444444444444444444";
+    await expect(instance.verifyNetwork()).resolves.toBeDefined();
+    await expect(instance.verifyBrowserNewHireTokenSupported()).rejects.toMatchObject({ code: "COMMERCE_DISABLED" });
+    await expect(instance.verifyBrowserPaymentParticipants({ buyer, step: "create" })).rejects.toMatchObject({ code: "COMMERCE_DISABLED" });
+    await expect(instance.verifyBrowserPaymentParticipants({ buyer, step: "fund", budgetAtomic: "1000" })).rejects.toMatchObject({ code: "COMMERCE_DISABLED" });
+    await expect(instance.verifyBrowserPaymentParticipants({ buyer, step: "claim_refund" })).resolves.toBeUndefined();
+    await expect(instance.verifyBrowserPaymentParticipants({ buyer, step: "dispute" })).resolves.toBeUndefined();
+    reader.readContract.mockRejectedValueOnce(new Error("RPC unavailable"));
+    await expect(instance.verifyBrowserNewHireTokenSupported()).rejects.toThrow("RPC unavailable");
   });
 
   it("fails closed on RPC, bytecode, proxy, linkage and dispute-window drift", async () => {
