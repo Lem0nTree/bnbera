@@ -64,3 +64,14 @@ describe("Postgres marketplace historical evidence binding", () => {
     expect(evidenceQuery?.text).toContain("AND eo.resource_id = run.job_id::text");
   });
 });
+
+
+describe("scoped marketplace metadata", () => {
+  it("binds reference metadata to the complete identity before enrichment", async () => {
+    const pool = new RecordingPool();
+    await new PostgresMarketplaceMetadataSource(pool as never, IDENTITY).listMetadata();
+    const query = pool.calls[0];
+    expect(query?.values).toEqual([IDENTITY.namespace, IDENTITY.chainId, IDENTITY.identityRegistry, IDENTITY.agentId]);
+    expect(query?.text).toContain("i.namespace=$1 AND i.chain_id=$2 AND i.identity_registry=$3 AND i.agent_id=$4");
+  });
+});

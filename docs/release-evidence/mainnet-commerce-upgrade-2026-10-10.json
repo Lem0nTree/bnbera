@@ -1,0 +1,70 @@
+{
+  "immutableReferences": {
+    "4150": [
+      {
+        "length": 32,
+        "start": 2691
+      },
+      {
+        "length": 32,
+        "start": 3046
+      }
+    ]
+  },
+  "linkedExecutableMatch": true,
+  "compiler": "0.8.28+commit.7893614a.Emscripten.clang",
+  "sourceCommit": "f6a3c4ff337158a8a66281c565f3f1562e1287b7",
+  "implementation": "0xe8d47866e2cc3dcaa50f0ad980355695b2f1d533",
+  "compiledBytes": 12733,
+  "liveBytes": 12733,
+  "exactMatch": false,
+  "executableMatch": false,
+  "runtimeSha256": "408844cadd4c33d469b9462d7651e163fcb0939e429f282af388995e07425fd1",
+  "compiledRuntimeSha256": "9104e673344b3b9ac8a544bdbb2801a96fffea8114e6374a52e8911405846296",
+  "abiSha256": "49ae12b4c7185ca885abce51787bf8e8928afe7735393a5cd5b38536b65ff4cb",
+  "abiFunctions": [
+    "BP_DENOMINATOR",
+    "HOOK_GAS_LIMIT",
+    "MAX_EXPIRY_DURATION",
+    "MAX_PLATFORM_FEE_BP",
+    "UPGRADE_INTERFACE_VERSION",
+    "acceptOwnership",
+    "claimRefund",
+    "complete",
+    "createJob",
+    "createJobWithToken",
+    "fund",
+    "getJob",
+    "initialize",
+    "initializeMultiToken",
+    "isPaymentTokenSupported",
+    "jobCounter",
+    "jobHasBudget",
+    "jobPaymentToken",
+    "jobs",
+    "owner",
+    "pause",
+    "paused",
+    "paymentToken",
+    "pendingOwner",
+    "platformFeeBP",
+    "platformTreasury",
+    "proxiableUUID",
+    "reject",
+    "renounceOwnership",
+    "setBudget",
+    "setPaymentTokenSupported",
+    "setPlatformFee",
+    "setProvider",
+    "submit",
+    "transferOwnership",
+    "unpause",
+    "upgradeToAndCall"
+  ],
+  "reviewScope": "Commerce v2 executable bytes matched after compiler-declared UUPS __self linking; metadata excluded, live full-runtime SHA-256 pinned. Existing U-only ABI remains a reviewed compatible subset. No chain writes or paid acceptance claimed.",
+  "observedAt": "2026-10-10T13:10:13.034Z",
+  "finalizedBlock": "126833365",
+  "finalizedBlockHash": "0x075aaa5ce0332e94fb1e10624c6817dffc3c56b3148ffdcac4afff9668daed81",
+  "paymentTokenSupported": true,
+  "legacyAbiCompatible": true
+}

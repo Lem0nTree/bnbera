@@ -182,7 +182,7 @@
         "releaseEnabled": true,
         "disabledReason": "Released for browser-owned BSC mainnet hiring after explicit operator approval and ten-seller identity, card, contract, payment and recovery verification.",
         "specRevision": "a078cab5cc8e9581c15f76c091ed96eed28f02f7",
-        "sourceRevision": "b40b18011407ba13516661d3784bcb727a0c7794",
+        "sourceRevision": "f6a3c4ff337158a8a66281c565f3f1562e1287b7",
         "commerceProxy": "0xEa4DAa3100A767e86FDed867729ae7446476EBA6",
         "routerProxy": "0x51895229E12F9876011789B04f8698af06cCD6DA",
         "policy": "0x9C01845705b3078Aa2e8cfF7520a6376FD766dE5",
@@ -190,7 +190,8 @@
         "paymentTokenSymbol": "U",
         "paymentTokenName": "United Stables",
         "paymentDecimals": 18,
-        "commerceImplementation": "0xd5f9b570c96b5d67702d508c0BFb8B3b09209787",
+        "commerceImplementation": "0xe8d47866e2cc3dcaa50f0ad980355695b2f1d533",
+        "paymentTokenSupportRequired": true,
         "routerImplementation": "0xf0Cf8F47e5c035F16247fF16E9F367e477eE5007",
         "paymentTokenImplementation": "0xbef21313C69c009fD7D9510A8d3A481a32473DFC",
         "paymentTokenProxyAdmin": "0x36124fa57e049846e9dc181c8caa31a3c5da4e9c",
@@ -202,7 +203,7 @@
         "runtimeSha256": {
           "commerceProxy": "a04dc24cdccd0690eae672f2ce21d4b2188c15bc30000b783da51d6bbd6ea13d",
           "routerProxy": "a04dc24cdccd0690eae672f2ce21d4b2188c15bc30000b783da51d6bbd6ea13d",
-          "commerceImplementation": "18ab1644559ab359007b835dc749bdae2621efea62f87c53e4c0d77a20bbb407",
+          "commerceImplementation": "408844cadd4c33d469b9462d7651e163fcb0939e429f282af388995e07425fd1",
           "routerImplementation": "7d4d9422804dbd0afce17242c81d2dd859174f5c916219f1ccf40bdc3e2bc87b",
           "paymentTokenImplementation": "d6c77e5ad76d639516b22b00244bd0c94e2631f1940fc550b77e059f24fe75a3",
           "policy": "91fffcd007e9beef30bcc69bc3bb4697a7d73a31468769b9e85e7088555ed0d8",
@@ -218,8 +219,8 @@
           "defaultWarningThresholdDisplay": "10"
         },
         "policyState": { "disputeWindowSeconds": 604800, "voteQuorum": 3, "activeVoterCount": 5 },
-        "verificationBlock": 120856720,
-        "verificationObservedAt": "2026-09-09T09:52:52Z",
+        "verificationBlock": 126833365,
+        "verificationObservedAt": "2026-10-10T13:10:13.034Z",
         "verificationStatus": "verified-read-only-address-bytecode-linkage-policy-and-abi-source-pins; external-execution-and-release-pending"
       },
       "b402": {

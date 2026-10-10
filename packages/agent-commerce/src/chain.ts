@@ -89,6 +89,7 @@ export interface Erc8183DeploymentVerification {
   readonly routerImplementation: Address;
   readonly paymentTokenImplementation: Address;
   readonly paymentTokenProxyAdmin?: Address;
+  readonly paymentTokenSupportRequired?: boolean;
   readonly commerceProxyRuntimeSha256: string;
   readonly routerProxyRuntimeSha256: string;
   readonly policyRuntimeSha256: string;
@@ -184,6 +185,7 @@ export function resolveErc8183DeploymentVerification(lock: unknown, chainId = 97
     routerImplementation: lockAddress(deployment.routerImplementation, "router implementation"),
     paymentTokenImplementation: lockAddress(deployment.paymentTokenImplementation, "payment token implementation"),
     ...(chainId === 56 ? { paymentTokenProxyAdmin: lockAddress(deployment.paymentTokenProxyAdmin, "payment token proxy admin") } : {}),
+    ...(deployment.paymentTokenSupportRequired === undefined ? {} : { paymentTokenSupportRequired: lockBoolean(deployment.paymentTokenSupportRequired, "payment token support required") }),
     commerceProxyRuntimeSha256: lockHash(runtime.commerceProxy, "commerce proxy"),
     routerProxyRuntimeSha256: lockHash(runtime.routerProxy, "router proxy"),
     policyRuntimeSha256: lockHash(runtime.policy, "policy"),
@@ -956,6 +958,19 @@ export class Erc8183AltanaAdapter {
     }
   }
 
+  /** The reviewed multi-token upgrade keeps our existing U-only call path.
+   * Governance can disable U for new jobs without disabling old-job recovery. */
+  public async verifyBrowserNewHireTokenSupported(): Promise<void> {
+    this.assertMainnetBrowserReadAllowed();
+    if (this.deploymentVerification?.paymentTokenSupportRequired !== true) return;
+    const supported = await this.deploymentReader.readContract({
+      address: this.pin.commerceContract as Address,
+      abi: [{ type: "function", name: "isPaymentTokenSupported", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "bool" }] }] as const,
+      functionName: "isPaymentTokenSupported", args: [this.paymentToken]
+    });
+    if (supported !== true) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The reviewed payment token is disabled for new hires. Existing-job reads, disputes and refunds remain available.", nextAction: "check_token_status" });
+  }
+
   private assertServerWriteAllowed(): void {
     if (this.pin.chainId !== 97) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "Server-side Altana signer writes are permanently restricted to chain 97; mainnet requires explicit browser transactions." });
   }
@@ -972,7 +987,10 @@ export class Erc8183AltanaAdapter {
     // Dispute records a time-limited objection in Policy; it does not transfer
     // tokens or mutate paused Commerce/Router. Never suppress that recovery.
     if (input.step === "dispute") return;
-    if (!["settle", "claim_refund"].includes(input.step)) this.assertBrowserNewHireReleased();
+    if (!["settle", "claim_refund"].includes(input.step)) {
+      this.assertBrowserNewHireReleased();
+      await this.verifyBrowserNewHireTokenSupported();
+    }
     if (input.step !== "claim_refund") {
       const fee = await this.deploymentReader.readContract({ address: this.pin.commerceContract as Address, abi: [{ type: "function", name: "platformFeeBP", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] }] as const, functionName: "platformFeeBP" });
       if (BigInt(String(fee)) !== 0n) throw new CommerceError({ code: "COMMERCE_DISABLED", message: "The reviewed zero-fee deployment changed its platform fee. New payments are unavailable until the fee and treasury are reviewed; disputes and refunds remain available.", nextAction: "review_platform_fee" });
