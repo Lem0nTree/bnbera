@@ -53,7 +53,7 @@ import {
   type MarketplaceListingMetadata,
   type MarketplaceSearchRequest
 } from "@bnbera/marketplace";
-import { directoryObservationType, directorySnapshotSchema, directorySlug, publicHttpsUrl, serviceVerificationObservationType, serviceVerificationSchema } from "@bnbera/agent-ingestion/directory";
+import { directorySnapshotSchema, directorySlug, publicHttpsUrl, serviceVerificationSchema } from "@bnbera/agent-ingestion/directory";
 import {
   configuredMarketplaceDataMode,
   mapMarketplaceDetailResponse,
@@ -189,7 +189,7 @@ type MarketplaceEvidenceRow = {
  * never returns secret references, raw payloads, or credentials.
  */
 export class PostgresMarketplaceMetadataSource {
-  public constructor(private readonly pool: DatabasePool) {}
+  public constructor(private readonly pool: DatabasePool, private readonly identity?: Erc8004Identity) {}
 
   private greenfieldReadUrlOrigins(): readonly string[] {
     return (process.env.GREENFIELD_READ_URL_ALLOWLIST ?? process.env.GREENFIELD_PUBLIC_READ_URL_ALLOWLIST ?? "")
@@ -450,8 +450,10 @@ export class PostgresMarketplaceMetadataSource {
           LIMIT 32
         ) observation
       ) enrichment ON TRUE
+      WHERE ($1::text IS NULL OR (i.namespace=$1 AND i.chain_id=$2 AND i.identity_registry=$3 AND i.agent_id=$4))
       ORDER BY i.namespace, i.chain_id, i.identity_registry, i.agent_id
-    `);
+    `, [this.identity?.namespace ?? null, this.identity?.chainId ?? null,
+      this.identity?.identityRegistry ?? null, this.identity?.agentId ?? null]);
 
     const metadata: MarketplaceListingMetadata[] = [];
     const slugs = new Set<string>();
@@ -999,6 +1001,9 @@ function getPool(connectionString: string, ssl: boolean): DatabasePool {
   if (existing !== undefined) void existing.pool.end();
   const pool = new pg.Pool({
     connectionString,
+    max: 4,
+    connectionTimeoutMillis: 5_000,
+    options: "-c max_parallel_workers_per_gather=0",
     ssl: ssl ? { rejectUnauthorized: true } : undefined
   });
   marketplaceGlobal.__bnberaMarketplacePool = { key, pool };
@@ -1123,27 +1128,45 @@ async function loadRegisteredDirectory(ids?: string[], includeCommerce = true) {
       a.origin_type, a.claim_status, a.verification_status, a.runtime_status, a.authority_status, a.listing_status,
       current_version.pricing_manifest AS seller_pricing,
       current_version.public_metadata->>'mainnetSellerReviewDigest' AS seller_review,
-      (SELECT jsonb_build_object('observedAt',p.observed_at,'status',p.validation_status,'url',p.url) FROM agent_service_probe_results p WHERE p.identity_id=i.id AND p.kind='a2a' ORDER BY p.observed_at DESC LIMIT 1) AS seller_probe,
+      (SELECT jsonb_build_object('observedAt',p.observed_at,'status',p.validation_status,'url',p.url) FROM agent_service_probe_results p WHERE p.identity_id=i.id AND p.kind='a2a' AND current_version.public_metadata->>'mainnetSellerReviewDigest' IS NOT NULL ORDER BY p.observed_at DESC LIMIT 1) AS seller_probe,
       eo.normalized_payload, eo.payload_digest, eo.source_timestamp, eo.provider AS snapshot_provider
     FROM erc8004_identities i JOIN agents a ON a.identity_id=i.id
     LEFT JOIN agent_versions current_version ON current_version.id=a.current_version_id
     JOIN LATERAL (
       SELECT observation.normalized_payload, observation.payload_digest, observation.source_timestamp, observation.provider
-      FROM agent_versions v JOIN agent_enrichment_observations observation ON observation.agent_version_id=v.id
-      WHERE v.agent_id=a.id AND observation.observation_type=$1
-        AND observation.provider IN ('8004scan','bnbera-registry-review') AND observation.validation_state='valid'
+      FROM agent_versions v JOIN LATERAL (
+        SELECT entry.normalized_payload,entry.payload_digest,entry.source_timestamp,entry.provider,entry."createdAt"
+        FROM agent_enrichment_observations entry
+        WHERE entry.agent_version_id=v.id AND entry.observation_type='registered_directory_v1'
+          AND entry.provider IN ('8004scan','bnbera-registry-review') AND entry.validation_state='valid'
+        ORDER BY entry.source_timestamp DESC,entry."createdAt" DESC LIMIT 1
+      ) observation ON TRUE
+      WHERE v.agent_id=a.id
       ORDER BY observation.source_timestamp DESC, observation."createdAt" DESC LIMIT 1
     ) eo ON true
-    WHERE ($2::uuid[] IS NULL OR i.id=ANY($2::uuid[]))
+    WHERE ($1::uuid[] IS NULL OR i.id=ANY($1::uuid[]))
       AND EXISTS (SELECT 1 FROM agent_discovery_sources membership WHERE membership.identity_id=i.id
         AND membership.normalized_ingestion_version in ('bnbera-directory-v1','bnbera-directory-full-v1'))
       AND i.chain_id IN (56,97) AND i.read_consistency='finalized'
       AND a.listing_status NOT IN ('delisted','suspended') AND a.verification_status <> 'rejected'
-    ORDER BY i.chain_id, i.agent_id::numeric`, [directoryObservationType,ids??null]);
-  const checks = (await pool.query(`select distinct on(i.id) i.namespace,i.chain_id,i.identity_registry,i.agent_id,eo.normalized_payload
-    from agent_enrichment_observations eo join agent_versions v on v.id=eo.agent_version_id join agents a on a.id=v.agent_id join erc8004_identities i on i.id=a.identity_id
-    where ($2::uuid[] IS NULL OR i.id=ANY($2::uuid[])) and eo.observation_type=$1 and eo.provider='bnbera-protocol-verifier' and eo.validation_state='valid'
-    order by i.id,eo.source_timestamp desc,eo."createdAt" desc`,[serviceVerificationObservationType,ids??null])).rows;
+    ORDER BY i.chain_id, i.agent_id::numeric`, [ids??null]);
+  // Read at most one indexed observation per version before choosing the
+  // latest across versions. Sorting every historical probe grows without bound.
+  const checks = (await pool.query(`select i.namespace,i.chain_id,i.identity_registry,i.agent_id,eo.normalized_payload
+    from erc8004_identities i join agents a on a.identity_id=i.id
+    join lateral (
+      select latest.normalized_payload from agent_versions v
+      join lateral (
+        select observation.normalized_payload,observation.source_timestamp,observation."createdAt"
+        from agent_enrichment_observations observation
+        where observation.agent_version_id=v.id and observation.observation_type='service_verification_v1'
+          and observation.provider='bnbera-protocol-verifier' and observation.validation_state='valid'
+        order by observation.source_timestamp desc,observation."createdAt" desc limit 1
+      ) latest on true
+      where v.agent_id=a.id
+      order by latest.source_timestamp desc,latest."createdAt" desc limit 1
+    ) eo on true
+    where ($1::uuid[] IS NULL OR i.id=ANY($1::uuid[]))`,[ids??null])).rows;
   const checkMap = new Map(checks.map(row=>[`${row.namespace}:${row.chain_id}:${row.identity_registry}:${row.agent_id}`,row.normalized_payload]));
   const commerce = new PostgresErc8183MarketplaceProjection(pool);
   const agents: z.infer<typeof marketplaceAgentReadModelSchema>[] = [];
@@ -1268,7 +1291,7 @@ async function createLiveReadService(identity?: Erc8004Identity): Promise<LiveRe
   }
   const pool = getPool(runtime.databaseUrl, runtime.databaseSsl);
   const repository: IngestionRepository = new PostgresIngestionRepository(pool, { ssl: runtime.databaseSsl });
-  const metadataSource = new PostgresMarketplaceMetadataSource(pool);
+  const metadataSource = new PostgresMarketplaceMetadataSource(pool, identity);
   const commerceProjection = new PostgresErc8183MarketplaceProjection(pool);
   const recognizedReviewerAddresses = (process.env.ERC8004_RECOGNIZED_REVIEWER_ADDRESSES ?? "")
     .split(",")

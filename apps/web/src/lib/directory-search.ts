@@ -18,7 +18,13 @@ export const directoryCatalogSql = `select distinct on(i.id) i.id,i.chain_id,i.a
  and exists(select 1 from agent_discovery_sources s where s.identity_id=i.id and s.normalized_ingestion_version in ('bnbera-directory-v1','bnbera-directory-full-v1'))
  order by i.id,eo.source_timestamp desc,eo."createdAt" desc`;
 
-export async function searchDirectoryCatalog(pool:pg.Pool,input:MarketplaceSearchInput,semantic?:{vector:readonly number[];provider:string;model:string;modelVersion:string;dimension:number;schema:string}) {
+const cachedDirectoryCatalogSql = `select i.id,i.chain_id,i.agent_id,a.origin_type,a.verification_status,a.runtime_status,
+ a.listing_status,c.agent_version_id,c.profile as profile,c.source_timestamp,c.category
+ from bnbera_directory_catalog_cache c join erc8004_identities i on i.id=c.identity_id join agents a on a.identity_id=i.id
+ where i.chain_id in(56,97) and i.read_consistency='finalized' and a.listing_status not in('delisted','suspended') and a.verification_status<>'rejected'
+ and exists(select 1 from agent_discovery_sources s where s.identity_id=i.id and s.normalized_ingestion_version in ('bnbera-directory-v1','bnbera-directory-full-v1'))`;
+
+async function loadDirectoryCatalog(pool:pg.Pool,input:MarketplaceSearchInput,semantic?:{vector:readonly number[];provider:string;model:string;modelVersion:string;dimension:number;schema:string}) {
   const values:unknown[]=[];
   const bind=(v:unknown)=>{values.push(v);return `$${values.length}`;};
   const filters:string[]=[];
@@ -48,10 +54,19 @@ export async function searchDirectoryCatalog(pool:pg.Pool,input:MarketplaceSearc
     distance=`e.embedding <=> ${vec}::vector`;
   }
   filters.push(`((${lexical})${join?` or (${distance})<0.55`:''})`);
-  const ranked=`select d.*,(${lexical}) as lexical,${distance} as distance from catalog d ${join} where ${filters.join(' and ')}`;
-  const order=input.sort==='freshness'?'source_timestamp desc,id':input.sort==='score'?"coalesce((profile->'scores'->>'overall')::float,-1) desc,id":`lexical desc,${join?'distance asc nulls last,':''}(listing_status='published' and verification_status='verified' and runtime_status='live') desc,coalesce((profile->'scores'->>'overall')::float,-1) desc,id`;
+  const ranked=`select d.id,d.source_timestamp,d.listing_status,d.verification_status,d.runtime_status,coalesce((d.profile->'scores'->>'overall')::float,-1) as overall,(${lexical}) as lexical,${distance} as distance from catalog d ${join} where ${filters.join(' and ')}`;
+  const order=input.sort==='freshness'?'source_timestamp desc,id':input.sort==='score'?"overall desc,id":`lexical desc,${join?'distance asc nulls last,':''}(listing_status='published' and verification_status='verified' and runtime_status='live') desc,overall desc,id`;
   const limit=bind(input.limit),offset=bind(input.offset??0);
-  const result=await pool.query(`with snapshots as materialized (${directoryCatalogSql}), catalog as materialized (select * from snapshots ${reference}), ranked as (${ranked})
+  // Browse/filter pages only need small ranking fields. Do not spill complete
+  // registration bodies (which may contain large data URIs) into catalog CTEs.
+  const cached = process.env.BNBERA_DIRECTORY_CATALOG_CACHE_ENABLED === 'true';
+  const sourceSql = cached ? cachedDirectoryCatalogSql : directoryCatalogSql;
+  const payload = cached ? 'c.profile' : 'eo.normalized_payload';
+  const catalogSql=tokens.length ? sourceSql : sourceSql.replace(
+    `${payload} as profile`,
+    `jsonb_build_object('scores',jsonb_build_object('overall',${payload}->'scores'->'overall')${input.protocol ? ", 'protocols',"+payload+"->'protocols'" : ''}) as profile`
+  );
+  const result=await pool.query(`with snapshots as materialized (${catalogSql}), catalog as not materialized (select * from snapshots ${reference}), ranked as (${ranked})
     select (select count(*)::int from ranked) as total,
       (select jsonb_agg(page.id) from (select id from ranked order by ${order} limit ${limit} offset ${offset}) page) as ids,
       (select count(*)::int from catalog) as registered,
@@ -59,4 +74,27 @@ export async function searchDirectoryCatalog(pool:pg.Pool,input:MarketplaceSearc
       (select count(*)::int from catalog where chain_id=97) as testnet,
       (select count(*)::int from ranked where distance is not null) as vector_matches`,values);
   return result.rows[0] as {total:number;ids:string[]|null;registered:number;mainnet:number;testnet:number;vector_matches:number};
+}
+
+// Coalesce simultaneous SSR/API reads. Bound both entry count and freshness;
+// activation and endpoint expiry are still evaluated by the live projection.
+type CatalogResult = Awaited<ReturnType<typeof loadDirectoryCatalog>>;
+const catalogCaches = new WeakMap<pg.Pool, Map<string, { expiresAt: number; promise: Promise<CatalogResult> }>>();
+export async function searchDirectoryCatalog(pool: pg.Pool, input: MarketplaceSearchInput, semantic?: Parameters<typeof loadDirectoryCatalog>[2]) {
+  let cache = catalogCaches.get(pool);
+  if (!cache) { cache = new Map(); catalogCaches.set(pool, cache); }
+  const key = JSON.stringify([input, semantic, process.env.T5_REFERENCE_PROVIDER_AGENT_ID, process.env.T5_REFERENCE_PROVIDER_IDENTITY_REGISTRY, process.env.BNBERA_DIRECTORY_CATALOG_CACHE_ENABLED]);
+  const previous = cache.get(key);
+  if (previous && previous.expiresAt > Date.now()) return previous.promise;
+  if (cache.size >= 32) cache.delete(cache.keys().next().value!);
+  const entry = { expiresAt: Number.POSITIVE_INFINITY, promise: loadDirectoryCatalog(pool, input, semantic) };
+  cache.set(key, entry);
+  try {
+    const result = await entry.promise;
+    entry.expiresAt = Date.now() + 15_000;
+    return result;
+  } catch (error) {
+    if (cache.get(key) === entry) cache.delete(key);
+    throw error;
+  }
 }
